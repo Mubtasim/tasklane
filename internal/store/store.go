@@ -112,8 +112,12 @@ type Store interface {
 	// GetQueue returns ErrNotFound for an unknown queue.
 	GetQueue(ctx context.Context, name string) (Queue, error)
 
-	// Enqueue inserts jobs atomically, in order. A job whose idempotency key
-	// already exists in its queue returns the existing ID with Created=false.
+	// Enqueue inserts 1 to 1000 jobs atomically and returns one result per
+	// job, in the caller's order. A job whose idempotency key already exists
+	// in its queue returns the existing ID with Created=false. Jobs with keys
+	// are inserted first, sorted by (queue, key), so concurrent batches lock
+	// keys in the same order and cannot deadlock. The commit wakes long-polling
+	// leases on every queue in the batch.
 	Enqueue(ctx context.Context, jobs []NewJob) ([]EnqueueResult, error)
 
 	// Lease takes up to n runnable jobs, highest priority first. A ttl <= 0
