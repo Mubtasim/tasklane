@@ -212,7 +212,7 @@ The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY
 
 **Long-polling.** `Lease` with `wait > 0` returns as soon as jobs are available or when `wait` elapses (empty result). Servers `LISTEN` on the Postgres channel `tasklane_jobs`; `Enqueue` sends `pg_notify('tasklane_jobs', queue)` once per distinct queue inside its transaction, so the notification is delivered only on commit. Waiting leases for that queue wake immediately. Because delayed jobs and retries become due without any notification, waiting leases also re-check every second.
 
-Each server holds one dedicated `LISTEN` connection. If it drops, the server reconnects with backoff and wakes every waiting lease once, since notifications sent in the meantime are lost.
+Each server holds one dedicated `LISTEN` connection. If it drops, the server reconnects with backoff and wakes every waiting lease once LISTEN is re-established, since notifications sent in the meantime are lost.
 
 **Leasing from an unknown queue** returns `NOT_FOUND` (an empty result means "nothing runnable right now").
 

@@ -54,6 +54,8 @@ func startListener(t *testing.T) *Listener {
 	return l
 }
 
+func (l *Listener) backendPID() uint32 { return l.pid.Load() }
+
 func notifyQueue(t *testing.T, queue string) {
 	t.Helper()
 	_, err := testDB.Pool.Exec(context.Background(), "SELECT pg_notify($1, $2)", pgstore.NotifyChannel, queue)
@@ -112,35 +114,35 @@ func TestNotifyWakesOnlySubscribersOfThatQueue(t *testing.T) {
 	requireNotWoken(t, sms)
 }
 
-// listenerPID waits until the listener's backend has run LISTEN and returns
-// its process ID; a PID equal to old is ignored.
-func listenerPID(t *testing.T, old int) int {
-	t.Helper()
-	var pid int
-	require.Eventually(t, func() bool {
-		err := testDB.Pool.QueryRow(context.Background(),
-			`SELECT pid FROM pg_stat_activity
-			 WHERE application_name = $1 AND query LIKE 'LISTEN%' AND pid <> $2`,
-			ApplicationName, old).Scan(&pid)
-		return err == nil
-	}, 5*time.Second, 20*time.Millisecond)
-	return pid
-}
-
 func TestReconnectsAfterConnectionLoss(t *testing.T) {
 	l := startListener(t)
 	ch, unsubscribe := l.Subscribe("emails")
 	defer unsubscribe()
-	pid := listenerPID(t, 0)
+	old := l.backendPID()
+	require.NotZero(t, old)
+	// Discard the wake-up from the initial connect.
+	select {
+	case <-ch:
+	default:
+	}
 
-	_, err := testDB.Pool.Exec(context.Background(), "SELECT pg_terminate_backend($1)", pid)
+	_, err := testDB.Pool.Exec(context.Background(), "SELECT pg_terminate_backend($1)", old)
 	require.NoError(t, err)
 
-	// Losing the connection wakes every subscriber, since notifications may
+	// A new connection is listening.
+	require.Eventually(t, func() bool {
+		pid := l.backendPID()
+		return pid != 0 && pid != old
+	}, 15*time.Second, 20*time.Millisecond)
+
+	// Re-establishing LISTEN wakes every subscriber, since notifications may
 	// have been missed.
 	requireWoken(t, ch)
+	select {
+	case <-ch:
+	default:
+	}
 
-	listenerPID(t, pid) // a new connection is listening
 	notifyQueue(t, "emails")
 	requireWoken(t, ch)
 }

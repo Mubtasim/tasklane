@@ -6,6 +6,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -21,12 +22,21 @@ import (
 // ApplicationName identifies the listener's connection in pg_stat_activity.
 const ApplicationName = "tasklane-notify"
 
+const (
+	// idleCheck bounds each wait for a notification; when it elapses the
+	// connection is pinged, so a half-open connection is noticed.
+	idleCheck = 30 * time.Second
+	// pingTimeout bounds that liveness check.
+	pingTimeout = 5 * time.Second
+)
+
 type Listener struct {
 	connString string
 	log        *slog.Logger
 	retry      backoff.Policy // delay between reconnect attempts
 
 	listening atomic.Bool
+	pid       atomic.Uint32 // backend PID of the LISTEN connection; 0 when down
 
 	mu   sync.Mutex
 	subs map[string]map[chan struct{}]struct{}
@@ -77,12 +87,10 @@ func (l *Listener) Run(ctx context.Context) error {
 	for {
 		err := l.listen(ctx, func() { attempt = 0 })
 		l.listening.Store(false)
+		l.pid.Store(0)
 		if ctx.Err() != nil {
 			return nil
 		}
-		// Notifications sent while we were disconnected are lost, so wake
-		// everyone: each waiter re-checks the database once.
-		l.wakeAll()
 		delay := l.retry.Delay(attempt)
 		attempt++
 		l.log.Warn("notify listener disconnected; reconnecting", "err", err, "retry_in", delay)
@@ -114,12 +122,31 @@ func (l *Listener) listen(ctx context.Context, connected func()) error {
 	if _, err := conn.Exec(ctx, "LISTEN "+pgstore.NotifyChannel); err != nil {
 		return err
 	}
+	l.pid.Store(conn.PgConn().PID())
 	l.listening.Store(true)
 	connected()
+	// Notifications sent while we were disconnected (or before LISTEN took
+	// effect) are lost, so wake everyone once LISTEN is in effect: each
+	// waiter re-checks the database once. On the first connect this is a
+	// harmless extra wake-up.
+	l.wakeAll()
 	for {
-		n, err := conn.WaitForNotification(ctx)
+		waitCtx, cancel := context.WithTimeout(ctx, idleCheck)
+		n, err := conn.WaitForNotification(waitCtx)
+		timedOut := waitCtx.Err() != nil && ctx.Err() == nil
+		cancel()
 		if err != nil {
-			return err
+			if !timedOut || !errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			// Idle for a while: make sure the connection is still alive.
+			pingCtx, cancelPing := context.WithTimeout(ctx, pingTimeout)
+			err := conn.Ping(pingCtx)
+			cancelPing()
+			if err != nil {
+				return err
+			}
+			continue
 		}
 		l.wake(n.Payload)
 	}
