@@ -202,6 +202,17 @@ One `proto/tasklane/v1/tasklane.proto` generates the gRPC server, the HTTP/JSON 
 
 The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY_CRITICAL = 1` … `PRIORITY_LOW = 4`, so an unset field becomes the default rather than critical.
 
+**Payloads** are JSON objects (`google.protobuf.Struct` in the proto), so HTTP clients send and receive natural JSON.
+
+**Retry safety.** Every worker-facing call must be safe to retry, because networks lose responses, not just requests:
+- *Ack is idempotent.* A completed job keeps the token that completed it. A repeated `Ack` with that same token returns success; any other token gets `FAILED_PRECONDITION`.
+- *A repeated Nack* returns `FAILED_PRECONDITION`. This is harmless, because the job is already scheduled for retry; the SDK logs it and moves on.
+- *Enqueue* is made safe to retry with idempotency keys.
+
+**Long-polling.** `Lease` with `wait > 0` returns as soon as jobs are available or when `wait` elapses (empty result). Servers `LISTEN` on the Postgres channel `tasklane_jobs`; `Enqueue` sends `pg_notify('tasklane_jobs', queue)` inside its transaction, so the notification is delivered only on commit. Waiting leases for that queue wake immediately. Because delayed jobs and retries become due without any notification, waiting leases also re-check every second.
+
+**Leasing from an unknown queue** returns `NOT_FOUND` (an empty result means "nothing runnable right now").
+
 **Errors**
 
 | Situation | gRPC status | HTTP |
@@ -210,7 +221,10 @@ The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY
 | Stale or unknown lease token | `FAILED_PRECONDITION` | 409 |
 | Unknown queue or job | `NOT_FOUND` | 404 |
 | Bad arguments | `INVALID_ARGUMENT` | 400 |
-| Database unavailable | `UNAVAILABLE` | 503 |
+| Queue already exists | `ALREADY_EXISTS` | 409 |
+| Database unavailable or connection error | `UNAVAILABLE` | 503 |
+| Request deadline exceeded / cancelled | `DEADLINE_EXCEEDED` / `CANCELLED` | 504 / 499 |
+| Anything else (logged with details) | `INTERNAL` | 500 |
 | Missing or wrong API key | `UNAUTHENTICATED` | 401 |
 
 **Backpressure**
@@ -288,7 +302,8 @@ The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY
 | # | Target | Deliverable |
 |---|---|---|
 | M1 | mid-Nov 2026 | Repo, schema and migrations, `PostgresStore` with enqueue/lease/ack/nack and integration tests |
-| M2 | end of Nov | gRPC and HTTP gateway, Go SDK worker runner, docker-compose demo |
-| M3 | mid-Dec | Reaper, pruner, heartbeats, DLQ and redrive, backpressure, `LeaseStream` |
+| M2a | end of Nov | API server: proto + buf, gRPC and HTTP gateway, error mapping, API-key auth, idempotent ack, long-poll leasing with LISTEN/NOTIFY, reaper loop, graceful shutdown |
+| M2b | early Dec | Go SDK (producer + worker runner with heartbeats), docker-compose demo with a failing demo worker |
+| M3 | mid-Dec | Pruner, DLQ listing and redrive, cancel, backpressure, `LeaseStream` |
 | M4 | end of Dec | Metrics, tracing, Grafana dashboard, chaos and invariant tests |
 | M5 | mid-Jan 2027 | TS and C# SDKs, load tests and benchmark report, v1.0.0 release and a blog post |
