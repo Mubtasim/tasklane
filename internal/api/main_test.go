@@ -56,7 +56,8 @@ func TestMain(m *testing.M) {
 
 type env struct {
 	client tasklanev1.TasklaneServiceClient
-	conn   *grpc.ClientConn // for the HTTP gateway tests
+	conn   *grpc.ClientConn  // for the HTTP gateway tests
+	lis    *bufconn.Listener // to dial more connections, with other options
 	store  *pgstore.Store
 	server *Server
 	keys   []string
@@ -84,5 +85,5 @@ func newEnv(t *testing.T, keys []string, opts ...Option) *env {
 		srv.Shutdown()
 		gs.Stop()
 	})
-	return &env{client: tasklanev1.NewTasklaneServiceClient(conn), conn: conn, store: st, server: srv, keys: keys}
+	return &env{client: tasklanev1.NewTasklaneServiceClient(conn), conn: conn, store: st, server: srv, keys: keys, lis: lis}
 }

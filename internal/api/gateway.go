@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -101,12 +102,23 @@ func writeError(gw *runtime.ServeMux, w http.ResponseWriter, r *http.Request, er
 	runtime.DefaultHTTPErrorHandler(r.Context(), gw, outbound, w, r, err)
 }
 
+// isSendTooLarge reports whether err is the gRPC client refusing to send the
+// gateway's request because, as protobuf, it is over MaxMessageBytes (a JSON
+// body under the HTTP limit can still be). That is the caller's request being
+// too large, not a quota: queue-depth RESOURCE_EXHAUSTED stays 429.
+func isSendTooLarge(err error) bool {
+	return status.Code(err) == codes.ResourceExhausted &&
+		strings.Contains(status.Convert(err).Message(), "trying to send message larger than max")
+}
+
 // errorHandler follows the design's error table: grpc-gateway maps
 // FAILED_PRECONDITION to 400 by default, but a stale lease token is a 409.
 // A body over the limit is a 413, not the gateway's 400 for a decode error.
 func errorHandler(ctx context.Context, mux *runtime.ServeMux, m runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
 	if b, ok := r.Body.(*limitedBody); ok && b.tooLarge {
 		err = &runtime.HTTPStatusError{HTTPStatus: http.StatusRequestEntityTooLarge, Err: errBodyTooLarge}
+	} else if isSendTooLarge(err) {
+		err = &runtime.HTTPStatusError{HTTPStatus: http.StatusRequestEntityTooLarge, Err: err}
 	} else if status.Code(err) == codes.FailedPrecondition {
 		err = &runtime.HTTPStatusError{HTTPStatus: http.StatusConflict, Err: err}
 	}

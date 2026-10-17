@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -154,8 +155,15 @@ func jobSpecToStore(queue string, spec *tasklanev1.JobSpec) (store.NewJob, error
 	if err != nil {
 		return store.NewJob{}, err
 	}
+	// Both sizes are capped: the JSON is what the database stores, and the
+	// protobuf Struct is what Lease sends. A Struct is several times the size
+	// of its JSON for number-heavy payloads (about 11 bytes per number
+	// against 2), so the JSON length alone would not bound the response.
 	if len(payload) > MaxPayloadBytes {
 		return store.NewJob{}, invalid("payload must be at most %d bytes as JSON, got %d", MaxPayloadBytes, len(payload))
+	}
+	if n := proto.Size(spec.GetPayload()); n > MaxPayloadBytes {
+		return store.NewJob{}, invalid("payload must be at most %d bytes as protobuf, got %d", MaxPayloadBytes, n)
 	}
 	priority, err := priorityToStore(spec.GetPriority())
 	if err != nil {

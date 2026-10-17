@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/store"
@@ -105,6 +106,9 @@ func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*
 }
 
 func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchRequest) (*tasklanev1.EnqueueBatchResponse, error) {
+	if n := proto.Size(req); n > MaxMessageBytes-maxBatchSlack {
+		return nil, invalid("batch must be at most %d bytes as protobuf, got %d", MaxMessageBytes-maxBatchSlack, n)
+	}
 	jobs := make([]store.NewJob, 0, len(req.GetJobs()))
 	for i, spec := range req.GetJobs() {
 		j, err := jobSpecToStore(req.GetQueue(), spec)

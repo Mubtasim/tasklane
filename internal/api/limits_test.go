@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,8 +13,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
@@ -34,6 +39,134 @@ func payloadOfSize(t *testing.T, n int) *structpb.Struct {
 	return s
 }
 
+// stringPayloadOfProtoSize returns a payload whose protobuf size is exactly n
+// (its JSON is a few bytes shorter, so it is the proto cap that binds).
+func stringPayloadOfProtoSize(t *testing.T, n int) *structpb.Struct {
+	t.Helper()
+	p := func(k int) *structpb.Struct {
+		return &structpb.Struct{Fields: map[string]*structpb.Value{"d": structpb.NewStringValue(strings.Repeat("x", k))}}
+	}
+	k := n - proto.Size(p(0))
+	for proto.Size(p(k)) > n {
+		k--
+	}
+	s := p(k)
+	require.Equal(t, n, proto.Size(s))
+	return s
+}
+
+// numericPayload returns a payload of zeros whose protobuf size is the
+// largest one not above n. Each zero is about 11 bytes as a Struct Value but
+// 2 as JSON ("0,"), so the JSON stays far below the proto size.
+func numericPayload(t *testing.T, n int) *structpb.Struct {
+	t.Helper()
+	build := func(k int) *structpb.Struct {
+		vals := make([]*structpb.Value, k)
+		for i := range vals {
+			vals[i] = structpb.NewNumberValue(0)
+		}
+		return &structpb.Struct{Fields: map[string]*structpb.Value{"n": structpb.NewListValue(&structpb.ListValue{Values: vals})}}
+	}
+	k := n / 11
+	for proto.Size(build(k)) > n {
+		k--
+	}
+	for proto.Size(build(k+1)) <= n {
+		k++
+	}
+	s := build(k)
+	require.LessOrEqual(t, proto.Size(s), n)
+	require.Greater(t, proto.Size(s), n-11)
+	return s
+}
+
+// fillBatch adds copies of spec to req until proto.Size(req) exceeds limit,
+// by the smallest amount it can. It computes the count instead of looping on
+// proto.Size, which is slow for messages this large.
+func fillBatch(req *tasklanev1.EnqueueBatchRequest, spec *tasklanev1.JobSpec, limit int) {
+	base := proto.Size(req)
+	req.Jobs = []*tasklanev1.JobSpec{spec}
+	each := proto.Size(req) - base
+	n := (limit-base)/each + 1
+	req.Jobs = make([]*tasklanev1.JobSpec, n)
+	for i := range req.Jobs {
+		req.Jobs[i] = spec
+	}
+}
+
+// The limits must make a full lease fit in one message, by construction.
+func TestFullLeaseFitsInOneMessage(t *testing.T) {
+	const perJobOverhead = 4 << 10 // kind, key, trace context, timestamps, token
+	require.LessOrEqual(t, MaxLeaseJobs*(MaxPayloadBytes+perJobOverhead), MaxMessageBytes)
+}
+
+func TestPayloadCapIsMeasuredInProtobufBytes(t *testing.T) {
+	under := numericPayload(t, MaxPayloadBytes)
+	raw, err := protojson.Marshal(under)
+	require.NoError(t, err)
+	require.Less(t, len(raw), MaxPayloadBytes/3, "the JSON is far below the cap")
+	_, err = jobSpecToStore("q", &tasklanev1.JobSpec{Kind: "k", Payload: under})
+	require.NoError(t, err)
+
+	over := numericPayload(t, MaxPayloadBytes+11*100)
+	raw, err = protojson.Marshal(over)
+	require.NoError(t, err)
+	require.Less(t, len(raw), MaxPayloadBytes, "the JSON alone is under the cap")
+	_, err = jobSpecToStore("q", &tasklanev1.JobSpec{Kind: "k", Payload: over})
+	requireCode(t, codes.InvalidArgument, err)
+	require.Contains(t, err.Error(), "protobuf")
+}
+
+func TestOversizeBatchIsRejected(t *testing.T) {
+	e := newEnv(t, nil)
+	e.mustQueue(t, "emails")
+	// Each job is within the per-job cap; the batch is just over the limit.
+	// Called on the server directly: a real client's own send limit would
+	// stop a message this size before it got to the handler.
+	spec := &tasklanev1.JobSpec{Kind: "big", Payload: numericPayload(t, MaxPayloadBytes)}
+	req := &tasklanev1.EnqueueBatchRequest{Queue: "emails"}
+	fillBatch(req, spec, MaxMessageBytes-maxBatchSlack)
+	_, err := e.server.EnqueueBatch(context.Background(), req)
+	requireCode(t, codes.InvalidArgument, err)
+	// Nothing was enqueued.
+	got, err := e.client.Lease(context.Background(), &tasklanev1.LeaseRequest{Queue: "emails"})
+	require.NoError(t, err)
+	require.Empty(t, got.GetJobs())
+}
+
+// Over HTTP the JSON body is small (2 bytes per number) but the request is
+// about 5x larger as protobuf, and the gateway's own gRPC client may refuse to
+// send it: the caller's request is too large, so 413, not a quota's 429. The
+// gateway's connection here has a 400 KiB send limit instead of
+// MaxMessageBytes, which exercises the same path without moving 16 MiB.
+func TestHTTPRequestOverGatewaySendLimitIs413(t *testing.T) {
+	e := newEnv(t, nil)
+	e.mustQueue(t, "emails")
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return e.lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(400<<10)),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	h, err := NewHTTPHandler(context.Background(), conn, func(context.Context) error { return nil }, nil)
+	require.NoError(t, err)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	spec := &tasklanev1.JobSpec{Kind: "big", Payload: numericPayload(t, MaxPayloadBytes)}
+	req := &tasklanev1.EnqueueBatchRequest{Queue: "emails", Jobs: []*tasklanev1.JobSpec{spec, spec}}
+	body, err := protojson.Marshal(req)
+	require.NoError(t, err)
+	require.Less(t, len(body), 200<<10, "small as JSON")
+	require.Greater(t, proto.Size(req), 400<<10, "large as protobuf")
+	code, out := call(t, "POST", srv.URL+"/v1/queues/emails/jobs:batch", "", string(body))
+	require.Equal(t, http.StatusRequestEntityTooLarge, code, "%v", out)
+
+	// A quota's RESOURCE_EXHAUSTED stays 429.
+	require.False(t, isSendTooLarge(status.Error(codes.ResourceExhausted, "queue \"emails\" is full")))
+}
+
 func TestJobSpecToStoreEnforcesLimits(t *testing.T) {
 	ok := func(spec *tasklanev1.JobSpec) {
 		t.Helper()
@@ -45,7 +178,9 @@ func TestJobSpecToStoreEnforcesLimits(t *testing.T) {
 		_, err := jobSpecToStore("q", spec)
 		requireCode(t, codes.InvalidArgument, err)
 	}
-	ok(&tasklanev1.JobSpec{Kind: "k", Payload: payloadOfSize(t, MaxPayloadBytes)})
+	ok(&tasklanev1.JobSpec{Kind: "k", Payload: payloadOfSize(t, MaxPayloadBytes-16)})
+	ok(&tasklanev1.JobSpec{Kind: "k", Payload: stringPayloadOfProtoSize(t, MaxPayloadBytes)})
+	bad(&tasklanev1.JobSpec{Kind: "k", Payload: stringPayloadOfProtoSize(t, MaxPayloadBytes+1)})
 	bad(&tasklanev1.JobSpec{Kind: "k", Payload: payloadOfSize(t, MaxPayloadBytes+1)})
 	ok(&tasklanev1.JobSpec{Kind: strings.Repeat("k", 255)})
 	bad(&tasklanev1.JobSpec{Kind: strings.Repeat("k", 256)})
@@ -86,9 +221,17 @@ func TestOversizeValuesAreInvalidArgument(t *testing.T) {
 	_, err = e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "emails", Job: &tasklanev1.JobSpec{Kind: "x", IdempotencyKey: strings.Repeat("k", 6000)}})
 	requireCode(t, codes.InvalidArgument, err)
 
+	numeric := numericPayload(t, MaxPayloadBytes+11*100)
+	_, err = e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "emails", Job: &tasklanev1.JobSpec{Kind: "x", Payload: numeric}})
+	requireCode(t, codes.InvalidArgument, err)
+
 	base := newHTTP(t, e, func(context.Context) error { return nil })
+	numJSON, err := protojson.Marshal(numeric)
+	require.NoError(t, err)
+	code, _ := call(t, "POST", base+"/v1/queues/emails/jobs", "secret", `{"kind":"x","payload":`+string(numJSON)+`}`)
+	require.Equal(t, http.StatusBadRequest, code)
 	big := `{"kind":"x","payload":{"d":"` + strings.Repeat("x", MaxPayloadBytes) + `"}}`
-	code, _ := call(t, "POST", base+"/v1/queues/emails/jobs", "secret", big)
+	code, _ = call(t, "POST", base+"/v1/queues/emails/jobs", "secret", big)
 	require.Equal(t, http.StatusBadRequest, code)
 }
 
@@ -99,7 +242,7 @@ func TestLeaseOfMaxJobsAtMaxPayloadSucceeds(t *testing.T) {
 	e := newEnv(t, nil)
 	ctx := context.Background()
 	e.mustQueue(t, "emails")
-	payload := payloadOfSize(t, MaxPayloadBytes)
+	payload := stringPayloadOfProtoSize(t, MaxPayloadBytes)
 	jobs := make([]*tasklanev1.JobSpec, MaxLeaseJobs+1)
 	for i := range jobs {
 		jobs[i] = &tasklanev1.JobSpec{Kind: "big", Payload: payload}
@@ -115,6 +258,27 @@ func TestLeaseOfMaxJobsAtMaxPayloadSucceeds(t *testing.T) {
 	res, err = e.client.Lease(ctx, &tasklanev1.LeaseRequest{Queue: "emails", MaxJobs: 1000})
 	require.NoError(t, err)
 	require.Len(t, res.GetJobs(), 1)
+}
+
+// The same with a number-heavy payload: as a Struct it is several times its
+// JSON size, so only a cap measured in protobuf bytes keeps the lease under
+// MaxMessageBytes.
+func TestLeaseOfMaxJobsAtMaxNumericPayloadSucceeds(t *testing.T) {
+	e := newEnv(t, nil)
+	ctx := context.Background()
+	e.mustQueue(t, "emails")
+	payload := numericPayload(t, MaxPayloadBytes)
+	jobs := make([]*tasklanev1.JobSpec, MaxLeaseJobs)
+	for i := range jobs {
+		jobs[i] = &tasklanev1.JobSpec{Kind: "big", Payload: payload}
+	}
+	_, err := e.client.EnqueueBatch(ctx, &tasklanev1.EnqueueBatchRequest{Queue: "emails", Jobs: jobs})
+	require.NoError(t, err)
+
+	res, err := e.client.Lease(ctx, &tasklanev1.LeaseRequest{Queue: "emails", MaxJobs: MaxLeaseJobs})
+	require.NoError(t, err)
+	require.Len(t, res.GetJobs(), MaxLeaseJobs)
+	require.Equal(t, len(payload.GetFields()["n"].GetListValue().GetValues()), len(res.GetJobs()[0].GetPayload().GetFields()["n"].GetListValue().GetValues()))
 }
 
 func TestNackTruncatesLongErrors(t *testing.T) {
