@@ -232,11 +232,13 @@ Queue names are 1–128 characters from [A-Za-z0-9._-], so they are safe in URL 
 | Anything else (logged with details) | `INTERNAL` | 500 |
 | Missing or wrong API key | `UNAUTHENTICATED` | 401 |
 
+The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) and, as proto3 JSON requires, encodes 64-bit integers as strings. grpc-gateway's default for `FAILED_PRECONDITION` is 400; Tasklane overrides it to 409 to match this table.
+
 **Backpressure**
 - *Producer side:* `Enqueue` checks the queue's depth (`available + leased`) against `max_depth`. To avoid a `COUNT(*)` on every call, each server refreshes each queue's depth once a second (one count over the partial indexes) and checks against that cached value, so the limit is soft (it can overshoot by about one second of traffic). The docs state this.
 - *Worker side:* `LeaseStream` is credit-based. The server never sends more jobs than the worker has granted credits for, so a slow worker is never flooded.
 
-**Auth:** a static API key per client, passed in the `authorization` metadata or header and configured in the server config file. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
+**Auth:** a static API key per client, sent as `authorization: Bearer <key>` (gRPC metadata or HTTP header) and configured with `TASKLANE_API_KEYS` (comma-separated). With no keys configured, auth is disabled and the server logs a warning at startup. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
 
 **SDKs:** Go (`github.com/mubtasim/tasklane/sdk/go`), TypeScript (`@mubtasim/tasklane`) and C# (`Tasklane.Client` on NuGet). Each provides a producer client and a worker runner that handles leasing, concurrency, heartbeats, ack/nack, retrying the server connection with backoff, and graceful shutdown.
 
