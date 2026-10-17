@@ -20,7 +20,7 @@ func (s *Store) Ack(ctx context.Context, id int64, token uuid.UUID) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return s.missingOrLost(ctx, id)
+		return missingOrLost(ctx, s.pool, id)
 	}
 	return nil
 }
@@ -33,7 +33,7 @@ func (s *Store) Heartbeat(ctx context.Context, id int64, token uuid.UUID, ttl ti
 		 WHERE id = $1 AND state = 'leased' AND lease_token = $2
 		 RETURNING lease_expires_at`, id, token, ttlMillis(ttl)).Scan(&expires)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, s.missingOrLost(ctx, id)
+		return time.Time{}, missingOrLost(ctx, s.pool, id)
 	}
 	return expires, err
 }
@@ -51,7 +51,7 @@ func (s *Store) Nack(ctx context.Context, id int64, token uuid.UUID, errMsg stri
 		 WHERE id = $1 AND state = 'leased' AND lease_token = $2 FOR UPDATE`, id, token,
 	).Scan(&attempts, &maxAttempts)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return s.missingOrLost(ctx, id)
+		return missingOrLost(ctx, tx, id)
 	}
 	if err != nil {
 		return err

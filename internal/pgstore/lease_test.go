@@ -2,6 +2,7 @@ package pgstore_test
 
 import (
 	"context"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -119,6 +120,6 @@ func TestConcurrentLeasesNeverShareAJob(t *testing.T) {
 
 func TestGetJobNotFound(t *testing.T) {
 	s := newStore(t)
-	_, err := s.GetJob(context.Background(), 999)
+	_, err := s.GetJob(context.Background(), math.MaxInt64)
 	require.ErrorIs(t, err, store.ErrNotFound)
 }

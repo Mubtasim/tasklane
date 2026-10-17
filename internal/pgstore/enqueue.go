@@ -43,7 +43,10 @@ func (s *Store) Enqueue(ctx context.Context, jobs []store.NewJob) ([]store.Enque
 		}
 		results = append(results, r)
 	}
-	return results, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 func validateJob(j store.NewJob) error {

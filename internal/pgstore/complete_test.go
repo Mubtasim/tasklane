@@ -2,13 +2,17 @@ package pgstore_test
 
 import (
 	"context"
+	"math"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mubtasim/tasklane/internal/backoff"
+	"github.com/mubtasim/tasklane/internal/pgstore"
 	"github.com/mubtasim/tasklane/internal/store"
 )
 
@@ -36,7 +40,7 @@ func TestAckRequiresCurrentToken(t *testing.T) {
 	j := mustLeaseOne(t, s, "emails", 0)
 
 	require.ErrorIs(t, s.Ack(ctx, j.ID, uuid.New()), store.ErrLeaseLost)
-	require.ErrorIs(t, s.Ack(ctx, 999, j.LeaseToken), store.ErrNotFound)
+	require.ErrorIs(t, s.Ack(ctx, math.MaxInt64, j.LeaseToken), store.ErrNotFound)
 	require.NoError(t, s.Ack(ctx, j.ID, j.LeaseToken))
 	require.ErrorIs(t, s.Ack(ctx, j.ID, j.LeaseToken), store.ErrLeaseLost, "double ack")
 }
@@ -124,4 +128,36 @@ func TestNackRequiresCurrentToken(t *testing.T) {
 	j := mustLeaseOne(t, s, "emails", 0)
 
 	require.ErrorIs(t, s.Nack(context.Background(), j.ID, uuid.New(), "x", nil), store.ErrLeaseLost)
+}
+
+// Nack holds a transaction while it decides the error to return, so the stale
+// token path must not need a second connection from the same pool.
+func TestStaleNacksDoNotExhaustPool(t *testing.T) {
+	newStore(t) // truncates the tables
+	ctx := context.Background()
+
+	cfg := testPool.Config().Copy()
+	cfg.MaxConns = 2
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	require.NoError(t, err)
+	defer pool.Close()
+	s := pgstore.New(pool, backoff.Policy{Base: time.Second, Cap: time.Hour, Rand: func() float64 { return 0 }})
+
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	j := mustLeaseOne(t, s, "emails", 0)
+
+	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.Nack(tctx, j.ID, uuid.New(), "x", nil); err != store.ErrLeaseLost {
+				t.Errorf("Nack with stale token = %v, want ErrLeaseLost", err)
+			}
+		}()
+	}
+	wg.Wait()
 }

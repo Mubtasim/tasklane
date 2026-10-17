@@ -58,7 +58,7 @@ func newStore(t *testing.T) *pgstore.Store {
 
 func newStoreWithBackoff(t *testing.T, p backoff.Policy) *pgstore.Store {
 	t.Helper()
-	_, err := testPool.Exec(context.Background(), "TRUNCATE jobs, queues")
+	_, err := testPool.Exec(context.Background(), "TRUNCATE jobs, queues RESTART IDENTITY")
 	require.NoError(t, err)
 	return pgstore.New(testPool, p)
 }

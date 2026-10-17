@@ -77,10 +77,17 @@ func ttlMillis(ttl time.Duration) *int64 {
 	return &ms
 }
 
-// missingOrLost explains why a token-guarded update matched no row.
-func (s *Store) missingOrLost(ctx context.Context, id int64) error {
+// querier is satisfied by both *pgxpool.Pool and pgx.Tx.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// missingOrLost explains why a token-guarded update matched no row. Callers
+// that hold a transaction must pass it as q: querying the pool instead needs a
+// second connection, which can exhaust the pool under concurrent stale calls.
+func missingOrLost(ctx context.Context, q querier, id int64) error {
 	var exists bool
-	if err := s.pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)", id).Scan(&exists); err != nil {
+	if err := q.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)", id).Scan(&exists); err != nil {
 		return err
 	}
 	if !exists {
