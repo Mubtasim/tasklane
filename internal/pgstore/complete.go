@@ -7,22 +7,48 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/mubtasim/tasklane/internal/store"
 )
 
 // Every statement here matches on the lease token, so only the worker that
 // currently holds the job can change it (fencing).
 
+// Ack keeps the token on the completed row, so a retried Ack (the first
+// response was lost) can be recognised and answered with success.
 func (s *Store) Ack(ctx context.Context, id int64, token uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE jobs SET state = 'completed', finished_at = now(), lease_token = NULL, lease_expires_at = NULL
+		`UPDATE jobs SET state = 'completed', finished_at = now(), lease_expires_at = NULL
 		 WHERE id = $1 AND state = 'leased' AND lease_token = $2`, id, token)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return missingOrLost(ctx, s.pool, id)
+		return ackOutcome(ctx, s.pool, id, token)
 	}
 	return nil
+}
+
+// ackOutcome explains why an Ack matched no row: the same token already
+// completed the job (success), the job is missing, or the token is stale.
+// Like missingOrLost, it runs on the caller's querier.
+func ackOutcome(ctx context.Context, q querier, id int64, token uuid.UUID) error {
+	var (
+		state string
+		held  pgtype.UUID
+	)
+	err := q.QueryRow(ctx, "SELECT state::text, lease_token FROM jobs WHERE id = $1", id).Scan(&state, &held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if store.JobState(state) == store.StateCompleted && held.Valid && uuid.UUID(held.Bytes) == token {
+		return nil
+	}
+	return store.ErrLeaseLost
 }
 
 func (s *Store) Heartbeat(ctx context.Context, id int64, token uuid.UUID, ttl time.Duration) (time.Time, error) {

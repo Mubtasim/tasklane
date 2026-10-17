@@ -95,7 +95,7 @@ type Job struct {
 	Attempts       int
 	MaxAttempts    int
 	LastError      string
-	LeaseToken     uuid.UUID // uuid.Nil unless leased
+	LeaseToken     uuid.UUID // the current lease's token; on a completed job, the token that completed it; otherwise uuid.Nil
 	LeaseExpiresAt time.Time // zero unless leased
 	IdempotencyKey string
 	TraceContext   string
@@ -122,7 +122,8 @@ type Store interface {
 	// return ErrLeaseLost if the job exists but the token is stale, and
 	// ErrNotFound if the job does not exist.
 
-	// Ack marks the leased job completed.
+	// Ack marks the leased job completed and keeps its token, so repeating
+	// the Ack with the same token returns nil (a retry after a lost response).
 	Ack(ctx context.Context, id int64, token uuid.UUID) error
 	// Nack fails the current attempt. A job whose attempts have reached
 	// max_attempts moves to StateDead; otherwise it becomes available again at

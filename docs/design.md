@@ -165,7 +165,7 @@ FROM next WHERE j.id = next.id
 RETURNING j.*;
 ```
 
-**Ack:** `UPDATE jobs SET state = 'completed', finished_at = now(), lease_token = NULL, lease_expires_at = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2`. Zero rows updated means the lease was lost, and the server returns `FAILED_PRECONDITION`. An ack that arrives after `lease_expires_at` but before the reaper has run still succeeds: nobody else holds the job, so accepting it is safe and avoids a needless retry. Heartbeats follow the same rule.
+**Ack:** `UPDATE jobs SET state = 'completed', finished_at = now(), lease_expires_at = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2`. The completed row keeps its `lease_token`, so when zero rows are updated the server reads the job on the same connection: completed with the same token means a retried ack and returns success; a missing job is `NOT_FOUND`; anything else means the lease was lost, and the server returns `FAILED_PRECONDITION`. An ack that arrives after `lease_expires_at` but before the reaper has run still succeeds: nobody else holds the job, so accepting it is safe and avoids a needless retry. Heartbeats follow the same rule.
 
 **Nack and expiry** use the same retry rule. If `attempts < max_attempts`, the job goes back to `available` with `run_at = now() + backoff(attempts)`; otherwise it becomes `dead` with `last_error` set. A worker may pass an explicit `retry_at` (for example, from a downstream `Retry-After` header) to override the backoff.
 

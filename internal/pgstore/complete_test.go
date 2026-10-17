@@ -29,7 +29,8 @@ func TestAckCompletesJob(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, store.StateCompleted, got.State)
 	require.False(t, got.FinishedAt.IsZero())
-	require.Equal(t, uuid.Nil, got.LeaseToken)
+	require.Equal(t, j.LeaseToken, got.LeaseToken, "the completing token is kept for idempotent acks")
+	require.True(t, got.LeaseExpiresAt.IsZero())
 }
 
 func TestAckRequiresCurrentToken(t *testing.T) {
@@ -42,7 +43,33 @@ func TestAckRequiresCurrentToken(t *testing.T) {
 	require.ErrorIs(t, s.Ack(ctx, j.ID, uuid.New()), store.ErrLeaseLost)
 	require.ErrorIs(t, s.Ack(ctx, math.MaxInt64, j.LeaseToken), store.ErrNotFound)
 	require.NoError(t, s.Ack(ctx, j.ID, j.LeaseToken))
-	require.ErrorIs(t, s.Ack(ctx, j.ID, j.LeaseToken), store.ErrLeaseLost, "double ack")
+}
+
+// A worker whose Ack response was lost retries it; the retry must succeed
+// (design §6, retry safety), but nobody else may "complete" the job again.
+func TestAckIsIdempotent(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	j := mustLeaseOne(t, s, "emails", 0)
+
+	require.NoError(t, s.Ack(ctx, j.ID, j.LeaseToken))
+	require.NoError(t, s.Ack(ctx, j.ID, j.LeaseToken), "repeated ack with the same token")
+	require.ErrorIs(t, s.Ack(ctx, j.ID, uuid.New()), store.ErrLeaseLost, "another token on a completed job")
+}
+
+// Only completed jobs keep their token: a nacked or reaped job clears it, so an
+// ack with the old token is still rejected.
+func TestAckAfterNackIsRejected(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails", MaxAttempts: 1})
+	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	j := mustLeaseOne(t, s, "emails", 0)
+
+	require.NoError(t, s.Nack(ctx, j.ID, j.LeaseToken, "boom", nil)) // out of attempts: dead
+	require.ErrorIs(t, s.Ack(ctx, j.ID, j.LeaseToken), store.ErrLeaseLost)
 }
 
 // A late ack is accepted while nobody else holds the job (design §5).
