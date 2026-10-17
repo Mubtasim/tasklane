@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -28,6 +29,22 @@ func newHandler(t *testing.T, e *env, ready func(context.Context) error) http.Ha
 	h, err := NewHTTPHandler(context.Background(), e.conn, ready, e.keys)
 	require.NoError(t, err)
 	return h
+}
+
+// callRaw sends a request and returns the response with its body read.
+func callRaw(t *testing.T, method, url, key, body string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	require.NoError(t, err)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp, string(raw)
 }
 
 // call sends a request and returns the status and the decoded JSON body (nil
@@ -89,6 +106,8 @@ func TestHTTPGatewayErrorStatuses(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 
 	code, _ = call(t, "GET", base+"/v1/queues/emails", "", "")
+	require.Equal(t, http.StatusUnauthorized, code, "missing key")
+	code, _ = call(t, "GET", base+"/v1/queues/emails", "wrong", "")
 	require.Equal(t, http.StatusUnauthorized, code, "the Authorization header is forwarded and checked")
 
 	code, body := call(t, "POST", base+"/v1/queues/nope:lease", "secret", `{}`)
@@ -127,4 +146,54 @@ func TestHealthAndReadiness(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, code)
 	code, _ = call(t, "GET", base+"/healthz", "", "")
 	require.Equal(t, http.StatusOK, code, "liveness doesn't depend on the database")
+}
+
+func TestHTTPEnqueueBatch(t *testing.T) {
+	e := newEnv(t, []string{"secret"})
+	base := newHTTP(t, e, func(context.Context) error { return nil })
+	code, _ := call(t, "POST", base+"/v1/queues", "secret", `{"name":"emails"}`)
+	require.Equal(t, http.StatusOK, code)
+
+	code, body := call(t, "POST", base+"/v1/queues/emails/jobs:batch", "secret",
+		`{"jobs":[{"kind":"a","idempotency_key":"z"},{"kind":"b"},{"kind":"c","idempotency_key":"z"}]}`)
+	require.Equal(t, http.StatusOK, code)
+	results := body["results"].([]any)
+	require.Len(t, results, 3)
+	first, third := results[0].(map[string]any), results[2].(map[string]any)
+	require.Equal(t, true, first["created"])
+	require.Equal(t, false, third["created"])
+	require.Equal(t, first["job_id"], third["job_id"])
+}
+
+// A database that hangs (rather than refusing) must not hang /readyz: the
+// probe gives up after its own 2 s bound.
+func TestReadinessIsBoundedWhenTheDatabaseHangs(t *testing.T) {
+	e := newEnv(t, nil)
+	base := newHTTP(t, e, func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	start := time.Now()
+	code, _ := call(t, "GET", base+"/readyz", "", "")
+	require.Equal(t, http.StatusServiceUnavailable, code)
+	require.Less(t, time.Since(start), 3*time.Second)
+}
+
+func TestHealthEndpointsArePlainText(t *testing.T) {
+	e := newEnv(t, nil)
+	var dbDown atomic.Bool
+	base := newHTTP(t, e, func(context.Context) error {
+		if dbDown.Load() {
+			return errors.New("connection refused")
+		}
+		return nil
+	})
+	for _, down := range []bool{false, true} {
+		dbDown.Store(down)
+		for _, path := range []string{"/healthz", "/readyz"} {
+			resp, _ := callRaw(t, "GET", base+path, "", "")
+			require.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"), path)
+		}
+	}
 }

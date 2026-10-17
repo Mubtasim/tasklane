@@ -57,6 +57,12 @@ func TestCreateQueueRejectsBadSettings(t *testing.T) {
 	}
 	_, err := s.GetQueue(context.Background(), "q")
 	require.ErrorIs(t, err, store.ErrNotFound, "nothing was created")
+
+	// The smallest positive timeout is accepted.
+	mustQueue(t, s, store.Queue{Name: "fast", VisibilityTimeout: time.Millisecond})
+	q, err := s.GetQueue(context.Background(), "fast")
+	require.NoError(t, err)
+	require.Equal(t, time.Millisecond, q.VisibilityTimeout)
 }
 
 func TestCreateQueueRejectsUnsafeNames(t *testing.T) {
@@ -68,6 +74,7 @@ func TestCreateQueueRejectsUnsafeNames(t *testing.T) {
 		{"a/b", false},
 		{"a:b", false},
 		{"has space", false},
+		{"a\n", false}, // a trailing newline must not slip past the anchored pattern
 		{"ünïcode", false},
 		{strings.Repeat("a", 129), false},
 		{"emails", true},

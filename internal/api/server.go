@@ -77,7 +77,11 @@ func (s *Server) CreateQueue(ctx context.Context, req *tasklanev1.CreateQueueReq
 	if err := s.store.CreateQueue(ctx, q); err != nil {
 		return nil, toStatus(s.log, "CreateQueue", err)
 	}
-	return &tasklanev1.CreateQueueResponse{Queue: queueFromStore(q.WithDefaults())}, nil
+	// Answer with the queue as stored, so CreateQueue and GetQueue agree: the
+	// store keeps the visibility timeout in whole milliseconds.
+	stored := q.WithDefaults()
+	stored.VisibilityTimeout = stored.VisibilityTimeout.Truncate(time.Millisecond)
+	return &tasklanev1.CreateQueueResponse{Queue: queueFromStore(stored)}, nil
 }
 
 func (s *Server) GetQueue(ctx context.Context, req *tasklanev1.GetQueueRequest) (*tasklanev1.GetQueueResponse, error) {

@@ -59,6 +59,33 @@ func TestAckIsIdempotent(t *testing.T) {
 	require.ErrorIs(t, s.Ack(ctx, j.ID, uuid.New()), store.ErrLeaseLost, "another token on a completed job")
 }
 
+// Retries of the same ack can race each other (a client retrying on a
+// timeout while the first attempt is still in flight); all of them succeed.
+func TestConcurrentSameTokenAcksAllSucceed(t *testing.T) {
+	s := newStore(t)
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	j := mustLeaseOne(t, s, "emails", 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.Ack(ctx, j.ID, j.LeaseToken); err != nil {
+				t.Errorf("concurrent Ack with the same token = %v, want nil", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	got, err := s.GetJob(ctx, j.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.StateCompleted, got.State)
+}
+
 // Only completed jobs keep their token: a nacked or reaped job clears it, so an
 // ack with the old token is still rejected.
 func TestAckAfterNackIsRejected(t *testing.T) {

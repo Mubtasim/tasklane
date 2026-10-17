@@ -57,6 +57,20 @@ func TestCreateAndGetQueue(t *testing.T) {
 	require.Equal(t, 30*time.Second, got.GetQueue().GetVisibilityTimeout().AsDuration())
 }
 
+// CreateQueue answers with the queue as stored: the store keeps whole
+// milliseconds, so GetQueue must agree with the CreateQueue response.
+func TestCreateQueueEchoesStoredQueue(t *testing.T) {
+	e := newEnv(t, nil)
+	ctx := context.Background()
+
+	created, err := e.client.CreateQueue(ctx, &tasklanev1.CreateQueueRequest{Queue: &tasklanev1.Queue{Name: "q", VisibilityTimeout: durationpb.New(1500 * time.Microsecond)}})
+	require.NoError(t, err)
+	got, err := e.client.GetQueue(ctx, &tasklanev1.GetQueueRequest{Name: "q"})
+	require.NoError(t, err)
+	require.Equal(t, time.Millisecond, got.GetQueue().GetVisibilityTimeout().AsDuration())
+	require.Equal(t, got.GetQueue().GetVisibilityTimeout().AsDuration(), created.GetQueue().GetVisibilityTimeout().AsDuration())
+}
+
 func TestErrorMapping(t *testing.T) {
 	e := newEnv(t, nil)
 	ctx := context.Background()
@@ -184,7 +198,10 @@ func TestLongPollWakesOnEnqueue(t *testing.T) {
 	e.mustQueue(t, "emails")
 
 	enqueued := make(chan time.Time, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() { <-done }) // no t.Error after the test has ended
 	go func() {
+		defer close(done)
 		time.Sleep(300 * time.Millisecond) // let the lease start waiting
 		enqueued <- time.Now()
 		if _, err := e.client.Enqueue(context.Background(), &tasklanev1.EnqueueRequest{Queue: "emails", Job: &tasklanev1.JobSpec{Kind: "welcome"}}); err != nil {
@@ -204,7 +221,8 @@ func TestLongPollRechecksForDelayedJobs(t *testing.T) {
 	e := newEnv(t, nil, WithPollInterval(100*time.Millisecond))
 	e.mustQueue(t, "emails")
 	e.mustEnqueue(t, "emails", &tasklanev1.JobSpec{Kind: "later", RunAt: timestamppb.New(time.Now().Add(300 * time.Millisecond))})
-	// The enqueue's own notification fired before the lease subscribed.
+	// The enqueue's notification fired before the lease started, and the job
+	// isn't due until later: only the periodic re-check can find it.
 
 	start := time.Now()
 	res, err := e.client.Lease(context.Background(), &tasklanev1.LeaseRequest{Queue: "emails", Wait: durationpb.New(5 * time.Second)})
@@ -228,7 +246,10 @@ func TestShutdownEndsWaitingLeases(t *testing.T) {
 	e := newEnv(t, nil)
 	e.mustQueue(t, "emails")
 
+	done := make(chan struct{})
+	t.Cleanup(func() { <-done })
 	go func() {
+		defer close(done)
 		time.Sleep(200 * time.Millisecond)
 		e.server.Shutdown()
 	}()

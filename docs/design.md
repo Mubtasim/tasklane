@@ -166,7 +166,7 @@ FROM next WHERE j.id = next.id
 RETURNING j.*;
 ```
 
-**Ack:** `UPDATE jobs SET state = 'completed', finished_at = now(), lease_expires_at = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2`. The completed row keeps its `lease_token`, so when zero rows are updated the server reads the job on the same connection: completed with the same token means a retried ack and returns success; a missing job is `NOT_FOUND`; anything else means the lease was lost, and the server returns `FAILED_PRECONDITION`. An ack that arrives after `lease_expires_at` but before the reaper has run still succeeds: nobody else holds the job, so accepting it is safe and avoids a needless retry. Heartbeats follow the same rule.
+**Ack:** `UPDATE jobs SET state = 'completed', finished_at = now(), lease_expires_at = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2`. The completed row keeps its `lease_token`, so when zero rows are updated the server re-reads the job: completed with the same token means a retried ack and returns success; a missing job is `NOT_FOUND`; anything else means the lease was lost, and the server returns `FAILED_PRECONDITION`. An ack that arrives after `lease_expires_at` but before the reaper has run still succeeds: nobody else holds the job, so accepting it is safe and avoids a needless retry. Heartbeats follow the same rule.
 
 **Nack and expiry** use the same retry rule. If `attempts < max_attempts`, the job goes back to `available` with `run_at = now() + backoff(attempts)`; otherwise it becomes `dead` with `last_error` set. A worker may pass an explicit `retry_at` (for example, from a downstream `Retry-After` header) to override the backoff.
 
@@ -216,6 +216,8 @@ Each server holds one dedicated `LISTEN` connection. If it drops, the server rec
 
 **Leasing from an unknown queue** returns `NOT_FOUND` (an empty result means "nothing runnable right now").
 
+**Limits.** A job's payload is at most 256 KiB, measured as encoded JSON; `kind` and `idempotency_key` are at most 255 bytes and `trace_context` at most 512. Larger values are `INVALID_ARGUMENT` (a value that still exceeds a database limit, SQLSTATE 54000, maps there too). gRPC messages are limited to 16 MiB in both directions, on the server and on the gateway's connection to it, and HTTP request bodies to the same 16 MiB (larger bodies get 413). `Lease` clamps `max_jobs` to 50 without an error, so a full lease of maximum-size payloads fits in one response. A `Nack` error message longer than 4 KiB is truncated (at a UTF-8 character boundary), not rejected. A long-polling client's request timeout must exceed `wait` plus a margin for the round trip. A lease that commits but whose response never reaches the worker costs that job one attempt: the job comes back when its visibility timeout expires.
+
 Queue names are 1–128 characters from [A-Za-z0-9._-], so they are safe in URL paths.
 
 **Errors**
@@ -238,7 +240,7 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 - *Producer side:* `Enqueue` checks the queue's depth (`available + leased`) against `max_depth`. To avoid a `COUNT(*)` on every call, each server refreshes each queue's depth once a second (one count over the partial indexes) and checks against that cached value, so the limit is soft (it can overshoot by about one second of traffic). The docs state this.
 - *Worker side:* `LeaseStream` is credit-based. The server never sends more jobs than the worker has granted credits for, so a slow worker is never flooded.
 
-**Auth:** a static API key per client, sent as `authorization: Bearer <key>` (gRPC metadata or HTTP header) and configured with `TASKLANE_API_KEYS` (comma-separated). With no keys configured, auth is disabled and the server logs a warning at startup. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
+**Auth:** a static API key per client, sent as `authorization: Bearer <key>` (gRPC metadata or HTTP header; the scheme is case-insensitive) and configured with `TASKLANE_API_KEYS` (comma-separated). With no keys configured, auth is disabled and the server logs a warning at startup. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
 
 **SDKs:** Go (`github.com/mubtasim/tasklane/sdk/go`), TypeScript (`@mubtasim/tasklane`) and C# (`Tasklane.Client` on NuGet). Each provides a producer client and a worker runner that handles leasing, concurrency, heartbeats, ack/nack, retrying the server connection with backoff, and graceful shutdown.
 
@@ -314,3 +316,5 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M3 | mid-Dec | Pruner, DLQ listing and redrive, cancel, backpressure, `LeaseStream` |
 | M4 | end of Dec | Metrics, tracing, Grafana dashboard, chaos and invariant tests |
 | M5 | mid-Jan 2027 | TS and C# SDKs, load tests and benchmark report, v1.0.0 release and a blog post |
+
+Notes for M3: like `Enqueue`, `RedriveJobs` and `CancelJob` must send `pg_notify('tasklane_jobs', queue)` inside their transaction whenever they change which jobs are runnable (redrive always does), or waiting leases only notice at their next one-second re-check. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.

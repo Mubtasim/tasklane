@@ -125,7 +125,8 @@ type Store interface {
 	// no error; an unknown queue returns ErrNotFound.
 	Lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]Job, error)
 
-	// Ack, Nack and Heartbeat require the job's current lease token. They
+	// Ack, Nack and Heartbeat require the job's current lease token (Ack also
+	// accepts the token that completed a completed job; see Ack). They
 	// return ErrLeaseLost if the job exists but the token is stale, and
 	// ErrNotFound if the job does not exist.
 

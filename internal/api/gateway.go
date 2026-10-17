@@ -39,15 +39,17 @@ func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(conte
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := ready(ctx); err != nil {
-			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Write([]byte("ok\n"))
 	})
 	mux.Handle("/", limitGateway(gw, len(keys) > 0))

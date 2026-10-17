@@ -74,4 +74,9 @@ func TestStalledWorkerCannotAckAfterReassignment(t *testing.T) {
 	require.NotEqual(t, a.LeaseToken, b.LeaseToken)
 	require.ErrorIs(t, s.Ack(ctx, a.ID, a.LeaseToken), store.ErrLeaseLost, "A's token is fenced off")
 	require.NoError(t, s.Ack(ctx, b.ID, b.LeaseToken))
+
+	// Once B has completed the job, A's old token is still rejected and B's
+	// retried ack still succeeds.
+	require.ErrorIs(t, s.Ack(ctx, a.ID, a.LeaseToken), store.ErrLeaseLost, "A's token after B completed")
+	require.NoError(t, s.Ack(ctx, b.ID, b.LeaseToken), "B's repeated ack")
 }
