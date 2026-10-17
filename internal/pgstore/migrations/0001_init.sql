@@ -1,0 +1,39 @@
+CREATE TABLE queues (
+    name                  text PRIMARY KEY,
+    max_depth             bigint  NOT NULL CHECK (max_depth > 0),
+    visibility_timeout_ms bigint  NOT NULL CHECK (visibility_timeout_ms > 0),
+    max_attempts          int     NOT NULL CHECK (max_attempts > 0),
+    paused                boolean NOT NULL DEFAULT false,
+    created_at            timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TYPE job_state AS ENUM ('available', 'leased', 'completed', 'dead', 'cancelled');
+
+-- fillfactor 70 is a hypothesis: spare room on each page may reduce page splits
+-- and bloat. State transitions change indexed columns, so they are not HOT
+-- updates. The load test measures the HOT ratio (n_tup_hot_upd) and bloat, and
+-- autovacuum settings are tuned there.
+CREATE TABLE jobs (
+    id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    queue            text      NOT NULL REFERENCES queues(name),
+    kind             text      NOT NULL,
+    payload          jsonb     NOT NULL DEFAULT '{}',
+    priority         smallint  NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 4),
+    state            job_state NOT NULL DEFAULT 'available',
+    run_at           timestamptz NOT NULL DEFAULT now(),
+    attempts         int       NOT NULL DEFAULT 0,
+    max_attempts     int       NOT NULL CHECK (max_attempts > 0),
+    last_error       text,
+    lease_token      uuid,
+    lease_expires_at timestamptz,
+    idempotency_key  text,
+    trace_context    text,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    finished_at      timestamptz
+) WITH (fillfactor = 70);
+
+CREATE INDEX jobs_available ON jobs (queue, priority, run_at, id) WHERE state = 'available';
+CREATE INDEX jobs_leased ON jobs (lease_expires_at) WHERE state = 'leased';
+CREATE UNIQUE INDEX jobs_idempotency ON jobs (queue, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX jobs_finished ON jobs (finished_at) WHERE state IN ('completed', 'cancelled');
+CREATE INDEX jobs_dead ON jobs (queue, finished_at) WHERE state = 'dead';

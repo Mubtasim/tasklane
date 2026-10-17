@@ -26,7 +26,7 @@ Key concepts used throughout this document:
 - Durable jobs: an acknowledged enqueue is never lost while Postgres is intact.
 - At-least-once delivery, with duplicates only after a lease expiry or a crash.
 - Retries with exponential backoff and full jitter; a DLQ with inspect and redrive.
-- Delayed jobs (`run_at`) and four strict priority levels.
+- Delayed jobs (`run_at`) and four strict priority levels (1 critical … 4 low; 0 means unspecified and is stored as 3, the default).
 - Idempotent enqueue.
 - Backpressure on both the producer and the worker side.
 - Stateless servers: run one or many copies behind a load balancer.
@@ -68,12 +68,15 @@ Key concepts used throughout this document:
 ```go
 type Store interface {
     Enqueue(ctx context.Context, jobs []NewJob) ([]EnqueueResult, error)
-    Lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]LeasedJob, error)
+    Lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]Job, error) // Job carries LeaseToken and LeaseExpiresAt
     Ack(ctx context.Context, id int64, token uuid.UUID) error
     Nack(ctx context.Context, id int64, token uuid.UUID, errMsg string, retryAt *time.Time) error
     Heartbeat(ctx context.Context, id int64, token uuid.UUID, ttl time.Duration) (time.Time, error)
     ReapExpired(ctx context.Context, limit int) (int, error)
-    // plus Get, Cancel, ListDead, Redrive, queue CRUD, PruneCompleted
+    CreateQueue(ctx context.Context, q Queue) error
+    GetQueue(ctx context.Context, name string) (Queue, error)
+    GetJob(ctx context.Context, id int64) (Job, error)
+    // plus Cancel, ListDead, Redrive, PruneCompleted later
 }
 ```
 
@@ -82,11 +85,11 @@ type Store interface {
 ```sql
 CREATE TABLE queues (
     name               text PRIMARY KEY,
-    max_depth          bigint   NOT NULL DEFAULT 100000,   -- backpressure threshold (available + leased)
-    visibility_timeout interval NOT NULL DEFAULT '30 seconds',
-    max_attempts       int      NOT NULL DEFAULT 10,
-    paused             boolean  NOT NULL DEFAULT false,
-    created_at         timestamptz NOT NULL DEFAULT now()
+    max_depth             bigint  NOT NULL CHECK (max_depth > 0),   -- backpressure threshold (available + leased)
+    visibility_timeout_ms bigint  NOT NULL CHECK (visibility_timeout_ms > 0),
+    max_attempts          int     NOT NULL CHECK (max_attempts > 0),
+    paused                boolean NOT NULL DEFAULT false,
+    created_at            timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TYPE job_state AS ENUM ('available', 'leased', 'completed', 'dead', 'cancelled');
@@ -96,7 +99,7 @@ CREATE TABLE jobs (
     queue            text      NOT NULL REFERENCES queues(name),
     kind             text      NOT NULL,
     payload          jsonb     NOT NULL DEFAULT '{}',
-    priority         smallint  NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 3), -- 0 critical … 3 low
+    priority         smallint  NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 4), -- 1 critical … 4 low; 0 = unspecified, stored as 3
     state            job_state NOT NULL DEFAULT 'available',
     run_at           timestamptz NOT NULL DEFAULT now(),
     attempts         int       NOT NULL DEFAULT 0,
@@ -122,11 +125,13 @@ CREATE INDEX jobs_dead ON jobs (queue, finished_at) WHERE state = 'dead';
 ```
 
 Decisions:
+- **Queue defaults (100000, 30 s, 10) are applied in Go** (`store.Queue.WithDefaults`), not as column defaults.
 - **No "scheduled" state.** A delayed job and a job waiting to retry are both `available` with a future `run_at`. One mechanism covers both.
 - **Idempotent enqueue is race-free.** Enqueue uses `INSERT … ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id`; when nothing is returned, it reads the existing job and replies with `created = false`.
 - **The DLQ is a state, not a table.** Redrive sets `state = 'available'`, `attempts = 0`, `run_at = now()`.
 - **Idempotency keys live as long as the job row.** Once a completed job is pruned, its key can be reused. The retention window (default 24 h) is the deduplication window, and the docs say so.
-- **Table churn.** Queue tables see constant updates and deletes. The table gets `fillfactor = 70` to allow HOT updates and more aggressive autovacuum settings; the load test measures their effect.
+- **Table churn.** Queue tables see constant updates and deletes. State transitions change indexed columns (`state` appears in partial-index predicates; `run_at`, `lease_expires_at` and `finished_at` are indexed), so they are not HOT updates. `fillfactor = 70` is a hypothesis to reduce page splits and bloat. The load test measures the HOT ratio (`pg_stat_user_tables.n_tup_hot_upd`) and bloat, and autovacuum settings are tuned during the load test.
+- **Durations are stored as milliseconds** (bigint), which map directly to Go's time.Duration.
 
 ## 5. Job lifecycle
 
@@ -144,24 +149,27 @@ Enqueue ──▶ available ──Lease──▶ leased ──Ack──▶ compl
 
 ```sql
 WITH next AS (
-    SELECT id FROM jobs
-    WHERE queue = $1 AND state = 'available' AND run_at <= now()
-    ORDER BY priority, run_at, id
+    SELECT j.id FROM jobs j
+    JOIN queues q ON q.name = j.queue
+    WHERE j.queue = $1 AND j.state = 'available' AND j.run_at <= now() AND NOT q.paused
+    ORDER BY j.priority, j.run_at, j.id
     LIMIT $2
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE OF j SKIP LOCKED
 )
 UPDATE jobs j
-SET state = 'leased', attempts = attempts + 1,
-    lease_token = gen_random_uuid(), lease_expires_at = now() + $3
+SET state = 'leased', attempts = j.attempts + 1,
+    lease_token = gen_random_uuid(),
+    lease_expires_at = now() + interval '1 millisecond' *
+        coalesce($3::bigint, (SELECT visibility_timeout_ms FROM queues WHERE name = $1))
 FROM next WHERE j.id = next.id
 RETURNING j.*;
 ```
 
-**Ack:** `UPDATE jobs SET state = 'completed', finished_at = now(), lease_token = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2`. Zero rows updated means the lease was lost, and the server returns `FAILED_PRECONDITION`. An ack that arrives after `lease_expires_at` but before the reaper has run still succeeds: nobody else holds the job, so accepting it is safe and avoids a needless retry. Heartbeats follow the same rule.
+**Ack:** `UPDATE jobs SET state = 'completed', finished_at = now(), lease_token = NULL, lease_expires_at = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2`. Zero rows updated means the lease was lost, and the server returns `FAILED_PRECONDITION`. An ack that arrives after `lease_expires_at` but before the reaper has run still succeeds: nobody else holds the job, so accepting it is safe and avoids a needless retry. Heartbeats follow the same rule.
 
 **Nack and expiry** use the same retry rule. If `attempts < max_attempts`, the job goes back to `available` with `run_at = now() + backoff(attempts)`; otherwise it becomes `dead` with `last_error` set. A worker may pass an explicit `retry_at` (for example, from a downstream `Retry-After` header) to override the backoff.
 
-**Backoff:** full jitter, `delay = random(0, min(cap, base · 2^attempts))`, with `base = 1 s` and `cap = 1 h` by default.
+**Backoff:** full jitter, `delay = random(0, min(cap, base · 2^attempts))`, with `base = 1 s` and `cap = 1 h` by default. `attempts` is incremented at lease, so the first retry's ceiling is `base · 2` (up to 2 s with a 1 s base).
 
 **An expired lease counts as a failed attempt**, so a job that crashes its worker every time reaches the DLQ instead of looping forever.
 
@@ -169,7 +177,7 @@ RETURNING j.*;
 
 **Pruner:** deletes `completed` and `cancelled` jobs older than the retention period, in batches. Dead jobs are kept until they are redriven or deleted through the admin API.
 
-**Priorities are strict.** A steady stream of priority-0 work starves priority-3 jobs. This is a deliberate v1 trade-off; the fix (aging, i.e. raising a job's effective priority as it waits) is planned for v1.1.
+**Priorities are strict.** A steady stream of priority-1 (critical) work starves priority-4 (low) jobs. This is a deliberate v1 trade-off; the fix (aging, i.e. raising a job's effective priority as it waits) is planned for v1.1.
 
 **Paused queues** accept enqueues but return no leases.
 
@@ -179,7 +187,7 @@ One `proto/tasklane/v1/tasklane.proto` generates the gRPC server, the HTTP/JSON 
 
 | RPC | HTTP (gateway) | Notes |
 |---|---|---|
-| `Enqueue` | `POST /v1/queues/{queue}/jobs` | kind, payload, priority, run_at, idempotency_key, max_attempts; returns `job_id`, `created` |
+| `Enqueue` | `POST /v1/queues/{queue}/jobs` | kind, payload, priority (1 critical … 4 low; 0 = unspecified, stored as 3), run_at, idempotency_key, max_attempts; returns `job_id`, `created` |
 | `EnqueueBatch` | `POST /v1/queues/{queue}/jobs:batch` | Up to 1,000 jobs in one transaction |
 | `Lease` | `POST /v1/queues/{queue}:lease` | `max_jobs`, `wait` (long poll, ≤ 30 s), optional `visibility_timeout` |
 | `LeaseStream` | gRPC only | Bidirectional: the worker sends capacity credits, the server pushes jobs |
@@ -191,6 +199,8 @@ One `proto/tasklane/v1/tasklane.proto` generates the gRPC server, the HTTP/JSON 
 | `ListDeadJobs` | `GET /v1/queues/{queue}/dead` | Paginated |
 | `RedriveJobs` | `POST /v1/queues/{queue}/dead:redrive` | By IDs or all |
 | `CreateQueue`, `UpdateQueue`, `GetQueue`, `ListQueues` | `/v1/queues…` | Settings and live counts |
+
+The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY_CRITICAL = 1` … `PRIORITY_LOW = 4`, so an unset field becomes the default rather than critical.
 
 **Errors**
 
