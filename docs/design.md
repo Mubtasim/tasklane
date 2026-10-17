@@ -83,7 +83,7 @@ type Store interface {
 CREATE TABLE queues (
     name               text PRIMARY KEY,
     max_depth          bigint   NOT NULL DEFAULT 100000,   -- backpressure threshold (available + leased)
-    visibility_timeout interval NOT NULL DEFAULT '30 seconds',
+    visibility_timeout_ms bigint NOT NULL DEFAULT 30000,
     max_attempts       int      NOT NULL DEFAULT 10,
     paused             boolean  NOT NULL DEFAULT false,
     created_at         timestamptz NOT NULL DEFAULT now()
@@ -127,6 +127,7 @@ Decisions:
 - **The DLQ is a state, not a table.** Redrive sets `state = 'available'`, `attempts = 0`, `run_at = now()`.
 - **Idempotency keys live as long as the job row.** Once a completed job is pruned, its key can be reused. The retention window (default 24 h) is the deduplication window, and the docs say so.
 - **Table churn.** Queue tables see constant updates and deletes. The table gets `fillfactor = 70` to allow HOT updates and more aggressive autovacuum settings; the load test measures their effect.
+- **Durations are stored as milliseconds** (bigint), which map directly to Go's time.Duration.
 
 ## 5. Job lifecycle
 
