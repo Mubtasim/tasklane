@@ -172,13 +172,20 @@ func jobFromStore(j store.Job, withToken bool) (*tasklanev1.Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	state, ok := stateFromStore[j.State]
+	if !ok {
+		return nil, fmt.Errorf("job %d has unknown state %q", j.ID, j.State)
+	}
+	if j.Priority < store.PriorityCritical || j.Priority > store.PriorityLow {
+		return nil, fmt.Errorf("job %d has invalid priority %d", j.ID, j.Priority)
+	}
 	out := &tasklanev1.Job{
 		Id:             j.ID,
 		Queue:          j.Queue,
 		Kind:           j.Kind,
 		Payload:        payload,
 		Priority:       tasklanev1.Priority(j.Priority),
-		State:          stateFromStore[j.State],
+		State:          state,
 		RunAt:          timeFromStore(j.RunAt),
 		Attempts:       int32(j.Attempts),
 		MaxAttempts:    int32(j.MaxAttempts),

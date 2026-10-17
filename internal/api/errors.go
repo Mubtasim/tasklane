@@ -35,13 +35,15 @@ func toStatus(log *slog.Logger, method string, err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, store.ErrAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case isUnavailable(err):
+		// Before the context cases: pgconn wraps connect timeouts so that
+		// errors.Is(err, context.DeadlineExceeded) is true for them too.
+		log.Warn("database unavailable", "method", method, "err", err)
+		return status.Error(codes.Unavailable, "database unavailable")
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, "deadline exceeded")
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, "request cancelled")
-	case isUnavailable(err):
-		log.Warn("database unavailable", "method", method, "err", err)
-		return status.Error(codes.Unavailable, "database unavailable")
 	}
 	log.Error("internal error", "method", method, "err", err)
 	return status.Error(codes.Internal, "internal error")
@@ -51,11 +53,13 @@ func toStatus(log *slog.Logger, method string, err error) error {
 // now": a retry later may succeed.
 func isUnavailable(err error) bool {
 	var connectErr *pgconn.ConnectError
-	if errors.As(err, &connectErr) || pgconn.Timeout(err) {
+	if errors.As(err, &connectErr) {
 		return true
 	}
+	// context.DeadlineExceeded is itself a net.Error; a bare one is the
+	// caller's deadline, not an unreachable database.
 	var netErr net.Error
-	if errors.As(err, &netErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+	if (errors.As(err, &netErr) && !errors.Is(err, context.DeadlineExceeded)) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 	var pgErr *pgconn.PgError

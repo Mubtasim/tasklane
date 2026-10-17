@@ -112,3 +112,45 @@ func TestQueueConversion(t *testing.T) {
 	_, err = queueToStore(nil)
 	requireCode(t, codes.InvalidArgument, err)
 }
+
+func TestJobFromStoreRejectsUnknownValues(t *testing.T) {
+	_, err := jobFromStore(store.Job{ID: 1, State: "bogus", Priority: store.PriorityHigh}, false)
+	require.Error(t, err)
+	_, err = jobFromStore(store.Job{ID: 1, State: store.StateAvailable, Priority: 0}, false)
+	require.Error(t, err)
+	_, err = jobFromStore(store.Job{ID: 1, State: store.StateAvailable, Priority: 5}, false)
+	require.Error(t, err)
+}
+
+func TestJobFromStoreOmitsNilToken(t *testing.T) {
+	j, err := jobFromStore(store.Job{ID: 1, State: store.StateAvailable, Priority: store.PriorityDefault}, true)
+	require.NoError(t, err)
+	require.Empty(t, j.GetLeaseToken())
+}
+
+func TestJobSpecToStore(t *testing.T) {
+	_, err := jobSpecToStore("q", nil)
+	requireCode(t, codes.InvalidArgument, err)
+
+	_, err = jobSpecToStore("q", &tasklanev1.JobSpec{Kind: "k", Priority: tasklanev1.Priority(9)})
+	requireCode(t, codes.InvalidArgument, err)
+
+	_, err = jobSpecToStore("q", &tasklanev1.JobSpec{Kind: "k", RunAt: &timestamppb.Timestamp{Seconds: -1 << 62}})
+	requireCode(t, codes.InvalidArgument, err)
+
+	nj, err := jobSpecToStore("q", &tasklanev1.JobSpec{Kind: "k", Priority: tasklanev1.Priority_PRIORITY_LOW, MaxAttempts: 2, IdempotencyKey: "i"})
+	require.NoError(t, err)
+	require.Equal(t, "q", nj.Queue)
+	require.Equal(t, store.PriorityLow, nj.Priority)
+	require.Equal(t, 2, nj.MaxAttempts)
+}
+
+func TestPayloadFromStoreEmptyAndNull(t *testing.T) {
+	s, err := payloadFromStore(nil)
+	require.NoError(t, err)
+	require.Empty(t, s.AsMap())
+
+	s, err = payloadFromStore(json.RawMessage(`null`))
+	require.Error(t, err, "null is not an object")
+	require.Nil(t, s)
+}
