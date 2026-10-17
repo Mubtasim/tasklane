@@ -17,7 +17,13 @@ import (
 
 func (e *env) mustQueue(t *testing.T, name string) {
 	t.Helper()
-	_, err := e.client.CreateQueue(context.Background(), &tasklanev1.CreateQueueRequest{Queue: &tasklanev1.Queue{Name: name}})
+	e.mustQueueCtx(t, context.Background(), name)
+}
+
+// mustQueueCtx creates a queue with ctx, which may carry an API key.
+func (e *env) mustQueueCtx(t *testing.T, ctx context.Context, name string) {
+	t.Helper()
+	_, err := e.client.CreateQueue(ctx, &tasklanev1.CreateQueueRequest{Queue: &tasklanev1.Queue{Name: name}})
 	require.NoError(t, err)
 }
 

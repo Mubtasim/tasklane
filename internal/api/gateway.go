@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -19,7 +21,11 @@ import (
 // gateway passes the Authorization header on as "authorization" metadata),
 // plus /healthz (the process is up) and /readyz (ready reports the database
 // reachable).
-func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(context.Context) error) (http.Handler, error) {
+//
+// Gateway request bodies are limited to MaxMessageBytes (413 beyond it). With
+// keys configured, a gateway request without an Authorization header gets a
+// 401 before its body is read; the gRPC interceptor still checks the key.
+func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(context.Context) error, keys []string) (http.Handler, error) {
 	gw := runtime.NewServeMux(
 		runtime.WithErrorHandler(errorHandler),
 		// JSON field names as in the proto and the design doc (job_id, lease_token).
@@ -44,14 +50,62 @@ func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(conte
 		}
 		w.Write([]byte("ok\n"))
 	})
-	mux.Handle("/", gw)
+	mux.Handle("/", limitGateway(gw, len(keys) > 0))
 	return mux, nil
+}
+
+// limitGateway rejects unauthenticated requests early (when auth is on) and
+// caps the request body at MaxMessageBytes.
+func limitGateway(gw *runtime.ServeMux, requireAuth bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requireAuth && r.Header.Get("Authorization") == "" {
+			writeError(gw, w, r, status.Error(codes.Unauthenticated, "missing API key"), 0)
+			return
+		}
+		if r.ContentLength > MaxMessageBytes {
+			writeError(gw, w, r, errBodyTooLarge, http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = &limitedBody{ReadCloser: http.MaxBytesReader(w, r.Body, MaxMessageBytes)}
+		gw.ServeHTTP(w, r)
+	})
+}
+
+var errBodyTooLarge = status.Errorf(codes.InvalidArgument, "request body exceeds %d bytes", MaxMessageBytes)
+
+// limitedBody remembers that the body hit its limit: the gateway reports any
+// decode error as INVALID_ARGUMENT, and errorHandler turns this case into 413.
+type limitedBody struct {
+	io.ReadCloser
+	tooLarge bool
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		b.tooLarge = true
+	}
+	return n, err
+}
+
+// writeError writes err in the gateway's JSON error format, with httpStatus
+// overriding the status code's default mapping when it is non-zero.
+func writeError(gw *runtime.ServeMux, w http.ResponseWriter, r *http.Request, err error, httpStatus int) {
+	if httpStatus != 0 {
+		err = &runtime.HTTPStatusError{HTTPStatus: httpStatus, Err: err}
+	}
+	_, outbound := runtime.MarshalerForRequest(gw, r)
+	runtime.DefaultHTTPErrorHandler(r.Context(), gw, outbound, w, r, err)
 }
 
 // errorHandler follows the design's error table: grpc-gateway maps
 // FAILED_PRECONDITION to 400 by default, but a stale lease token is a 409.
+// A body over the limit is a 413, not the gateway's 400 for a decode error.
 func errorHandler(ctx context.Context, mux *runtime.ServeMux, m runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
-	if status.Code(err) == codes.FailedPrecondition {
+	if b, ok := r.Body.(*limitedBody); ok && b.tooLarge {
+		err = &runtime.HTTPStatusError{HTTPStatus: http.StatusRequestEntityTooLarge, Err: errBodyTooLarge}
+	} else if status.Code(err) == codes.FailedPrecondition {
 		err = &runtime.HTTPStatusError{HTTPStatus: http.StatusConflict, Err: err}
 	}
 	runtime.DefaultHTTPErrorHandler(ctx, mux, m, w, r, err)

@@ -116,12 +116,14 @@ func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchR
 // Lease tries once; with wait > 0 and nothing runnable, it waits for a
 // notification for the queue, or the next poll tick, and tries again until
 // the wait elapses. It subscribes before the first try, so a job enqueued
-// between that try and the wait still wakes it.
+// between that try and the wait still wakes it. max_jobs above MaxLeaseJobs
+// is clamped to it silently, so the response fits in MaxMessageBytes.
 func (s *Server) Lease(ctx context.Context, req *tasklanev1.LeaseRequest) (*tasklanev1.LeaseResponse, error) {
 	n := int(req.GetMaxJobs())
 	if n == 0 {
 		n = 1
 	}
+	n = min(n, MaxLeaseJobs) // a negative n still reaches the store's validation
 	wait, err := durationToStore("wait", req.GetWait())
 	if err != nil {
 		return nil, err
@@ -201,7 +203,10 @@ func (s *Server) Nack(ctx context.Context, req *tasklanev1.NackRequest) (*taskla
 		}
 		retryAt = &t
 	}
-	if err := s.store.Nack(ctx, req.GetId(), token, req.GetError(), retryAt); err != nil {
+	// A long error (a stack trace, say) is truncated rather than rejected:
+	// failing the Nack would only leave the job to the reaper.
+	errMsg := truncateUTF8(req.GetError(), maxErrorBytes)
+	if err := s.store.Nack(ctx, req.GetId(), token, errMsg, retryAt); err != nil {
 		return nil, toStatus(s.log, "Nack", err)
 	}
 	return &tasklanev1.NackResponse{}, nil

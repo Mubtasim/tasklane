@@ -75,16 +75,27 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(api.MaxMessageBytes), grpc.MaxCallSendMsgSize(api.MaxMessageBytes)),
+	)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	handler, err := api.NewHTTPHandler(bgCtx, conn, pool.Ping)
+	handler, err := api.NewHTTPHandler(bgCtx, conn, pool.Ping, cfg.APIKeys)
 	if err != nil {
 		return err
 	}
-	httpServer := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	httpServer := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// No WriteTimeout: it runs from the end of the request headers, so it
+		// would cut off long-polling leases (wait up to 30 s) mid-response.
+	}
 
 	errc := make(chan error, 2)
 	go func() { errc <- grpcServer.Serve(grpcLis) }()

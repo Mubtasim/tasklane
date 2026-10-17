@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -141,9 +142,20 @@ func jobSpecToStore(queue string, spec *tasklanev1.JobSpec) (store.NewJob, error
 	if spec == nil {
 		return store.NewJob{}, invalid("job is required")
 	}
+	switch {
+	case len(spec.GetKind()) > maxKindBytes:
+		return store.NewJob{}, invalid("kind must be at most %d bytes", maxKindBytes)
+	case len(spec.GetIdempotencyKey()) > maxIdempotencyKeyBytes:
+		return store.NewJob{}, invalid("idempotency_key must be at most %d bytes", maxIdempotencyKeyBytes)
+	case len(spec.GetTraceContext()) > maxTraceContextBytes:
+		return store.NewJob{}, invalid("trace_context must be at most %d bytes", maxTraceContextBytes)
+	}
 	payload, err := payloadToStore(spec.GetPayload())
 	if err != nil {
 		return store.NewJob{}, err
+	}
+	if len(payload) > MaxPayloadBytes {
+		return store.NewJob{}, invalid("payload must be at most %d bytes as JSON, got %d", MaxPayloadBytes, len(payload))
 	}
 	priority, err := priorityToStore(spec.GetPriority())
 	if err != nil {
@@ -200,4 +212,15 @@ func jobFromStore(j store.Job, withToken bool) (*tasklanev1.Job, error) {
 		out.LeaseToken = j.LeaseToken.String()
 	}
 	return out, nil
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a character.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

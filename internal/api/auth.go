@@ -45,12 +45,17 @@ func validKey(keys []string, key string) bool {
 }
 
 // NewGRPCServer returns a gRPC server with the API registered behind the
-// API-key interceptor. With no keys it logs a warning: auth is disabled.
+// API-key interceptor, sending and receiving messages up to MaxMessageBytes.
+// With no keys it logs a warning: auth is disabled.
 func NewGRPCServer(srv *Server, keys []string, log *slog.Logger) *grpc.Server {
 	if len(keys) == 0 {
 		log.Warn("no API keys configured (TASKLANE_API_KEYS); authentication is disabled")
 	}
-	gs := grpc.NewServer(grpc.ChainUnaryInterceptor(AuthInterceptor(keys)))
+	gs := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(AuthInterceptor(keys)),
+		grpc.MaxRecvMsgSize(MaxMessageBytes),
+		grpc.MaxSendMsgSize(MaxMessageBytes),
+	)
 	tasklanev1.RegisterTasklaneServiceServer(gs, srv)
 	return gs
 }

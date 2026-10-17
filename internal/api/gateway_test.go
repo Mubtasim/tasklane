@@ -17,11 +17,17 @@ import (
 // newHTTP serves the gateway for e over a real HTTP server.
 func newHTTP(t *testing.T, e *env, ready func(context.Context) error) string {
 	t.Helper()
-	h, err := NewHTTPHandler(context.Background(), e.conn, ready)
-	require.NoError(t, err)
-	srv := httptest.NewServer(h)
+	srv := httptest.NewServer(newHandler(t, e, ready))
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// newHandler builds the gateway handler for e, with e's API keys.
+func newHandler(t *testing.T, e *env, ready func(context.Context) error) http.Handler {
+	t.Helper()
+	h, err := NewHTTPHandler(context.Background(), e.conn, ready, e.keys)
+	require.NoError(t, err)
+	return h
 }
 
 // call sends a request and returns the status and the decoded JSON body (nil

@@ -35,6 +35,11 @@ func toStatus(log *slog.Logger, method string, err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, store.ErrAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case isProgramLimitExceeded(err):
+		// A safety net behind the request caps: a value too large for an
+		// index or row is the caller's argument, not a server fault.
+		log.Warn("value exceeds a database limit", "method", method, "err", err)
+		return status.Error(codes.InvalidArgument, "a value exceeds a size limit")
 	case isUnavailable(err):
 		// Before the context cases: pgconn wraps connect timeouts so that
 		// errors.Is(err, context.DeadlineExceeded) is true for them too.
@@ -47,6 +52,13 @@ func toStatus(log *slog.Logger, method string, err error) error {
 	}
 	log.Error("internal error", "method", method, "err", err)
 	return status.Error(codes.Internal, "internal error")
+}
+
+// isProgramLimitExceeded reports SQLSTATE 54000 (program_limit_exceeded),
+// such as an index row over the btree size limit.
+func isProgramLimitExceeded(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "54000"
 }
 
 // isUnavailable reports errors that mean "the database can't be reached right

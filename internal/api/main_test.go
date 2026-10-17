@@ -59,6 +59,7 @@ type env struct {
 	conn   *grpc.ClientConn // for the HTTP gateway tests
 	store  *pgstore.Store
 	server *Server
+	keys   []string
 }
 
 // newEnv resets the database and serves the API over an in-memory connection
@@ -75,6 +76,7 @@ func newEnv(t *testing.T, keys []string, opts ...Option) *env {
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(MaxMessageBytes), grpc.MaxCallSendMsgSize(MaxMessageBytes)),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -82,5 +84,5 @@ func newEnv(t *testing.T, keys []string, opts ...Option) *env {
 		srv.Shutdown()
 		gs.Stop()
 	})
-	return &env{client: tasklanev1.NewTasklaneServiceClient(conn), conn: conn, store: st, server: srv}
+	return &env{client: tasklanev1.NewTasklaneServiceClient(conn), conn: conn, store: st, server: srv, keys: keys}
 }
