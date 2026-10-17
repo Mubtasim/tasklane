@@ -92,15 +92,6 @@ func (s *Store) missingOrLost(ctx context.Context, id int64) error {
 
 // Temporary stubs; Tasks 5-7 replace them and Task 10 checks none remain.
 
-func (s *Store) Ack(ctx context.Context, id int64, token uuid.UUID) error {
-	return errors.New("not implemented")
-}
-func (s *Store) Nack(ctx context.Context, id int64, token uuid.UUID, errMsg string, retryAt *time.Time) error {
-	return errors.New("not implemented")
-}
-func (s *Store) Heartbeat(ctx context.Context, id int64, token uuid.UUID, ttl time.Duration) (time.Time, error) {
-	return time.Time{}, errors.New("not implemented")
-}
 func (s *Store) ReapExpired(ctx context.Context, limit int) (int, error) {
 	return 0, errors.New("not implemented")
 }
