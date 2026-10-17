@@ -64,6 +64,18 @@ func TestLeaseSkipsDelayedAndPausedJobs(t *testing.T) {
 	}
 }
 
+func TestLeaseUnknownQueueIsNotFound(t *testing.T) {
+	s := newStore(t)
+	mustQueue(t, s, store.Queue{Name: "emails"})
+
+	_, err := s.Lease(context.Background(), "nope", 1, 0)
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	jobs, err := s.Lease(context.Background(), "emails", 1, 0)
+	require.NoError(t, err, "an existing but empty queue is not an error")
+	require.Empty(t, jobs)
+}
+
 func TestLeaseRejectsBadBatchSize(t *testing.T) {
 	s := newStore(t)
 	for _, n := range []int{0, 1001} {

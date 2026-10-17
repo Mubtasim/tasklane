@@ -213,6 +213,8 @@ The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY
 
 **Leasing from an unknown queue** returns `NOT_FOUND` (an empty result means "nothing runnable right now").
 
+Queue names are 1–128 characters from [A-Za-z0-9._-], so they are safe in URL paths.
+
 **Errors**
 
 | Situation | gRPC status | HTTP |

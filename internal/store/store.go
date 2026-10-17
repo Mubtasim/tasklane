@@ -104,7 +104,10 @@ type Job struct {
 }
 
 type Store interface {
-	// CreateQueue returns ErrAlreadyExists if the name is taken.
+	// CreateQueue returns ErrAlreadyExists if the name is taken, and
+	// ErrInvalid for an empty or unsafe name (1-128 characters from
+	// [A-Za-z0-9._-]), negative settings or a visibility timeout that is
+	// positive but under 1 ms.
 	CreateQueue(ctx context.Context, q Queue) error
 	// GetQueue returns ErrNotFound for an unknown queue.
 	GetQueue(ctx context.Context, name string) (Queue, error)
@@ -114,8 +117,8 @@ type Store interface {
 	Enqueue(ctx context.Context, jobs []NewJob) ([]EnqueueResult, error)
 
 	// Lease takes up to n runnable jobs, highest priority first. A ttl <= 0
-	// uses the queue's visibility timeout. A paused or unknown queue returns
-	// no jobs and no error.
+	// uses the queue's visibility timeout. A paused queue returns no jobs and
+	// no error; an unknown queue returns ErrNotFound.
 	Lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]Job, error)
 
 	// Ack, Nack and Heartbeat require the job's current lease token. They
