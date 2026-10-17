@@ -9,7 +9,10 @@ CREATE TABLE queues (
 
 CREATE TYPE job_state AS ENUM ('available', 'leased', 'completed', 'dead', 'cancelled');
 
--- fillfactor leaves room on each page so state updates can be HOT updates.
+-- fillfactor 70 is a hypothesis: spare room on each page may reduce page splits
+-- and bloat. State transitions change indexed columns, so they are not HOT
+-- updates. The load test measures the HOT ratio (n_tup_hot_upd) and bloat, and
+-- autovacuum settings are tuned there.
 CREATE TABLE jobs (
     id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     queue            text      NOT NULL REFERENCES queues(name),

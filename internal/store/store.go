@@ -36,9 +36,13 @@ const (
 )
 
 var (
-	ErrNotFound      = errors.New("tasklane: not found")
-	ErrLeaseLost     = errors.New("tasklane: lease lost")
-	ErrInvalid       = errors.New("tasklane: invalid argument")
+	// ErrNotFound means the queue or job does not exist.
+	ErrNotFound = errors.New("tasklane: not found")
+	// ErrLeaseLost means the job exists but the caller's lease token is stale: the lease expired, was reaped or the job is no longer leased.
+	ErrLeaseLost = errors.New("tasklane: lease lost")
+	// ErrInvalid means an argument failed validation.
+	ErrInvalid = errors.New("tasklane: invalid argument")
+	// ErrAlreadyExists means the resource, such as a queue, already exists.
 	ErrAlreadyExists = errors.New("tasklane: already exists")
 )
 
@@ -100,7 +104,9 @@ type Job struct {
 }
 
 type Store interface {
+	// CreateQueue returns ErrAlreadyExists if the name is taken.
 	CreateQueue(ctx context.Context, q Queue) error
+	// GetQueue returns ErrNotFound for an unknown queue.
 	GetQueue(ctx context.Context, name string) (Queue, error)
 
 	// Enqueue inserts jobs atomically, in order. A job whose idempotency key
@@ -108,18 +114,29 @@ type Store interface {
 	Enqueue(ctx context.Context, jobs []NewJob) ([]EnqueueResult, error)
 
 	// Lease takes up to n runnable jobs, highest priority first. A ttl <= 0
-	// uses the queue's visibility timeout.
+	// uses the queue's visibility timeout. A paused or unknown queue returns
+	// no jobs and no error.
 	Lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]Job, error)
 
-	// Ack, Nack and Heartbeat require the job's current lease token and
-	// return ErrLeaseLost otherwise.
+	// Ack, Nack and Heartbeat require the job's current lease token. They
+	// return ErrLeaseLost if the job exists but the token is stale, and
+	// ErrNotFound if the job does not exist.
+
+	// Ack marks the leased job completed.
 	Ack(ctx context.Context, id int64, token uuid.UUID) error
+	// Nack fails the current attempt. A job whose attempts have reached
+	// max_attempts moves to StateDead; otherwise it becomes available again at
+	// retryAt, or after the store's backoff delay when retryAt is nil.
 	Nack(ctx context.Context, id int64, token uuid.UUID, errMsg string, retryAt *time.Time) error
+	// Heartbeat extends the lease and returns the new expiry. A ttl <= 0 uses
+	// the queue's visibility timeout.
 	Heartbeat(ctx context.Context, id int64, token uuid.UUID, ttl time.Duration) (time.Time, error)
 
 	// ReapExpired treats up to limit expired leases as failed attempts and
-	// returns how many it processed.
+	// returns how many it processed. Like Nack, a job whose attempts have
+	// reached max_attempts moves to StateDead instead of being retried.
 	ReapExpired(ctx context.Context, limit int) (int, error)
 
+	// GetJob returns ErrNotFound for an unknown job.
 	GetJob(ctx context.Context, id int64) (Job, error)
 }
