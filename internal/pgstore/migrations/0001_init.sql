@@ -15,7 +15,7 @@ CREATE TABLE jobs (
     queue            text      NOT NULL REFERENCES queues(name),
     kind             text      NOT NULL,
     payload          jsonb     NOT NULL DEFAULT '{}',
-    priority         smallint  NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 3),
+    priority         smallint  NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 4),
     state            job_state NOT NULL DEFAULT 'available',
     run_at           timestamptz NOT NULL DEFAULT now(),
     attempts         int       NOT NULL DEFAULT 0,

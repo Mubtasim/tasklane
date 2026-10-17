@@ -26,7 +26,7 @@ Key concepts used throughout this document:
 - Durable jobs: an acknowledged enqueue is never lost while Postgres is intact.
 - At-least-once delivery, with duplicates only after a lease expiry or a crash.
 - Retries with exponential backoff and full jitter; a DLQ with inspect and redrive.
-- Delayed jobs (`run_at`) and four strict priority levels.
+- Delayed jobs (`run_at`) and four strict priority levels (1 critical … 4 low; 0 means unspecified and is stored as 3, the default).
 - Idempotent enqueue.
 - Backpressure on both the producer and the worker side.
 - Stateless servers: run one or many copies behind a load balancer.
@@ -96,7 +96,7 @@ CREATE TABLE jobs (
     queue            text      NOT NULL REFERENCES queues(name),
     kind             text      NOT NULL,
     payload          jsonb     NOT NULL DEFAULT '{}',
-    priority         smallint  NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 3), -- 0 critical … 3 low
+    priority         smallint  NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 4), -- 1 critical … 4 low; 0 = unspecified, stored as 3
     state            job_state NOT NULL DEFAULT 'available',
     run_at           timestamptz NOT NULL DEFAULT now(),
     attempts         int       NOT NULL DEFAULT 0,
@@ -170,7 +170,7 @@ RETURNING j.*;
 
 **Pruner:** deletes `completed` and `cancelled` jobs older than the retention period, in batches. Dead jobs are kept until they are redriven or deleted through the admin API.
 
-**Priorities are strict.** A steady stream of priority-0 work starves priority-3 jobs. This is a deliberate v1 trade-off; the fix (aging, i.e. raising a job's effective priority as it waits) is planned for v1.1.
+**Priorities are strict.** A steady stream of priority-1 (critical) work starves priority-4 (low) jobs. This is a deliberate v1 trade-off; the fix (aging, i.e. raising a job's effective priority as it waits) is planned for v1.1.
 
 **Paused queues** accept enqueues but return no leases.
 
@@ -180,7 +180,7 @@ One `proto/tasklane/v1/tasklane.proto` generates the gRPC server, the HTTP/JSON 
 
 | RPC | HTTP (gateway) | Notes |
 |---|---|---|
-| `Enqueue` | `POST /v1/queues/{queue}/jobs` | kind, payload, priority, run_at, idempotency_key, max_attempts; returns `job_id`, `created` |
+| `Enqueue` | `POST /v1/queues/{queue}/jobs` | kind, payload, priority (1 critical … 4 low; 0 = unspecified, stored as 3), run_at, idempotency_key, max_attempts; returns `job_id`, `created` |
 | `EnqueueBatch` | `POST /v1/queues/{queue}/jobs:batch` | Up to 1,000 jobs in one transaction |
 | `Lease` | `POST /v1/queues/{queue}:lease` | `max_jobs`, `wait` (long poll, ≤ 30 s), optional `visibility_timeout` |
 | `LeaseStream` | gRPC only | Bidirectional: the worker sends capacity credits, the server pushes jobs |
@@ -192,6 +192,8 @@ One `proto/tasklane/v1/tasklane.proto` generates the gRPC server, the HTTP/JSON 
 | `ListDeadJobs` | `GET /v1/queues/{queue}/dead` | Paginated |
 | `RedriveJobs` | `POST /v1/queues/{queue}/dead:redrive` | By IDs or all |
 | `CreateQueue`, `UpdateQueue`, `GetQueue`, `ListQueues` | `/v1/queues…` | Settings and live counts |
+
+The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY_CRITICAL = 1` … `PRIORITY_LOW = 4`, so an unset field becomes the default rather than critical.
 
 **Errors**
 

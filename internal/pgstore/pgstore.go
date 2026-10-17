@@ -92,9 +92,6 @@ func (s *Store) missingOrLost(ctx context.Context, id int64) error {
 
 // Temporary stubs; Tasks 5-7 replace them and Task 10 checks none remain.
 
-func (s *Store) Enqueue(ctx context.Context, jobs []store.NewJob) ([]store.EnqueueResult, error) {
-	return nil, errors.New("not implemented")
-}
 func (s *Store) Lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]store.Job, error) {
 	return nil, errors.New("not implemented")
 }

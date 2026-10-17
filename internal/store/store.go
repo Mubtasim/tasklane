@@ -22,11 +22,17 @@ const (
 	StateCancelled JobState = "cancelled"
 )
 
+// Priority orders leasing: lower values run first. The zero value means
+// "unspecified", which Enqueue stores as PriorityDefault (the protobuf enum
+// convention, so an unset field never silently becomes critical).
+type Priority int
+
 const (
-	PriorityCritical = 0
-	PriorityHigh     = 1
-	PriorityDefault  = 2
-	PriorityLow      = 3
+	PriorityUnspecified Priority = iota
+	PriorityCritical
+	PriorityHigh
+	PriorityDefault
+	PriorityLow
 )
 
 var (
@@ -62,7 +68,7 @@ type NewJob struct {
 	Queue          string
 	Kind           string
 	Payload        json.RawMessage // empty means {}
-	Priority       int             // 0 critical … 3 low
+	Priority       Priority        // PriorityUnspecified means PriorityDefault
 	RunAt          time.Time       // zero means now
 	MaxAttempts    int             // zero means the queue's default
 	IdempotencyKey string          // empty means no deduplication
@@ -79,7 +85,7 @@ type Job struct {
 	Queue          string
 	Kind           string
 	Payload        json.RawMessage
-	Priority       int
+	Priority       Priority
 	State          JobState
 	RunAt          time.Time
 	Attempts       int
