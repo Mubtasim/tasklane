@@ -4,7 +4,6 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,10 +87,4 @@ func (s *Store) missingOrLost(ctx context.Context, id int64) error {
 		return store.ErrNotFound
 	}
 	return store.ErrLeaseLost
-}
-
-// Temporary stubs; Tasks 5-7 replace them and Task 10 checks none remain.
-
-func (s *Store) ReapExpired(ctx context.Context, limit int) (int, error) {
-	return 0, errors.New("not implemented")
 }
