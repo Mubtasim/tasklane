@@ -30,6 +30,15 @@ func TestAuthAcceptsAndRejects(t *testing.T) {
 
 	_, err = e.client.GetQueue(withKey("key-two"), req)
 	requireCode(t, codes.NotFound, err) // authenticated: the call reached the store
+
+	// The scheme is case-insensitive (RFC 9110); the key is not.
+	for _, header := range []string{"bearer key-one", "BEARER key-two"} {
+		ctx = metadata.AppendToOutgoingContext(context.Background(), "authorization", header)
+		_, err = e.client.GetQueue(ctx, req)
+		requireCode(t, codes.NotFound, err)
+	}
+	_, err = e.client.GetQueue(withKey("KEY-ONE"), req)
+	requireCode(t, codes.Unauthenticated, err)
 }
 
 func TestAuthDisabledWithoutKeys(t *testing.T) {

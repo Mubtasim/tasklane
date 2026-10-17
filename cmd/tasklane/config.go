@@ -22,7 +22,7 @@ type Config struct {
 // tests can pass a map lookup instead of touching the process environment.
 func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		DatabaseURL:    getenv("TASKLANE_DATABASE_URL"),
+		DatabaseURL:    strings.TrimSpace(getenv("TASKLANE_DATABASE_URL")),
 		GRPCAddr:       or(getenv("TASKLANE_GRPC_ADDR"), ":7070"),
 		HTTPAddr:       or(getenv("TASKLANE_HTTP_ADDR"), ":8080"),
 		ReaperInterval: 5 * time.Second,

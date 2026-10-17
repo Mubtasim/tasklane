@@ -22,6 +22,12 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}, cfg)
 }
 
+func TestLoadConfigTrimsDatabaseURL(t *testing.T) {
+	cfg, err := LoadConfig(env(map[string]string{"TASKLANE_DATABASE_URL": "  postgres://x\n"}))
+	require.NoError(t, err)
+	require.Equal(t, "postgres://x", cfg.DatabaseURL)
+}
+
 func TestLoadConfigOverrides(t *testing.T) {
 	cfg, err := LoadConfig(env(map[string]string{
 		"TASKLANE_DATABASE_URL":    "postgres://x",
@@ -40,6 +46,8 @@ func TestLoadConfigOverrides(t *testing.T) {
 func TestLoadConfigErrors(t *testing.T) {
 	_, err := LoadConfig(env(map[string]string{}))
 	require.ErrorContains(t, err, "TASKLANE_DATABASE_URL")
+	_, err = LoadConfig(env(map[string]string{"TASKLANE_DATABASE_URL": " \t\n"}))
+	require.ErrorContains(t, err, "TASKLANE_DATABASE_URL", "whitespace only is missing")
 
 	for _, bad := range []string{"soon", "0s", "-5s"} {
 		_, err = LoadConfig(env(map[string]string{"TASKLANE_DATABASE_URL": "postgres://x", "TASKLANE_REAPER_INTERVAL": bad}))

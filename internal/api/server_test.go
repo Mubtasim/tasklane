@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -236,4 +237,30 @@ func TestShutdownEndsWaitingLeases(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, res.GetJobs())
 	require.Less(t, time.Since(start), 2*time.Second)
+}
+
+// Workers must back off after a shutdown instead of hot-looping on empty
+// leases, and the store must not be touched.
+func TestLeaseAfterShutdownIsUnavailable(t *testing.T) {
+	e := newEnv(t, nil)
+	e.mustQueue(t, "emails")
+	id := e.mustEnqueue(t, "emails", &tasklanev1.JobSpec{Kind: "welcome"})
+
+	e.server.Shutdown()
+	for _, wait := range []time.Duration{0, 10 * time.Second} {
+		_, err := e.client.Lease(context.Background(), &tasklanev1.LeaseRequest{Queue: "emails", Wait: durationpb.New(wait)})
+		requireCode(t, codes.Unavailable, err)
+	}
+	got, err := e.client.GetJob(context.Background(), &tasklanev1.GetJobRequest{Id: id})
+	require.NoError(t, err)
+	require.Equal(t, tasklanev1.JobState_JOB_STATE_AVAILABLE, got.GetJob().GetState(), "the job was not leased")
+}
+
+func TestWithPollIntervalIgnoresNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		s := NewServer(nil, nil, slog.New(slog.DiscardHandler), WithPollInterval(d))
+		require.Equal(t, DefaultPollInterval, s.pollInterval, d)
+	}
+	s := NewServer(nil, nil, slog.New(slog.DiscardHandler), WithPollInterval(time.Minute))
+	require.Equal(t, time.Minute, s.pollInterval)
 }

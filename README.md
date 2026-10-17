@@ -27,6 +27,12 @@ curl -d '{"kind":"send_welcome","payload":{"user":42}}' localhost:8080/v1/queues
 curl -d '{"max_jobs":1,"wait":"10s"}' localhost:8080/v1/queues/emails:lease
 ```
 
+With API keys set, add the header to every `/v1` request:
+
+```bash
+curl -H "Authorization: Bearer key1" -d '{"name":"emails"}' localhost:8080/v1/queues
+```
+
 | Variable | Default | |
 |---|---|---|
 | `TASKLANE_DATABASE_URL` | (required) | PostgreSQL connection string |

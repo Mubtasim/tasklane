@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
@@ -42,9 +43,14 @@ type Server struct {
 
 type Option func(*Server)
 
-// WithPollInterval overrides DefaultPollInterval (tests use it).
+// WithPollInterval overrides DefaultPollInterval (tests use it). A d <= 0
+// is ignored.
 func WithPollInterval(d time.Duration) Option {
-	return func(s *Server) { s.pollInterval = d }
+	return func(s *Server) {
+		if d > 0 {
+			s.pollInterval = d
+		}
+	}
 }
 
 func NewServer(st store.Store, n Notifier, log *slog.Logger, opts ...Option) *Server {
@@ -56,8 +62,9 @@ func NewServer(st store.Store, n Notifier, log *slog.Logger, opts ...Option) *Se
 }
 
 // Shutdown makes waiting leases return their (empty) result now, so a
-// graceful stop doesn't wait out 30 s long polls. Call it before
-// grpc.Server.GracefulStop.
+// graceful stop doesn't wait out 30 s long polls, and later leases fail with
+// UNAVAILABLE, so workers back off instead of polling a draining server.
+// Call it before grpc.Server.GracefulStop.
 func (s *Server) Shutdown() {
 	s.stopOnce.Do(func() { close(s.stopping) })
 }
@@ -119,6 +126,11 @@ func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchR
 // between that try and the wait still wakes it. max_jobs above MaxLeaseJobs
 // is clamped to it silently, so the response fits in MaxMessageBytes.
 func (s *Server) Lease(ctx context.Context, req *tasklanev1.LeaseRequest) (*tasklanev1.LeaseResponse, error) {
+	select {
+	case <-s.stopping:
+		return nil, status.Error(codes.Unavailable, "server shutting down")
+	default:
+	}
 	n := int(req.GetMaxJobs())
 	if n == 0 {
 		n = 1

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -26,8 +27,12 @@ import (
 	"github.com/mubtasim/tasklane/internal/reaper"
 )
 
-// shutdownTimeout bounds the graceful drain on SIGINT/SIGTERM.
-const shutdownTimeout = 10 * time.Second
+// Each drain step on SIGINT/SIGTERM gets its own budget, so a slow HTTP
+// drain can't eat the gRPC drain's time.
+const (
+	httpShutdownTimeout = 10 * time.Second
+	grpcShutdownTimeout = 10 * time.Second
+)
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -56,11 +61,17 @@ func run(log *slog.Logger) error {
 	st := pgstore.New(pool, backoff.Default())
 
 	// Background loops get their own context: they stop after the servers
-	// have drained, not the moment the signal arrives.
+	// have drained, not the moment the signal arrives. This deferred cleanup
+	// runs before pool.Close (defers run last-in first-out), so on every
+	// return path the loops are stopped and waited for while the pool is
+	// still open.
 	bgCtx, stopBackground := context.WithCancel(context.Background())
-	defer stopBackground()
-	listener := notify.New(cfg.DatabaseURL, log)
 	var background sync.WaitGroup
+	defer func() {
+		stopBackground()
+		background.Wait()
+	}()
+	listener := notify.New(cfg.DatabaseURL, log)
 	background.Go(func() { listener.Run(bgCtx) })
 	background.Go(func() { reaper.Run(bgCtx, st, cfg.ReaperInterval, reaper.DefaultBatch, log) })
 
@@ -83,7 +94,8 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer conn.Close()
-	handler, err := api.NewHTTPHandler(bgCtx, conn, pool.Ping, cfg.APIKeys)
+	var shuttingDown atomic.Bool
+	handler, err := api.NewHTTPHandler(bgCtx, conn, readyFunc(&shuttingDown, pool.Ping), cfg.APIKeys)
 	if err != nil {
 		return err
 	}
@@ -109,20 +121,23 @@ func run(log *slog.Logger) error {
 	var serveErr error
 	select {
 	case <-ctx.Done():
+		stop() // restore default signal handling: a second Ctrl-C exits at once
 		log.Info("shutting down")
 	case serveErr = <-errc:
 		log.Error("server failed; shutting down", "err", serveErr)
 	}
 
-	// Drain: end long polls first (HTTP leases are gRPC calls underneath),
-	// stop taking HTTP requests, let in-flight RPCs finish, and force-close
-	// whatever is left after the timeout.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
+	// Drain: report not ready, end long polls (HTTP leases are gRPC calls
+	// underneath), stop taking HTTP requests, let in-flight RPCs finish, and
+	// force-close whatever is left after each step's timeout.
+	shuttingDown.Store(true)
 	srv.Shutdown()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Warn("http shutdown", "err", err)
+	httpCtx, cancelHTTP := context.WithTimeout(context.Background(), httpShutdownTimeout)
+	if err := httpServer.Shutdown(httpCtx); err != nil {
+		log.Warn("http shutdown timed out; closing remaining connections", "err", err)
+		httpServer.Close()
 	}
+	cancelHTTP()
 	stopped := make(chan struct{})
 	go func() {
 		grpcServer.GracefulStop()
@@ -130,12 +145,27 @@ func run(log *slog.Logger) error {
 	}()
 	select {
 	case <-stopped:
-	case <-shutdownCtx.Done():
+	case <-time.After(grpcShutdownTimeout):
 		log.Warn("graceful stop timed out; closing remaining connections")
 		grpcServer.Stop()
 	}
 	stopBackground()
 	background.Wait()
-	log.Info("tasklane stopped cleanly")
+	if serveErr == nil {
+		log.Info("tasklane stopped cleanly")
+	}
 	return serveErr
+}
+
+var errShuttingDown = errors.New("shutting down")
+
+// readyFunc reports ready while not shutting down and ping succeeds, so load
+// balancers stop routing to a draining server.
+func readyFunc(shuttingDown *atomic.Bool, ping func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if shuttingDown.Load() {
+			return errShuttingDown
+		}
+		return ping(ctx)
+	}
 }

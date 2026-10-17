@@ -15,7 +15,8 @@ import (
 )
 
 // AuthInterceptor requires metadata "authorization: Bearer <key>" with one of
-// keys. With no keys configured, every call is allowed.
+// keys; the scheme is case-insensitive. With no keys configured, every call
+// is allowed.
 func AuthInterceptor(keys []string) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if len(keys) == 0 {
@@ -26,8 +27,8 @@ func AuthInterceptor(keys []string) grpc.UnaryServerInterceptor {
 		if len(values) == 0 {
 			return nil, status.Error(codes.Unauthenticated, "missing API key")
 		}
-		key, ok := strings.CutPrefix(values[0], "Bearer ")
-		if !ok || !validKey(keys, key) {
+		scheme, key, ok := strings.Cut(values[0], " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || !validKey(keys, key) {
 			return nil, status.Error(codes.Unauthenticated, "invalid API key")
 		}
 		return handler(ctx, req)

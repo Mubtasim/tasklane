@@ -21,12 +21,22 @@ type Store interface {
 // Run reaps once immediately and then every interval until ctx is cancelled.
 // While a call returns a full batch, it calls again at once instead of waiting
 // for the next tick, so a backlog drains quickly. Errors are logged, never
-// fatal: the next tick tries again.
+// fatal: the next tick tries again. A non-positive interval or batch uses
+// DefaultInterval or DefaultBatch.
 func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *slog.Logger) {
+	if interval <= 0 {
+		interval = DefaultInterval
+	}
+	if batch <= 0 {
+		batch = DefaultBatch
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		reapAll(ctx, s, batch, log)
+		if ctx.Err() != nil {
+			return // select picks randomly when a tick is also ready
+		}
 		select {
 		case <-ctx.Done():
 			return
