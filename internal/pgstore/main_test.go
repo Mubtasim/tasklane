@@ -9,43 +9,29 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/mubtasim/tasklane/internal/backoff"
 	"github.com/mubtasim/tasklane/internal/pgstore"
 	"github.com/mubtasim/tasklane/internal/store"
+	"github.com/mubtasim/tasklane/internal/testpg"
 )
 
-var testPool *pgxpool.Pool
+// testDB is shared by every test in the package; tests reset it first, so
+// they must not run in parallel.
+var (
+	testDB   *testpg.DB
+	testPool *pgxpool.Pool
+)
 
-// TestMain starts one Postgres container for the whole package. Tests share
-// it and reset the tables first, so they must not run in parallel.
 func TestMain(m *testing.M) {
-	ctx := context.Background()
-	ctr, err := tcpostgres.Run(ctx, "postgres:17-alpine",
-		tcpostgres.WithDatabase("tasklane"),
-		tcpostgres.WithUsername("tasklane"),
-		tcpostgres.WithPassword("tasklane"),
-		tcpostgres.BasicWaitStrategies(),
-	)
+	var err error
+	testDB, err = testpg.Start(context.Background())
 	if err != nil {
-		log.Fatalf("start postgres: %v", err)
+		log.Fatal(err)
 	}
-	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		log.Fatalf("connection string: %v", err)
-	}
-	testPool, err = pgxpool.New(ctx, dsn)
-	if err != nil {
-		log.Fatalf("connect: %v", err)
-	}
-	if err := pgstore.Migrate(ctx, testPool); err != nil {
-		log.Fatalf("migrate: %v", err)
-	}
+	testPool = testDB.Pool
 	code := m.Run()
-	testPool.Close()
-	_ = testcontainers.TerminateContainer(ctr)
+	testDB.Close()
 	os.Exit(code)
 }
 
@@ -58,8 +44,7 @@ func newStore(t *testing.T) *pgstore.Store {
 
 func newStoreWithBackoff(t *testing.T, p backoff.Policy) *pgstore.Store {
 	t.Helper()
-	_, err := testPool.Exec(context.Background(), "TRUNCATE jobs, queues RESTART IDENTITY")
-	require.NoError(t, err)
+	require.NoError(t, testDB.Reset(context.Background()))
 	return pgstore.New(testPool, p)
 }
 
