@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,12 +27,13 @@ func TestToStatusMapsErrors(t *testing.T) {
 	_, connectErr := pgconn.Connect(ctx, "postgres://u@127.0.0.1:1/db?connect_timeout=1")
 	require.Error(t, connectErr)
 
-	// A connect timeout: pgconn wraps context.DeadlineExceeded in a
-	// ConnectError, and it must still map to UNAVAILABLE.
-	tctx, tcancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// A connect timeout: a local listener accepts TCP connections but never
+	// speaks, so the startup handshake hits the context deadline. pgconn
+	// wraps that in a ConnectError, which must still map to UNAVAILABLE.
+	addr := silentListener(t)
+	tctx, tcancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer tcancel()
-	_, timeoutErr := pgconn.Connect(tctx, "postgres://u@10.255.255.1:5432/db?connect_timeout=1")
-	require.Error(t, timeoutErr)
+	_, timeoutErr := pgconn.Connect(tctx, "postgres://u@"+addr+"/db?sslmode=disable")
 	var ce *pgconn.ConnectError
 	require.ErrorAs(t, timeoutErr, &ce, "expected a ConnectError, got %v", timeoutErr)
 	require.ErrorIs(t, timeoutErr, context.DeadlineExceeded)
@@ -95,4 +97,39 @@ func TestUnavailableHasFixedMessage(t *testing.T) {
 	got := toStatus(slog.New(slog.DiscardHandler), "/test", err)
 	require.Equal(t, codes.Unavailable, status.Code(got))
 	require.Equal(t, "database unavailable", status.Convert(got).Message())
+}
+
+// silentListener starts a TCP listener that accepts connections and never
+// writes. It and its connections are closed, and its goroutine has exited,
+// when the test ends.
+func silentListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	var conns []net.Conn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return ln.Addr().String()
 }
