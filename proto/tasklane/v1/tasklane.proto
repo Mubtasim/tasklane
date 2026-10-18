@@ -1,0 +1,247 @@
+syntax = "proto3";
+
+package tasklane.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/mubtasim/tasklane/gen/tasklane/v1;tasklanev1";
+
+// TasklaneService is the producer and worker API of a Tasklane server.
+service TasklaneService {
+  // CreateQueue creates a queue. Zero-valued settings take the server defaults.
+  rpc CreateQueue(CreateQueueRequest) returns (CreateQueueResponse) {
+    option (google.api.http) = {
+      post: "/v1/queues"
+      body: "queue"
+    };
+  }
+
+  // GetQueue returns a queue's settings.
+  rpc GetQueue(GetQueueRequest) returns (GetQueueResponse) {
+    option (google.api.http) = {get: "/v1/queues/{name}"};
+  }
+
+  // Enqueue adds one job. With an idempotency key that already exists in the
+  // queue, it returns the existing job with created = false.
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}/jobs"
+      body: "job"
+    };
+  }
+
+  // EnqueueBatch adds up to 1000 jobs to one queue in one transaction.
+  rpc EnqueueBatch(EnqueueBatchRequest) returns (EnqueueBatchResponse) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}/jobs:batch"
+      body: "*"
+    };
+  }
+
+  // Lease takes up to max_jobs runnable jobs. With wait > 0 it long-polls:
+  // it returns as soon as jobs are available, or empty when wait elapses.
+  rpc Lease(LeaseRequest) returns (LeaseResponse) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}:lease"
+      body: "*"
+    };
+  }
+
+  // Ack completes a leased job. Repeating it with the same token succeeds.
+  rpc Ack(AckRequest) returns (AckResponse) {
+    option (google.api.http) = {
+      post: "/v1/jobs/{id}:ack"
+      body: "*"
+    };
+  }
+
+  // Nack fails the current attempt: the job retries after a backoff (or at
+  // retry_at), or moves to the dead-letter state when out of attempts.
+  rpc Nack(NackRequest) returns (NackResponse) {
+    option (google.api.http) = {
+      post: "/v1/jobs/{id}:nack"
+      body: "*"
+    };
+  }
+
+  // Heartbeat extends a lease and returns the new expiry.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {
+    option (google.api.http) = {
+      post: "/v1/jobs/{id}:heartbeat"
+      body: "*"
+    };
+  }
+
+  // GetJob returns a job. The lease token is never included.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse) {
+    option (google.api.http) = {get: "/v1/jobs/{id}"};
+  }
+}
+
+// Priority orders leasing: critical runs first. Unspecified is stored as default.
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  PRIORITY_CRITICAL = 1;
+  PRIORITY_HIGH = 2;
+  PRIORITY_DEFAULT = 3;
+  PRIORITY_LOW = 4;
+}
+
+// JobState is where a job is in its lifecycle.
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_AVAILABLE = 1;
+  JOB_STATE_LEASED = 2;
+  JOB_STATE_COMPLETED = 3;
+  JOB_STATE_DEAD = 4;
+  JOB_STATE_CANCELLED = 5;
+}
+
+// Queue holds a queue's settings. Zero values mean "use the default" on create.
+message Queue {
+  string name = 1;
+  // Backpressure threshold (available + leased jobs). Default 100000.
+  int64 max_depth = 2;
+  // Lease length when a lease doesn't set one. Default 30 s.
+  google.protobuf.Duration visibility_timeout = 3;
+  // Attempts before a job moves to the dead-letter state. Default 10.
+  int32 max_attempts = 4;
+  // A paused queue accepts enqueues but returns no leases.
+  bool paused = 5;
+}
+
+// JobSpec is a job to enqueue.
+message JobSpec {
+  string kind = 1;
+  // Any JSON object.
+  google.protobuf.Struct payload = 2;
+  Priority priority = 3;
+  // When the job becomes runnable. Unset means now.
+  google.protobuf.Timestamp run_at = 4;
+  // Unique per queue; a repeated enqueue with the same key returns the original job.
+  string idempotency_key = 5;
+  // Zero means the queue's max_attempts.
+  int32 max_attempts = 6;
+  // W3C traceparent, handed to the worker.
+  string trace_context = 7;
+}
+
+// Job is a job as stored by the server.
+message Job {
+  int64 id = 1;
+  string queue = 2;
+  string kind = 3;
+  google.protobuf.Struct payload = 4;
+  Priority priority = 5;
+  JobState state = 6;
+  google.protobuf.Timestamp run_at = 7;
+  int32 attempts = 8;
+  int32 max_attempts = 9;
+  string last_error = 10;
+  // Set only in Lease responses: the fencing token that Ack, Nack and Heartbeat require.
+  string lease_token = 11;
+  google.protobuf.Timestamp lease_expires_at = 12;
+  string idempotency_key = 13;
+  string trace_context = 14;
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp finished_at = 16;
+}
+
+// EnqueueResult is the outcome of enqueuing one job.
+message EnqueueResult {
+  int64 job_id = 1;
+  // False when the idempotency key matched an existing job.
+  bool created = 2;
+}
+
+message CreateQueueRequest {
+  Queue queue = 1;
+}
+
+message CreateQueueResponse {
+  // The queue with defaults applied.
+  Queue queue = 1;
+}
+
+message GetQueueRequest {
+  string name = 1;
+}
+
+message GetQueueResponse {
+  Queue queue = 1;
+}
+
+message EnqueueRequest {
+  string queue = 1;
+  JobSpec job = 2;
+}
+
+message EnqueueResponse {
+  int64 job_id = 1;
+  bool created = 2;
+}
+
+message EnqueueBatchRequest {
+  string queue = 1;
+  // 1 to 1000 jobs.
+  repeated JobSpec jobs = 2;
+}
+
+message EnqueueBatchResponse {
+  // In the same order as the request's jobs.
+  repeated EnqueueResult results = 1;
+}
+
+message LeaseRequest {
+  string queue = 1;
+  // 1 to 1000; 0 means 1.
+  int32 max_jobs = 2;
+  // Long-poll duration, capped at 30 s. Unset or zero returns immediately.
+  google.protobuf.Duration wait = 3;
+  // Lease length. Unset uses the queue's visibility timeout.
+  google.protobuf.Duration visibility_timeout = 4;
+}
+
+message LeaseResponse {
+  repeated Job jobs = 1;
+}
+
+message AckRequest {
+  int64 id = 1;
+  string lease_token = 2;
+}
+
+message AckResponse {}
+
+message NackRequest {
+  int64 id = 1;
+  string lease_token = 2;
+  // Why the attempt failed; stored as the job's last_error.
+  string error = 3;
+  // Overrides the backoff delay, e.g. from a downstream Retry-After header.
+  google.protobuf.Timestamp retry_at = 4;
+}
+
+message NackResponse {}
+
+message HeartbeatRequest {
+  int64 id = 1;
+  string lease_token = 2;
+  // New lease length from now. Unset uses the queue's visibility timeout.
+  google.protobuf.Duration visibility_timeout = 3;
+}
+
+message HeartbeatResponse {
+  google.protobuf.Timestamp lease_expires_at = 1;
+}
+
+message GetJobRequest {
+  int64 id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}

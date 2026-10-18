@@ -128,6 +128,7 @@ Decisions:
 - **Queue defaults (100000, 30 s, 10) are applied in Go** (`store.Queue.WithDefaults`), not as column defaults.
 - **No "scheduled" state.** A delayed job and a job waiting to retry are both `available` with a future `run_at`. One mechanism covers both.
 - **Idempotent enqueue is race-free.** Enqueue uses `INSERT … ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id`; when nothing is returned, it reads the existing job and replies with `created = false`.
+- **Batches can't deadlock on keys.** A keyed insert holds its unique-index entry until commit, so two batches taking the same keys in opposite orders would deadlock (SQLSTATE 40P01). Enqueue inserts keyed jobs first, sorted by `(queue, idempotency_key)`, and still returns results in the caller's order. Within one mixed batch, keyed jobs therefore get lower IDs (and lease first among equal priorities) than unkeyed ones.
 - **The DLQ is a state, not a table.** Redrive sets `state = 'available'`, `attempts = 0`, `run_at = now()`.
 - **Idempotency keys live as long as the job row.** Once a completed job is pruned, its key can be reused. The retention window (default 24 h) is the deduplication window, and the docs say so.
 - **Table churn.** Queue tables see constant updates and deletes. State transitions change indexed columns (`state` appears in partial-index predicates; `run_at`, `lease_expires_at` and `finished_at` are indexed), so they are not HOT updates. `fillfactor = 70` is a hypothesis to reduce page splits and bloat. The load test measures the HOT ratio (`pg_stat_user_tables.n_tup_hot_upd`) and bloat, and autovacuum settings are tuned during the load test.
@@ -165,7 +166,7 @@ FROM next WHERE j.id = next.id
 RETURNING j.*;
 ```
 
-**Ack:** `UPDATE jobs SET state = 'completed', finished_at = now(), lease_token = NULL, lease_expires_at = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2`. Zero rows updated means the lease was lost, and the server returns `FAILED_PRECONDITION`. An ack that arrives after `lease_expires_at` but before the reaper has run still succeeds: nobody else holds the job, so accepting it is safe and avoids a needless retry. Heartbeats follow the same rule.
+**Ack:** `UPDATE jobs SET state = 'completed', finished_at = now(), lease_expires_at = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2`. The completed row keeps its `lease_token`, so when zero rows are updated the server re-reads the job: completed with the same token means a retried ack and returns success; a missing job is `NOT_FOUND`; anything else means the lease was lost, and the server returns `FAILED_PRECONDITION`. An ack that arrives after `lease_expires_at` but before the reaper has run still succeeds: nobody else holds the job, so accepting it is safe and avoids a needless retry. Heartbeats follow the same rule.
 
 **Nack and expiry** use the same retry rule. If `attempts < max_attempts`, the job goes back to `available` with `run_at = now() + backoff(attempts)`; otherwise it becomes `dead` with `last_error` set. A worker may pass an explicit `retry_at` (for example, from a downstream `Retry-After` header) to override the backoff.
 
@@ -202,6 +203,23 @@ One `proto/tasklane/v1/tasklane.proto` generates the gRPC server, the HTTP/JSON 
 
 The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY_CRITICAL = 1` … `PRIORITY_LOW = 4`, so an unset field becomes the default rather than critical.
 
+**Payloads** are JSON objects (`google.protobuf.Struct` in the proto), so HTTP clients send and receive natural JSON.
+
+**Retry safety.** Every worker-facing call must be safe to retry, because networks lose responses, not just requests:
+- *Ack is idempotent.* A completed job keeps the token that completed it. A repeated `Ack` with that same token returns success; any other token gets `FAILED_PRECONDITION`.
+- *A repeated Nack* returns `FAILED_PRECONDITION`. This is harmless, because the job is already scheduled for retry; the SDK logs it and moves on.
+- *Enqueue* is made safe to retry with idempotency keys.
+
+**Long-polling.** `Lease` with `wait > 0` returns as soon as jobs are available or when `wait` elapses (empty result). Servers `LISTEN` on the Postgres channel `tasklane_jobs`; `Enqueue` sends `pg_notify('tasklane_jobs', queue)` once per distinct queue inside its transaction, so the notification is delivered only on commit. Waiting leases for that queue wake immediately. Because delayed jobs and retries become due without any notification, waiting leases also re-check every second.
+
+Each server holds one dedicated `LISTEN` connection. If it drops, the server reconnects with backoff and wakes every waiting lease once LISTEN is re-established, since notifications sent in the meantime are lost.
+
+**Leasing from an unknown queue** returns `NOT_FOUND` (an empty result means "nothing runnable right now").
+
+**Limits.** A job's payload is at most 256 KiB, checked twice: as encoded JSON (what the database stores) and as a protobuf `Struct` (what `Lease` sends back). The `Struct` is the larger one, because a number costs about 11 bytes there against 2 in JSON, so a cap on the JSON alone would let a full lease exceed the message limit; `kind` and `idempotency_key` are at most 255 bytes and `trace_context` at most 512. Larger values are `INVALID_ARGUMENT` (a value that still exceeds a database limit, SQLSTATE 54000, maps there too). gRPC messages are limited to 16 MiB in both directions, on the server and on the gateway's connection to it, and HTTP request bodies to the same 16 MiB (larger bodies get 413). `Lease` clamps `max_jobs` to 50 without an error. Because the payload cap is measured in protobuf bytes, 50 jobs of maximum size plus 4 KiB each for their other fields (about 13 MiB) fit in one 16 MiB response; a test asserts this. An `EnqueueBatch` whose protobuf size is over 16 MiB minus 64 KiB is `INVALID_ARGUMENT`. Over HTTP, a batch that is under the 16 MiB body limit as JSON but larger as protobuf (JSON numbers grow about 5x) is refused by the gateway's own gRPC client before it is sent, and the gateway answers 413. A `Nack` error message longer than 4 KiB is truncated (at a UTF-8 character boundary), not rejected. A long-polling client's request timeout must exceed `wait` plus a margin for the round trip. A lease that commits but whose response never reaches the worker costs that job one attempt: the job comes back when its visibility timeout expires.
+
+Queue names are 1–128 characters from [A-Za-z0-9._-], so they are safe in URL paths.
+
 **Errors**
 
 | Situation | gRPC status | HTTP |
@@ -210,14 +228,19 @@ The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY
 | Stale or unknown lease token | `FAILED_PRECONDITION` | 409 |
 | Unknown queue or job | `NOT_FOUND` | 404 |
 | Bad arguments | `INVALID_ARGUMENT` | 400 |
-| Database unavailable | `UNAVAILABLE` | 503 |
+| Queue already exists | `ALREADY_EXISTS` | 409 |
+| Database unavailable or connection error | `UNAVAILABLE` | 503 |
+| Request deadline exceeded / cancelled | `DEADLINE_EXCEEDED` / `CANCELLED` | 504 / 499 |
+| Anything else (logged with details) | `INTERNAL` | 500 |
 | Missing or wrong API key | `UNAUTHENTICATED` | 401 |
+
+The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) and, as proto3 JSON requires, encodes 64-bit integers as strings. grpc-gateway's default for `FAILED_PRECONDITION` is 400; Tasklane overrides it to 409 to match this table.
 
 **Backpressure**
 - *Producer side:* `Enqueue` checks the queue's depth (`available + leased`) against `max_depth`. To avoid a `COUNT(*)` on every call, each server refreshes each queue's depth once a second (one count over the partial indexes) and checks against that cached value, so the limit is soft (it can overshoot by about one second of traffic). The docs state this.
 - *Worker side:* `LeaseStream` is credit-based. The server never sends more jobs than the worker has granted credits for, so a slow worker is never flooded.
 
-**Auth:** a static API key per client, passed in the `authorization` metadata or header and configured in the server config file. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
+**Auth:** a static API key per client, sent as `authorization: Bearer <key>` (gRPC metadata or HTTP header; the scheme is case-insensitive) and configured with `TASKLANE_API_KEYS` (comma-separated). With no keys configured, auth is disabled and the server logs a warning at startup. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
 
 **SDKs:** Go (`github.com/mubtasim/tasklane/sdk/go`), TypeScript (`@mubtasim/tasklane`) and C# (`Tasklane.Client` on NuGet). Each provides a producer client and a worker runner that handles leasing, concurrency, heartbeats, ack/nack, retrying the server connection with backoff, and graceful shutdown.
 
@@ -288,7 +311,10 @@ The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY
 | # | Target | Deliverable |
 |---|---|---|
 | M1 | mid-Nov 2026 | Repo, schema and migrations, `PostgresStore` with enqueue/lease/ack/nack and integration tests |
-| M2 | end of Nov | gRPC and HTTP gateway, Go SDK worker runner, docker-compose demo |
-| M3 | mid-Dec | Reaper, pruner, heartbeats, DLQ and redrive, backpressure, `LeaseStream` |
+| M2a | end of Nov | API server: proto + buf, gRPC and HTTP gateway, error mapping, API-key auth, idempotent ack, long-poll leasing with LISTEN/NOTIFY, reaper loop, graceful shutdown |
+| M2b | early Dec | Go SDK (producer + worker runner with heartbeats), docker-compose demo with a failing demo worker |
+| M3 | mid-Dec | Pruner, DLQ listing and redrive, cancel, backpressure, `LeaseStream` |
 | M4 | end of Dec | Metrics, tracing, Grafana dashboard, chaos and invariant tests |
 | M5 | mid-Jan 2027 | TS and C# SDKs, load tests and benchmark report, v1.0.0 release and a blog post |
+
+Notes for M3: like `Enqueue`, `RedriveJobs` and `CancelJob` must send `pg_notify('tasklane_jobs', queue)` inside their transaction whenever they change which jobs are runnable (redrive always does), or waiting leases only notice at their next one-second re-check. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.

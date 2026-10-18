@@ -49,6 +49,17 @@ func (s *Store) Lease(ctx context.Context, queue string, n int, ttl time.Duratio
 	if err != nil {
 		return nil, err
 	}
+	if len(jobs) == 0 {
+		// Only an empty result pays for this check, so the hot path is unchanged.
+		var exists bool
+		if err := s.pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM queues WHERE name = $1)", queue).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, fmt.Errorf("%w: queue %q", store.ErrNotFound, queue)
+		}
+		return jobs, nil
+	}
 	// UPDATE … RETURNING doesn't preserve the CTE's order.
 	slices.SortFunc(jobs, func(a, b store.Job) int {
 		if a.Priority != b.Priority {

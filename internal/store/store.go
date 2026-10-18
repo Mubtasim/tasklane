@@ -95,7 +95,7 @@ type Job struct {
 	Attempts       int
 	MaxAttempts    int
 	LastError      string
-	LeaseToken     uuid.UUID // uuid.Nil unless leased
+	LeaseToken     uuid.UUID // the current lease's token; on a completed job, the token that completed it; otherwise uuid.Nil
 	LeaseExpiresAt time.Time // zero unless leased
 	IdempotencyKey string
 	TraceContext   string
@@ -104,25 +104,34 @@ type Job struct {
 }
 
 type Store interface {
-	// CreateQueue returns ErrAlreadyExists if the name is taken.
+	// CreateQueue returns ErrAlreadyExists if the name is taken, and
+	// ErrInvalid for an empty or unsafe name (1-128 characters from
+	// [A-Za-z0-9._-]), negative settings or a visibility timeout that is
+	// positive but under 1 ms.
 	CreateQueue(ctx context.Context, q Queue) error
 	// GetQueue returns ErrNotFound for an unknown queue.
 	GetQueue(ctx context.Context, name string) (Queue, error)
 
-	// Enqueue inserts jobs atomically, in order. A job whose idempotency key
-	// already exists in its queue returns the existing ID with Created=false.
+	// Enqueue inserts 1 to 1000 jobs atomically and returns one result per
+	// job, in the caller's order. A job whose idempotency key already exists
+	// in its queue returns the existing ID with Created=false. Jobs with keys
+	// are inserted first, sorted by (queue, key), so concurrent batches lock
+	// keys in the same order and cannot deadlock. The commit wakes long-polling
+	// leases on every queue in the batch.
 	Enqueue(ctx context.Context, jobs []NewJob) ([]EnqueueResult, error)
 
 	// Lease takes up to n runnable jobs, highest priority first. A ttl <= 0
-	// uses the queue's visibility timeout. A paused or unknown queue returns
-	// no jobs and no error.
+	// uses the queue's visibility timeout. A paused queue returns no jobs and
+	// no error; an unknown queue returns ErrNotFound.
 	Lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]Job, error)
 
-	// Ack, Nack and Heartbeat require the job's current lease token. They
+	// Ack, Nack and Heartbeat require the job's current lease token (Ack also
+	// accepts the token that completed a completed job; see Ack). They
 	// return ErrLeaseLost if the job exists but the token is stale, and
 	// ErrNotFound if the job does not exist.
 
-	// Ack marks the leased job completed.
+	// Ack marks the leased job completed and keeps its token, so repeating
+	// the Ack with the same token returns nil (a retry after a lost response).
 	Ack(ctx context.Context, id int64, token uuid.UUID) error
 	// Nack fails the current attempt. A job whose attempts have reached
 	// max_attempts moves to StateDead; otherwise it becomes available again at

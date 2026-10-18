@@ -2,6 +2,7 @@ package pgstore_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,4 +43,49 @@ func TestGetQueueNotFound(t *testing.T) {
 	s := newStore(t)
 	_, err := s.GetQueue(context.Background(), "nope")
 	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+func TestCreateQueueRejectsBadSettings(t *testing.T) {
+	s := newStore(t)
+	for name, q := range map[string]store.Queue{
+		"negative max depth":          {Name: "q", MaxDepth: -1},
+		"negative max attempts":       {Name: "q", MaxAttempts: -1},
+		"negative visibility timeout": {Name: "q", VisibilityTimeout: -time.Second},
+		"sub-millisecond timeout":     {Name: "q", VisibilityTimeout: 500 * time.Microsecond},
+	} {
+		require.ErrorIs(t, s.CreateQueue(context.Background(), q), store.ErrInvalid, name)
+	}
+	_, err := s.GetQueue(context.Background(), "q")
+	require.ErrorIs(t, err, store.ErrNotFound, "nothing was created")
+
+	// The smallest positive timeout is accepted.
+	mustQueue(t, s, store.Queue{Name: "fast", VisibilityTimeout: time.Millisecond})
+	q, err := s.GetQueue(context.Background(), "fast")
+	require.NoError(t, err)
+	require.Equal(t, time.Millisecond, q.VisibilityTimeout)
+}
+
+func TestCreateQueueRejectsUnsafeNames(t *testing.T) {
+	s := newStore(t)
+	for _, tc := range []struct {
+		name string
+		ok   bool
+	}{
+		{"a/b", false},
+		{"a:b", false},
+		{"has space", false},
+		{"a\n", false}, // a trailing newline must not slip past the anchored pattern
+		{"ünïcode", false},
+		{strings.Repeat("a", 129), false},
+		{"emails", true},
+		{"pdf.render-v2", true},
+		{strings.Repeat("a", 128), true},
+	} {
+		err := s.CreateQueue(context.Background(), store.Queue{Name: tc.name})
+		if tc.ok {
+			require.NoError(t, err, tc.name)
+		} else {
+			require.ErrorIs(t, err, store.ErrInvalid, tc.name)
+		}
+	}
 }
