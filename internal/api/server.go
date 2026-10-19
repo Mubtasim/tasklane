@@ -90,7 +90,11 @@ func (s *Server) GetQueue(ctx context.Context, req *tasklanev1.GetQueueRequest) 
 	if err != nil {
 		return nil, toStatus(s.log, "GetQueue", err)
 	}
-	return &tasklanev1.GetQueueResponse{Queue: queueFromStore(q)}, nil
+	stats, err := s.store.QueueStats(ctx, req.GetName())
+	if err != nil {
+		return nil, toStatus(s.log, "GetQueue", err)
+	}
+	return &tasklanev1.GetQueueResponse{Queue: queueFromStore(q), Stats: statsFromStore(stats)}, nil
 }
 
 func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*tasklanev1.EnqueueResponse, error) {

@@ -675,6 +675,7 @@ func (x *GetQueueRequest) GetName() string {
 type GetQueueResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Queue         *Queue                 `protobuf:"bytes,1,opt,name=queue,proto3" json:"queue,omitempty"`
+	Stats         *QueueStats            `protobuf:"bytes,2,opt,name=stats,proto3" json:"stats,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -716,6 +717,92 @@ func (x *GetQueueResponse) GetQueue() *Queue {
 	return nil
 }
 
+func (x *GetQueueResponse) GetStats() *QueueStats {
+	if x != nil {
+		return x.Stats
+	}
+	return nil
+}
+
+// QueueStats are a queue's live job counts.
+type QueueStats struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Available int64                  `protobuf:"varint,1,opt,name=available,proto3" json:"available,omitempty"`
+	Leased    int64                  `protobuf:"varint,2,opt,name=leased,proto3" json:"leased,omitempty"`
+	Dead      int64                  `protobuf:"varint,3,opt,name=dead,proto3" json:"dead,omitempty"`
+	// Jobs completed within recent_window. Completed jobs pile up until they
+	// are pruned, so they are counted over a recent window only.
+	RecentlyCompleted int64                `protobuf:"varint,4,opt,name=recently_completed,json=recentlyCompleted,proto3" json:"recently_completed,omitempty"`
+	RecentWindow      *durationpb.Duration `protobuf:"bytes,5,opt,name=recent_window,json=recentWindow,proto3" json:"recent_window,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *QueueStats) Reset() {
+	*x = QueueStats{}
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueueStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueueStats) ProtoMessage() {}
+
+func (x *QueueStats) ProtoReflect() protoreflect.Message {
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueueStats.ProtoReflect.Descriptor instead.
+func (*QueueStats) Descriptor() ([]byte, []int) {
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *QueueStats) GetAvailable() int64 {
+	if x != nil {
+		return x.Available
+	}
+	return 0
+}
+
+func (x *QueueStats) GetLeased() int64 {
+	if x != nil {
+		return x.Leased
+	}
+	return 0
+}
+
+func (x *QueueStats) GetDead() int64 {
+	if x != nil {
+		return x.Dead
+	}
+	return 0
+}
+
+func (x *QueueStats) GetRecentlyCompleted() int64 {
+	if x != nil {
+		return x.RecentlyCompleted
+	}
+	return 0
+}
+
+func (x *QueueStats) GetRecentWindow() *durationpb.Duration {
+	if x != nil {
+		return x.RecentWindow
+	}
+	return nil
+}
+
 type EnqueueRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Queue         string                 `protobuf:"bytes,1,opt,name=queue,proto3" json:"queue,omitempty"`
@@ -726,7 +813,7 @@ type EnqueueRequest struct {
 
 func (x *EnqueueRequest) Reset() {
 	*x = EnqueueRequest{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[8]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -738,7 +825,7 @@ func (x *EnqueueRequest) String() string {
 func (*EnqueueRequest) ProtoMessage() {}
 
 func (x *EnqueueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[8]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -751,7 +838,7 @@ func (x *EnqueueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnqueueRequest.ProtoReflect.Descriptor instead.
 func (*EnqueueRequest) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{8}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *EnqueueRequest) GetQueue() string {
@@ -778,7 +865,7 @@ type EnqueueResponse struct {
 
 func (x *EnqueueResponse) Reset() {
 	*x = EnqueueResponse{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[9]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -790,7 +877,7 @@ func (x *EnqueueResponse) String() string {
 func (*EnqueueResponse) ProtoMessage() {}
 
 func (x *EnqueueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[9]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -803,7 +890,7 @@ func (x *EnqueueResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnqueueResponse.ProtoReflect.Descriptor instead.
 func (*EnqueueResponse) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{9}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *EnqueueResponse) GetJobId() int64 {
@@ -831,7 +918,7 @@ type EnqueueBatchRequest struct {
 
 func (x *EnqueueBatchRequest) Reset() {
 	*x = EnqueueBatchRequest{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[10]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -843,7 +930,7 @@ func (x *EnqueueBatchRequest) String() string {
 func (*EnqueueBatchRequest) ProtoMessage() {}
 
 func (x *EnqueueBatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[10]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -856,7 +943,7 @@ func (x *EnqueueBatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnqueueBatchRequest.ProtoReflect.Descriptor instead.
 func (*EnqueueBatchRequest) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{10}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *EnqueueBatchRequest) GetQueue() string {
@@ -883,7 +970,7 @@ type EnqueueBatchResponse struct {
 
 func (x *EnqueueBatchResponse) Reset() {
 	*x = EnqueueBatchResponse{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[11]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -895,7 +982,7 @@ func (x *EnqueueBatchResponse) String() string {
 func (*EnqueueBatchResponse) ProtoMessage() {}
 
 func (x *EnqueueBatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[11]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -908,7 +995,7 @@ func (x *EnqueueBatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnqueueBatchResponse.ProtoReflect.Descriptor instead.
 func (*EnqueueBatchResponse) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{11}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *EnqueueBatchResponse) GetResults() []*EnqueueResult {
@@ -933,7 +1020,7 @@ type LeaseRequest struct {
 
 func (x *LeaseRequest) Reset() {
 	*x = LeaseRequest{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[12]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -945,7 +1032,7 @@ func (x *LeaseRequest) String() string {
 func (*LeaseRequest) ProtoMessage() {}
 
 func (x *LeaseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[12]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -958,7 +1045,7 @@ func (x *LeaseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseRequest.ProtoReflect.Descriptor instead.
 func (*LeaseRequest) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{12}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *LeaseRequest) GetQueue() string {
@@ -998,7 +1085,7 @@ type LeaseResponse struct {
 
 func (x *LeaseResponse) Reset() {
 	*x = LeaseResponse{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[13]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1010,7 +1097,7 @@ func (x *LeaseResponse) String() string {
 func (*LeaseResponse) ProtoMessage() {}
 
 func (x *LeaseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[13]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1023,7 +1110,7 @@ func (x *LeaseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseResponse.ProtoReflect.Descriptor instead.
 func (*LeaseResponse) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{13}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *LeaseResponse) GetJobs() []*Job {
@@ -1043,7 +1130,7 @@ type AckRequest struct {
 
 func (x *AckRequest) Reset() {
 	*x = AckRequest{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[14]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1055,7 +1142,7 @@ func (x *AckRequest) String() string {
 func (*AckRequest) ProtoMessage() {}
 
 func (x *AckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[14]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1068,7 +1155,7 @@ func (x *AckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckRequest.ProtoReflect.Descriptor instead.
 func (*AckRequest) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{14}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AckRequest) GetId() int64 {
@@ -1093,7 +1180,7 @@ type AckResponse struct {
 
 func (x *AckResponse) Reset() {
 	*x = AckResponse{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[15]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1105,7 +1192,7 @@ func (x *AckResponse) String() string {
 func (*AckResponse) ProtoMessage() {}
 
 func (x *AckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[15]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1118,7 +1205,7 @@ func (x *AckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckResponse.ProtoReflect.Descriptor instead.
 func (*AckResponse) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{15}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{16}
 }
 
 type NackRequest struct {
@@ -1135,7 +1222,7 @@ type NackRequest struct {
 
 func (x *NackRequest) Reset() {
 	*x = NackRequest{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[16]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1147,7 +1234,7 @@ func (x *NackRequest) String() string {
 func (*NackRequest) ProtoMessage() {}
 
 func (x *NackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[16]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1160,7 +1247,7 @@ func (x *NackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NackRequest.ProtoReflect.Descriptor instead.
 func (*NackRequest) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{16}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *NackRequest) GetId() int64 {
@@ -1199,7 +1286,7 @@ type NackResponse struct {
 
 func (x *NackResponse) Reset() {
 	*x = NackResponse{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[17]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1211,7 +1298,7 @@ func (x *NackResponse) String() string {
 func (*NackResponse) ProtoMessage() {}
 
 func (x *NackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[17]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1224,7 +1311,7 @@ func (x *NackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NackResponse.ProtoReflect.Descriptor instead.
 func (*NackResponse) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{17}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{18}
 }
 
 type HeartbeatRequest struct {
@@ -1239,7 +1326,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[18]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1251,7 +1338,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[18]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1264,7 +1351,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{18}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *HeartbeatRequest) GetId() int64 {
@@ -1297,7 +1384,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[19]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1309,7 +1396,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[19]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1322,7 +1409,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{19}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *HeartbeatResponse) GetLeaseExpiresAt() *timestamppb.Timestamp {
@@ -1341,7 +1428,7 @@ type GetJobRequest struct {
 
 func (x *GetJobRequest) Reset() {
 	*x = GetJobRequest{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[20]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1353,7 +1440,7 @@ func (x *GetJobRequest) String() string {
 func (*GetJobRequest) ProtoMessage() {}
 
 func (x *GetJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[20]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1366,7 +1453,7 @@ func (x *GetJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetJobRequest.ProtoReflect.Descriptor instead.
 func (*GetJobRequest) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{20}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetJobRequest) GetId() int64 {
@@ -1385,7 +1472,7 @@ type GetJobResponse struct {
 
 func (x *GetJobResponse) Reset() {
 	*x = GetJobResponse{}
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[21]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1397,7 +1484,7 @@ func (x *GetJobResponse) String() string {
 func (*GetJobResponse) ProtoMessage() {}
 
 func (x *GetJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_tasklane_v1_tasklane_proto_msgTypes[21]
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1410,7 +1497,7 @@ func (x *GetJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetJobResponse.ProtoReflect.Descriptor instead.
 func (*GetJobResponse) Descriptor() ([]byte, []int) {
-	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{21}
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetJobResponse) GetJob() *Job {
@@ -1469,9 +1556,17 @@ const file_tasklane_v1_tasklane_proto_rawDesc = "" +
 	"\x13CreateQueueResponse\x12(\n" +
 	"\x05queue\x18\x01 \x01(\v2\x12.tasklane.v1.QueueR\x05queue\"%\n" +
 	"\x0fGetQueueRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"<\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"k\n" +
 	"\x10GetQueueResponse\x12(\n" +
-	"\x05queue\x18\x01 \x01(\v2\x12.tasklane.v1.QueueR\x05queue\"N\n" +
+	"\x05queue\x18\x01 \x01(\v2\x12.tasklane.v1.QueueR\x05queue\x12-\n" +
+	"\x05stats\x18\x02 \x01(\v2\x17.tasklane.v1.QueueStatsR\x05stats\"\xc5\x01\n" +
+	"\n" +
+	"QueueStats\x12\x1c\n" +
+	"\tavailable\x18\x01 \x01(\x03R\tavailable\x12\x16\n" +
+	"\x06leased\x18\x02 \x01(\x03R\x06leased\x12\x12\n" +
+	"\x04dead\x18\x03 \x01(\x03R\x04dead\x12-\n" +
+	"\x12recently_completed\x18\x04 \x01(\x03R\x11recentlyCompleted\x12>\n" +
+	"\rrecent_window\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\frecentWindow\"N\n" +
 	"\x0eEnqueueRequest\x12\x14\n" +
 	"\x05queue\x18\x01 \x01(\tR\x05queue\x12&\n" +
 	"\x03job\x18\x02 \x01(\v2\x14.tasklane.v1.JobSpecR\x03job\"B\n" +
@@ -1552,7 +1647,7 @@ func file_tasklane_v1_tasklane_proto_rawDescGZIP() []byte {
 }
 
 var file_tasklane_v1_tasklane_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_tasklane_v1_tasklane_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_tasklane_v1_tasklane_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_tasklane_v1_tasklane_proto_goTypes = []any{
 	(Priority)(0),                 // 0: tasklane.v1.Priority
 	(JobState)(0),                 // 1: tasklane.v1.JobState
@@ -1564,72 +1659,75 @@ var file_tasklane_v1_tasklane_proto_goTypes = []any{
 	(*CreateQueueResponse)(nil),   // 7: tasklane.v1.CreateQueueResponse
 	(*GetQueueRequest)(nil),       // 8: tasklane.v1.GetQueueRequest
 	(*GetQueueResponse)(nil),      // 9: tasklane.v1.GetQueueResponse
-	(*EnqueueRequest)(nil),        // 10: tasklane.v1.EnqueueRequest
-	(*EnqueueResponse)(nil),       // 11: tasklane.v1.EnqueueResponse
-	(*EnqueueBatchRequest)(nil),   // 12: tasklane.v1.EnqueueBatchRequest
-	(*EnqueueBatchResponse)(nil),  // 13: tasklane.v1.EnqueueBatchResponse
-	(*LeaseRequest)(nil),          // 14: tasklane.v1.LeaseRequest
-	(*LeaseResponse)(nil),         // 15: tasklane.v1.LeaseResponse
-	(*AckRequest)(nil),            // 16: tasklane.v1.AckRequest
-	(*AckResponse)(nil),           // 17: tasklane.v1.AckResponse
-	(*NackRequest)(nil),           // 18: tasklane.v1.NackRequest
-	(*NackResponse)(nil),          // 19: tasklane.v1.NackResponse
-	(*HeartbeatRequest)(nil),      // 20: tasklane.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),     // 21: tasklane.v1.HeartbeatResponse
-	(*GetJobRequest)(nil),         // 22: tasklane.v1.GetJobRequest
-	(*GetJobResponse)(nil),        // 23: tasklane.v1.GetJobResponse
-	(*durationpb.Duration)(nil),   // 24: google.protobuf.Duration
-	(*structpb.Struct)(nil),       // 25: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil), // 26: google.protobuf.Timestamp
+	(*QueueStats)(nil),            // 10: tasklane.v1.QueueStats
+	(*EnqueueRequest)(nil),        // 11: tasklane.v1.EnqueueRequest
+	(*EnqueueResponse)(nil),       // 12: tasklane.v1.EnqueueResponse
+	(*EnqueueBatchRequest)(nil),   // 13: tasklane.v1.EnqueueBatchRequest
+	(*EnqueueBatchResponse)(nil),  // 14: tasklane.v1.EnqueueBatchResponse
+	(*LeaseRequest)(nil),          // 15: tasklane.v1.LeaseRequest
+	(*LeaseResponse)(nil),         // 16: tasklane.v1.LeaseResponse
+	(*AckRequest)(nil),            // 17: tasklane.v1.AckRequest
+	(*AckResponse)(nil),           // 18: tasklane.v1.AckResponse
+	(*NackRequest)(nil),           // 19: tasklane.v1.NackRequest
+	(*NackResponse)(nil),          // 20: tasklane.v1.NackResponse
+	(*HeartbeatRequest)(nil),      // 21: tasklane.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),     // 22: tasklane.v1.HeartbeatResponse
+	(*GetJobRequest)(nil),         // 23: tasklane.v1.GetJobRequest
+	(*GetJobResponse)(nil),        // 24: tasklane.v1.GetJobResponse
+	(*durationpb.Duration)(nil),   // 25: google.protobuf.Duration
+	(*structpb.Struct)(nil),       // 26: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil), // 27: google.protobuf.Timestamp
 }
 var file_tasklane_v1_tasklane_proto_depIdxs = []int32{
-	24, // 0: tasklane.v1.Queue.visibility_timeout:type_name -> google.protobuf.Duration
-	25, // 1: tasklane.v1.JobSpec.payload:type_name -> google.protobuf.Struct
+	25, // 0: tasklane.v1.Queue.visibility_timeout:type_name -> google.protobuf.Duration
+	26, // 1: tasklane.v1.JobSpec.payload:type_name -> google.protobuf.Struct
 	0,  // 2: tasklane.v1.JobSpec.priority:type_name -> tasklane.v1.Priority
-	26, // 3: tasklane.v1.JobSpec.run_at:type_name -> google.protobuf.Timestamp
-	25, // 4: tasklane.v1.Job.payload:type_name -> google.protobuf.Struct
+	27, // 3: tasklane.v1.JobSpec.run_at:type_name -> google.protobuf.Timestamp
+	26, // 4: tasklane.v1.Job.payload:type_name -> google.protobuf.Struct
 	0,  // 5: tasklane.v1.Job.priority:type_name -> tasklane.v1.Priority
 	1,  // 6: tasklane.v1.Job.state:type_name -> tasklane.v1.JobState
-	26, // 7: tasklane.v1.Job.run_at:type_name -> google.protobuf.Timestamp
-	26, // 8: tasklane.v1.Job.lease_expires_at:type_name -> google.protobuf.Timestamp
-	26, // 9: tasklane.v1.Job.created_at:type_name -> google.protobuf.Timestamp
-	26, // 10: tasklane.v1.Job.finished_at:type_name -> google.protobuf.Timestamp
+	27, // 7: tasklane.v1.Job.run_at:type_name -> google.protobuf.Timestamp
+	27, // 8: tasklane.v1.Job.lease_expires_at:type_name -> google.protobuf.Timestamp
+	27, // 9: tasklane.v1.Job.created_at:type_name -> google.protobuf.Timestamp
+	27, // 10: tasklane.v1.Job.finished_at:type_name -> google.protobuf.Timestamp
 	2,  // 11: tasklane.v1.CreateQueueRequest.queue:type_name -> tasklane.v1.Queue
 	2,  // 12: tasklane.v1.CreateQueueResponse.queue:type_name -> tasklane.v1.Queue
 	2,  // 13: tasklane.v1.GetQueueResponse.queue:type_name -> tasklane.v1.Queue
-	3,  // 14: tasklane.v1.EnqueueRequest.job:type_name -> tasklane.v1.JobSpec
-	3,  // 15: tasklane.v1.EnqueueBatchRequest.jobs:type_name -> tasklane.v1.JobSpec
-	5,  // 16: tasklane.v1.EnqueueBatchResponse.results:type_name -> tasklane.v1.EnqueueResult
-	24, // 17: tasklane.v1.LeaseRequest.wait:type_name -> google.protobuf.Duration
-	24, // 18: tasklane.v1.LeaseRequest.visibility_timeout:type_name -> google.protobuf.Duration
-	4,  // 19: tasklane.v1.LeaseResponse.jobs:type_name -> tasklane.v1.Job
-	26, // 20: tasklane.v1.NackRequest.retry_at:type_name -> google.protobuf.Timestamp
-	24, // 21: tasklane.v1.HeartbeatRequest.visibility_timeout:type_name -> google.protobuf.Duration
-	26, // 22: tasklane.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
-	4,  // 23: tasklane.v1.GetJobResponse.job:type_name -> tasklane.v1.Job
-	6,  // 24: tasklane.v1.TasklaneService.CreateQueue:input_type -> tasklane.v1.CreateQueueRequest
-	8,  // 25: tasklane.v1.TasklaneService.GetQueue:input_type -> tasklane.v1.GetQueueRequest
-	10, // 26: tasklane.v1.TasklaneService.Enqueue:input_type -> tasklane.v1.EnqueueRequest
-	12, // 27: tasklane.v1.TasklaneService.EnqueueBatch:input_type -> tasklane.v1.EnqueueBatchRequest
-	14, // 28: tasklane.v1.TasklaneService.Lease:input_type -> tasklane.v1.LeaseRequest
-	16, // 29: tasklane.v1.TasklaneService.Ack:input_type -> tasklane.v1.AckRequest
-	18, // 30: tasklane.v1.TasklaneService.Nack:input_type -> tasklane.v1.NackRequest
-	20, // 31: tasklane.v1.TasklaneService.Heartbeat:input_type -> tasklane.v1.HeartbeatRequest
-	22, // 32: tasklane.v1.TasklaneService.GetJob:input_type -> tasklane.v1.GetJobRequest
-	7,  // 33: tasklane.v1.TasklaneService.CreateQueue:output_type -> tasklane.v1.CreateQueueResponse
-	9,  // 34: tasklane.v1.TasklaneService.GetQueue:output_type -> tasklane.v1.GetQueueResponse
-	11, // 35: tasklane.v1.TasklaneService.Enqueue:output_type -> tasklane.v1.EnqueueResponse
-	13, // 36: tasklane.v1.TasklaneService.EnqueueBatch:output_type -> tasklane.v1.EnqueueBatchResponse
-	15, // 37: tasklane.v1.TasklaneService.Lease:output_type -> tasklane.v1.LeaseResponse
-	17, // 38: tasklane.v1.TasklaneService.Ack:output_type -> tasklane.v1.AckResponse
-	19, // 39: tasklane.v1.TasklaneService.Nack:output_type -> tasklane.v1.NackResponse
-	21, // 40: tasklane.v1.TasklaneService.Heartbeat:output_type -> tasklane.v1.HeartbeatResponse
-	23, // 41: tasklane.v1.TasklaneService.GetJob:output_type -> tasklane.v1.GetJobResponse
-	33, // [33:42] is the sub-list for method output_type
-	24, // [24:33] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	10, // 14: tasklane.v1.GetQueueResponse.stats:type_name -> tasklane.v1.QueueStats
+	25, // 15: tasklane.v1.QueueStats.recent_window:type_name -> google.protobuf.Duration
+	3,  // 16: tasklane.v1.EnqueueRequest.job:type_name -> tasklane.v1.JobSpec
+	3,  // 17: tasklane.v1.EnqueueBatchRequest.jobs:type_name -> tasklane.v1.JobSpec
+	5,  // 18: tasklane.v1.EnqueueBatchResponse.results:type_name -> tasklane.v1.EnqueueResult
+	25, // 19: tasklane.v1.LeaseRequest.wait:type_name -> google.protobuf.Duration
+	25, // 20: tasklane.v1.LeaseRequest.visibility_timeout:type_name -> google.protobuf.Duration
+	4,  // 21: tasklane.v1.LeaseResponse.jobs:type_name -> tasklane.v1.Job
+	27, // 22: tasklane.v1.NackRequest.retry_at:type_name -> google.protobuf.Timestamp
+	25, // 23: tasklane.v1.HeartbeatRequest.visibility_timeout:type_name -> google.protobuf.Duration
+	27, // 24: tasklane.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
+	4,  // 25: tasklane.v1.GetJobResponse.job:type_name -> tasklane.v1.Job
+	6,  // 26: tasklane.v1.TasklaneService.CreateQueue:input_type -> tasklane.v1.CreateQueueRequest
+	8,  // 27: tasklane.v1.TasklaneService.GetQueue:input_type -> tasklane.v1.GetQueueRequest
+	11, // 28: tasklane.v1.TasklaneService.Enqueue:input_type -> tasklane.v1.EnqueueRequest
+	13, // 29: tasklane.v1.TasklaneService.EnqueueBatch:input_type -> tasklane.v1.EnqueueBatchRequest
+	15, // 30: tasklane.v1.TasklaneService.Lease:input_type -> tasklane.v1.LeaseRequest
+	17, // 31: tasklane.v1.TasklaneService.Ack:input_type -> tasklane.v1.AckRequest
+	19, // 32: tasklane.v1.TasklaneService.Nack:input_type -> tasklane.v1.NackRequest
+	21, // 33: tasklane.v1.TasklaneService.Heartbeat:input_type -> tasklane.v1.HeartbeatRequest
+	23, // 34: tasklane.v1.TasklaneService.GetJob:input_type -> tasklane.v1.GetJobRequest
+	7,  // 35: tasklane.v1.TasklaneService.CreateQueue:output_type -> tasklane.v1.CreateQueueResponse
+	9,  // 36: tasklane.v1.TasklaneService.GetQueue:output_type -> tasklane.v1.GetQueueResponse
+	12, // 37: tasklane.v1.TasklaneService.Enqueue:output_type -> tasklane.v1.EnqueueResponse
+	14, // 38: tasklane.v1.TasklaneService.EnqueueBatch:output_type -> tasklane.v1.EnqueueBatchResponse
+	16, // 39: tasklane.v1.TasklaneService.Lease:output_type -> tasklane.v1.LeaseResponse
+	18, // 40: tasklane.v1.TasklaneService.Ack:output_type -> tasklane.v1.AckResponse
+	20, // 41: tasklane.v1.TasklaneService.Nack:output_type -> tasklane.v1.NackResponse
+	22, // 42: tasklane.v1.TasklaneService.Heartbeat:output_type -> tasklane.v1.HeartbeatResponse
+	24, // 43: tasklane.v1.TasklaneService.GetJob:output_type -> tasklane.v1.GetJobResponse
+	35, // [35:44] is the sub-list for method output_type
+	26, // [26:35] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_tasklane_v1_tasklane_proto_init() }
@@ -1643,7 +1741,7 @@ func file_tasklane_v1_tasklane_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tasklane_v1_tasklane_proto_rawDesc), len(file_tasklane_v1_tasklane_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   22,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

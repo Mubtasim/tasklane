@@ -395,11 +395,11 @@ If the Nack can't be sent (SIGKILL, network down), the lease simply expires and 
 
 ### 14.3 Live queue stats
 
-`GetQueueResponse` gains `QueueStats stats` (an additive proto change): `available`, `leased`, `dead` and `completed_last_10s`. `Store.QueueStats` computes them in one statement, on demand (no cache until M3 adds backpressure):
+`GetQueueResponse` gains `QueueStats stats` (an additive proto change): `available`, `leased`, `dead`, `recently_completed` and `recent_window` (10 s, `store.StatsWindow`). `Store.QueueStats` computes them in one statement, on demand (no cache until M3 adds backpressure):
 
 - `available` and `dead` use the partial indexes that start with `queue`.
 - `leased` reads the `jobs_leased` partial index, which has no `queue` column; leased jobs are bounded by the total worker slots, so this stays small.
-- Completed jobs are not counted in full: they pile up until pruned, and `COUNT(*)` in Postgres visits every row (MVCC keeps no stored count). `completed_last_10s` instead counts `state = 'completed' AND finished_at > now() - 10 s` through the B-tree `jobs_finished` index, so its cost follows recent throughput, not table size.
+- Completed jobs are not counted in full: they pile up until pruned, and `COUNT(*)` in Postgres visits every row (MVCC keeps no stored count). `recently_completed` instead counts `state = 'completed' AND finished_at > now() - 10 s` through the B-tree `jobs_finished` index, so its cost follows recent throughput, not table size.
 
 Rejected: a counters table updated on every transition (one hot row that every Ack must lock, serialising completions).
 
@@ -407,7 +407,7 @@ The same query later feeds the M3 backpressure cache and the M4 `tasklane_queue_
 
 ### 14.4 `tasklane-watch` and the demo
 
-- `cmd/tasklane-watch`: redraws once a second: `queue=demo  available 120 | leased 15 | dead 4 | completed 42/s` (`completed_last_10s / 10`). It is the start of the v1.1 CLI.
+- `cmd/tasklane-watch`: redraws once a second: `queue=demo  available 120 | leased 15 | dead 4 | completed 42/s` (`recently_completed / recent_window`). It is the start of the v1.1 CLI.
 - `examples/demo/producer`: creates the `demo` queue (`visibility_timeout` 15 s, `max_attempts` 5) and enqueues about 10 jobs/s: `normal` ~85% (sleeps 0.2–2 s, succeeds), `flaky` ~12% (fails 30% of runs), `poison` ~3% (always fails, reaches the DLQ).
 - `examples/demo/worker`: handlers for the three kinds, `Concurrency` 5.
 - `deploy/docker-compose.yml` with one multi-stage `Dockerfile`: `postgres` (not published on the host), `tasklane` (8080 and 7070 published), `producer`, `worker-1..3` (`stop_grace_period: 30s`, since Docker's default of 10 s is shorter than `ShutdownTimeout`). About 250 MB of RAM in total. `tasklane-watch` runs on the host.

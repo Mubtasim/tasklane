@@ -285,3 +285,25 @@ func TestWithPollIntervalIgnoresNonPositive(t *testing.T) {
 	s := NewServer(nil, nil, slog.New(slog.DiscardHandler), WithPollInterval(time.Minute))
 	require.Equal(t, time.Minute, s.pollInterval)
 }
+
+func TestGetQueueReturnsLiveStats(t *testing.T) {
+	e := newEnv(t, nil)
+	ctx := context.Background()
+	e.mustQueue(t, "emails")
+	for range 3 {
+		e.mustEnqueue(t, "emails", &tasklanev1.JobSpec{Kind: "welcome"})
+	}
+	done := e.mustLeaseOne(t, "emails")
+	_, err := e.client.Ack(ctx, &tasklanev1.AckRequest{Id: done.GetId(), LeaseToken: done.GetLeaseToken()})
+	require.NoError(t, err)
+	e.mustLeaseOne(t, "emails")
+
+	got, err := e.client.GetQueue(ctx, &tasklanev1.GetQueueRequest{Name: "emails"})
+	require.NoError(t, err)
+	st := got.GetStats()
+	require.Equal(t, int64(1), st.GetAvailable())
+	require.Equal(t, int64(1), st.GetLeased())
+	require.Equal(t, int64(0), st.GetDead())
+	require.Equal(t, int64(1), st.GetRecentlyCompleted())
+	require.Equal(t, 10*time.Second, st.GetRecentWindow().AsDuration())
+}

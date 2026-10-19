@@ -139,6 +139,16 @@ func queueFromStore(q store.Queue) *tasklanev1.Queue {
 	}
 }
 
+func statsFromStore(s store.QueueStats) *tasklanev1.QueueStats {
+	return &tasklanev1.QueueStats{
+		Available:         s.Available,
+		Leased:            s.Leased,
+		Dead:              s.Dead,
+		RecentlyCompleted: s.RecentlyCompleted,
+		RecentWindow:      durationpb.New(store.StatsWindow),
+	}
+}
+
 func jobSpecToStore(queue string, spec *tasklanev1.JobSpec) (store.NewJob, error) {
 	if spec == nil {
 		return store.NewJob{}, invalid("job is required")
