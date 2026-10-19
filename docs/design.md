@@ -75,6 +75,7 @@ type Store interface {
     ReapExpired(ctx context.Context, limit int) (int, error)
     CreateQueue(ctx context.Context, q Queue) error
     GetQueue(ctx context.Context, name string) (Queue, error)
+    QueueStats(ctx context.Context, name string) (QueueStats, error) // live counts (§14)
     GetJob(ctx context.Context, id int64) (Job, error)
     // plus Cancel, ListDead, Redrive, PruneCompleted later
 }
@@ -199,7 +200,7 @@ One `proto/tasklane/v1/tasklane.proto` generates the gRPC server, the HTTP/JSON 
 | `CancelJob` | `POST /v1/jobs/{id}:cancel` | Only while `available` |
 | `ListDeadJobs` | `GET /v1/queues/{queue}/dead` | Paginated |
 | `RedriveJobs` | `POST /v1/queues/{queue}/dead:redrive` | By IDs or all |
-| `CreateQueue`, `UpdateQueue`, `GetQueue`, `ListQueues` | `/v1/queues…` | Settings and live counts |
+| `CreateQueue`, `UpdateQueue`, `GetQueue`, `ListQueues` | `/v1/queues…` | Settings and live counts (`GetQueue` returns `stats` since M2b, §14) |
 
 The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY_CRITICAL = 1` … `PRIORITY_LOW = 4`, so an unset field becomes the default rather than critical.
 
@@ -242,7 +243,7 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 
 **Auth:** a static API key per client, sent as `authorization: Bearer <key>` (gRPC metadata or HTTP header; the scheme is case-insensitive) and configured with `TASKLANE_API_KEYS` (comma-separated). With no keys configured, auth is disabled and the server logs a warning at startup. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
 
-**SDKs:** Go (`github.com/mubtasim/tasklane/sdk/go`), TypeScript (`@mubtasim/tasklane`) and C# (`Tasklane.Client` on NuGet). Each provides a producer client and a worker runner that handles leasing, concurrency, heartbeats, ack/nack, retrying the server connection with backoff, and graceful shutdown.
+**SDKs:** Go (`github.com/mubtasim/tasklane/sdk/go/tasklane`, §14), TypeScript (`@mubtasim/tasklane`) and C# (`Tasklane.Client` on NuGet). Each provides a producer client and a worker runner that handles leasing, concurrency, heartbeats, ack/nack, retrying the server connection with backoff, and graceful shutdown.
 
 ## 7. Failure handling
 
@@ -312,9 +313,116 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 |---|---|---|
 | M1 | mid-Nov 2026 | Repo, schema and migrations, `PostgresStore` with enqueue/lease/ack/nack and integration tests |
 | M2a | end of Nov | API server: proto + buf, gRPC and HTTP gateway, error mapping, API-key auth, idempotent ack, long-poll leasing with LISTEN/NOTIFY, reaper loop, graceful shutdown |
-| M2b | early Dec | Go SDK (producer + worker runner with heartbeats), docker-compose demo with a failing demo worker |
+| M2b | early Dec | Go SDK (producer + worker runner with heartbeats), live queue stats, `tasklane-watch`, docker-compose demo with flaky and poison jobs (§14) |
 | M3 | mid-Dec | Pruner, DLQ listing and redrive, cancel, backpressure, `LeaseStream` |
 | M4 | end of Dec | Metrics, tracing, Grafana dashboard, chaos and invariant tests |
 | M5 | mid-Jan 2027 | TS and C# SDKs, load tests and benchmark report, v1.0.0 release and a blog post |
 
 Notes for M3: like `Enqueue`, `RedriveJobs` and `CancelJob` must send `pg_notify('tasklane_jobs', queue)` inside their transaction whenever they change which jobs are runnable (redrive always does), or waiting leases only notice at their next one-second re-check. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.
+
+## 14. M2b: Go SDK, live queue stats and demo
+
+Decided 2026-10-20. This section is the M2b spec.
+
+### 14.1 Public API
+
+Package `github.com/mubtasim/tasklane/sdk/go/tasklane`, in the server's module (Go compiles only imported packages, so SDK users don't build the server or its dependencies). gRPC only.
+
+```go
+client, err := tasklane.Dial(ctx, "localhost:9090", tasklane.WithAPIKey("secret"))
+defer client.Close()
+
+// Producer
+res, err := client.Enqueue(ctx, "demo", tasklane.Job{
+    Kind:           "send_email",
+    Payload:        EmailPayload{To: "a@b.com"}, // any value; JSON-encoded into the proto Struct
+    Priority:       tasklane.PriorityHigh,
+    RunAt:          time.Now().Add(time.Minute), // optional
+    IdempotencyKey: "order-123-email",           // optional
+})                                               // res.JobID, res.Created
+client.EnqueueBatch(ctx, "demo", jobs)
+client.CreateQueue(ctx, tasklane.QueueConfig{Name: "demo", VisibilityTimeout: 15 * time.Second})
+client.GetQueue(ctx, "demo") // config + Stats (§14.3)
+
+// Worker
+w := client.NewWorker("demo", tasklane.WorkerOptions{Concurrency: 5})
+w.Handle("send_email", func(ctx context.Context, job *tasklane.LeasedJob) error {
+    var p EmailPayload
+    if err := job.Decode(&p); err != nil {
+        return err
+    }
+    return send(ctx, p) // nil → Ack, error → Nack
+})
+err = w.Run(ctx) // blocks; cancelling ctx starts graceful shutdown
+```
+
+- `LeasedJob` exposes `ID`, `Kind`, `Attempt`, `MaxAttempts`, `Payload` and `Decode(&v)`. The lease token stays inside the SDK: only the runner sends Ack, Nack and Heartbeat.
+- Handlers are registered per job kind. A job whose kind has no handler is Nacked with `no handler for kind "X"`, so it ends in the DLQ instead of looping.
+- `tasklane.RetryAt(err, t)` wraps an error so the Nack carries `retry_at = t` (for example from a downstream `Retry-After`).
+- A panicking handler is recovered and Nacked with the panic message.
+- Producer calls are returned to the caller as errors; the SDK does not retry them. The caller retries an enqueue with the same idempotency key.
+
+### 14.2 Worker runner
+
+**Leasing: one loop per worker, sized to free slots.** Slots are a buffered channel with capacity `Concurrency`. The loop:
+
+1. Blocks until at least one slot is free, then takes every other free slot without blocking: `k` slots.
+2. Calls `Lease(max_jobs = k, wait = 20 s, visibility_timeout = V)` with a call deadline of `wait + 10 s`.
+3. Gets `m ≤ k` jobs, returns the `k − m` unused slots (forgetting this drains every slot on the first empty long-poll and silently stalls the worker), and starts one goroutine per job.
+
+Rejected alternative: `Concurrency` goroutines that each lease one job. That holds one long-poll per goroutine instead of one per process, and each waiting lease costs the server one query per second (§6), so idle database load would grow with total worker concurrency; it also gives up batch leasing. Moving the loop to `LeaseStream` credits in M3 changes no public API.
+
+**Visibility timeout.** `Run` first calls `GetQueue`, which validates that the queue exists and gives its visibility timeout `V` unless `WorkerOptions.VisibilityTimeout` overrides it. The runner sends `V` explicitly on Lease and Heartbeat and schedules heartbeats from its own monotonic clock, never by comparing the server's `lease_expires_at` with the local clock, so clock skew between worker and database cannot break heartbeats.
+
+**Per job.** Each job gets its own `jobCtx`, not derived from `Run`'s context, so shutdown does not cancel running handlers at once.
+
+- A heartbeat ticker runs every `V / 3`, so one lost heartbeat does not lose the lease.
+  - Success extends the lease.
+  - `FAILED_PRECONDITION` or `NOT_FOUND` means the lease is lost (another worker may hold the job): cancel `jobCtx`, send no Ack or Nack, log `lease lost`. This shortens, but cannot remove, the window in which two workers run the same job; handlers must stay idempotent (at-least-once).
+  - `UNAVAILABLE` waits for the next tick.
+- After the handler returns, the heartbeat stops, then the runner sends Ack (nil) or Nack (error text, optional `retry_at`). Both are retried with backoff on `UNAVAILABLE` until the lease would have expired: a retried Ack is idempotent and a repeated Nack gets a harmless `FAILED_PRECONDITION`.
+- The slot is released.
+
+**Errors from the server.** `UNAVAILABLE` on Lease is retried with full-jitter backoff (ceiling 1 s, doubling to a 30 s cap). `NOT_FOUND` (queue deleted) and `UNAUTHENTICATED` end `Run` with an error.
+
+**Graceful shutdown** when `Run`'s context is cancelled:
+
+1. The lease loop stops; no new jobs are taken.
+2. Running handlers get up to `WorkerOptions.ShutdownTimeout` (default 25 s) to finish and Ack or Nack normally.
+3. At the deadline the runner cancels the remaining `jobCtx`s and Nacks those jobs with `worker shutting down`, each with a 2 s deadline, then returns without waiting for handlers that ignore their context.
+
+If the Nack can't be sent (SIGKILL, network down), the lease simply expires and the reaper retries the job, so the Nack is a best-effort speed-up over a safe fallback. Either way the attempt is already counted, because `attempts` is incremented at lease time.
+
+### 14.3 Live queue stats
+
+`GetQueueResponse` gains `QueueStats stats` (an additive proto change): `available`, `leased`, `dead` and `completed_last_10s`. `Store.QueueStats` computes them in one statement, on demand (no cache until M3 adds backpressure):
+
+- `available` and `dead` use the partial indexes that start with `queue`.
+- `leased` reads the `jobs_leased` partial index, which has no `queue` column; leased jobs are bounded by the total worker slots, so this stays small.
+- Completed jobs are not counted in full: they pile up until pruned, and `COUNT(*)` in Postgres visits every row (MVCC keeps no stored count). `completed_last_10s` instead counts `state = 'completed' AND finished_at > now() - 10 s` through the B-tree `jobs_finished` index, so its cost follows recent throughput, not table size.
+
+Rejected: a counters table updated on every transition (one hot row that every Ack must lock, serialising completions).
+
+The same query later feeds the M3 backpressure cache and the M4 `tasklane_queue_depth` metric.
+
+### 14.4 `tasklane-watch` and the demo
+
+- `cmd/tasklane-watch`: redraws once a second: `queue=demo  available 120 | leased 15 | dead 4 | completed 42/s` (`completed_last_10s / 10`). It is the start of the v1.1 CLI.
+- `examples/demo/producer`: creates the `demo` queue (`visibility_timeout` 15 s, `max_attempts` 5) and enqueues about 10 jobs/s: `normal` ~85% (sleeps 0.2–2 s, succeeds), `flaky` ~12% (fails 30% of runs), `poison` ~3% (always fails, reaches the DLQ).
+- `examples/demo/worker`: handlers for the three kinds, `Concurrency` 5.
+- `deploy/docker-compose.yml` with one multi-stage `Dockerfile`: `postgres` (not published on the host), `tasklane` (8080 and 9090 published), `producer`, `worker-1..3` (`stop_grace_period: 30s`, since Docker's default of 10 s is shorter than `ShutdownTimeout`). About 250 MB of RAM in total. `tasklane-watch` runs on the host.
+- Two failure paths to show: `docker compose kill worker-1` (SIGKILL: its jobs stay leased ~15 s until the reaper returns them) and `docker compose stop worker-2` (SIGTERM: running jobs finish, unfinished ones are Nacked and return within seconds). The README gets a Demo section with the tmux layout.
+- Deferred: two server copies with one killed (needs multi-address dialing or a proxy).
+
+### 14.5 Testing
+
+- **SDK unit tests** against an in-memory gRPC server (`bufconn`) that scripts every reply: unused slots are returned (a job still runs after an empty lease); never more than `Concurrency` jobs at once; a lost lease cancels the handler's context and sends no Ack or Nack; panic and unknown kind become Nacks; `RetryAt` sets `retry_at`; backoff on `UNAVAILABLE`; `NOT_FOUND` and `UNAUTHENTICATED` end `Run`; shutdown stops leasing, lets running jobs finish and Nacks the rest at the deadline.
+- **Integration tests** (real server, Postgres via testcontainers): enqueue → worker → `completed`; a handler that never returns loses its job to the reaper and a second worker completes it; `QueueStats` per state, including the 10 s window.
+- Everything runs with `-race`. The demo is checked by hand (smoke test in tmux).
+
+### 14.6 Carried over from the M2a review
+
+- Gate the ~40 s `-race` max-lease test behind `testing.Short()`.
+- Raise per-job size headroom from 4 KiB to 16 KiB so `last_error` is covered.
+- Check the protobuf size before the gateway's JSON marshal.
+- Fix the stale `LeaseRequest.max_jobs` proto comment ("1 to 1000"): the server clamps to 50 (`MaxLeaseJobs`).
