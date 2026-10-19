@@ -13,8 +13,9 @@ const (
 	MaxMessageBytes = 16 << 20
 	// MaxLeaseJobs caps one Lease: larger max_jobs values are clamped to it.
 	// Because MaxPayloadBytes bounds the protobuf size, MaxLeaseJobs jobs,
-	// each at most MaxPayloadBytes plus a few KiB of other fields, fit in
-	// MaxMessageBytes (checked by TestFullLeaseFitsInOneMessage).
+	// each at most MaxPayloadBytes plus up to 16 KiB of other fields
+	// (last_error alone can be 4 KiB), fit in MaxMessageBytes (checked by
+	// TestFullLeaseFitsInOneMessage): 50 × 272 KiB ≈ 13.3 MiB.
 	MaxLeaseJobs = 50
 
 	// maxBatchSlack is kept free below MaxMessageBytes in an EnqueueBatch.

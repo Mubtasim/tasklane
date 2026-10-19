@@ -921,7 +921,7 @@ func (x *EnqueueBatchResponse) GetResults() []*EnqueueResult {
 type LeaseRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Queue string                 `protobuf:"bytes,1,opt,name=queue,proto3" json:"queue,omitempty"`
-	// 1 to 1000; 0 means 1.
+	// 0 means 1; values above 50 are clamped to 50.
 	MaxJobs int32 `protobuf:"varint,2,opt,name=max_jobs,json=maxJobs,proto3" json:"max_jobs,omitempty"`
 	// Long-poll duration, capped at 30 s. Unset or zero returns immediately.
 	Wait *durationpb.Duration `protobuf:"bytes,3,opt,name=wait,proto3" json:"wait,omitempty"`

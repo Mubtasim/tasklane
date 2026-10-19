@@ -197,7 +197,7 @@ message EnqueueBatchResponse {
 
 message LeaseRequest {
   string queue = 1;
-  // 1 to 1000; 0 means 1.
+  // 0 means 1; values above 50 are clamped to 50.
   int32 max_jobs = 2;
   // Long-poll duration, capped at 30 s. Unset or zero returns immediately.
   google.protobuf.Duration wait = 3;
