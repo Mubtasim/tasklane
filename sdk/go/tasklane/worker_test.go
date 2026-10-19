@@ -338,3 +338,52 @@ func TestARejectedNackIsNotRetried(t *testing.T) {
 	waitFor(t, func() bool { return len(f.calls().nacks) == 1 })
 	require.Never(t, func() bool { return len(f.calls().nacks) > 1 }, 100*time.Millisecond, 5*time.Millisecond)
 }
+
+func TestExtraJobsFromTheServerAreIgnored(t *testing.T) {
+	f, c := newFake(t)
+	var sent atomic.Bool
+	var running, peak atomic.Int32
+	f.set(func(f *fakeServer) {
+		f.leaseFn = func(ctx context.Context, req *tasklanev1.LeaseRequest) (*tasklanev1.LeaseResponse, error) {
+			if sent.CompareAndSwap(false, true) {
+				return &tasklanev1.LeaseResponse{Jobs: []*tasklanev1.Job{fakeJob(1, "w"), fakeJob(2, "w"), fakeJob(3, "w")}}, nil
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(20 * time.Millisecond):
+			}
+			return &tasklanev1.LeaseResponse{}, nil
+		}
+	})
+	w := testWorker(c, WorkerOptions{Concurrency: 1})
+	w.Handle("w", func(context.Context, *LeasedJob) error {
+		n := running.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		running.Add(-1)
+		return nil
+	})
+	stop := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { stop <- w.Run(ctx) }()
+
+	waitFor(t, func() bool { return len(f.calls().acks) >= 1 })
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-stop:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	require.Equal(t, int32(1), peak.Load())
+	acks := f.calls().acks
+	require.Len(t, acks, 1)
+	require.Equal(t, int64(1), acks[0].GetId())
+}

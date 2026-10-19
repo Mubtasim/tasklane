@@ -173,6 +173,16 @@ func (w *Worker) leaseLoop(ctx context.Context, r *run) error {
 
 		leasedAt := time.Now()
 		jobs, err := w.lease(ctx, k, r.vt)
+		// The server must not return more than k jobs. If it does, run only
+		// k: the extras' leases expire and the reaper retries them.
+		if len(jobs) > k {
+			ids := make([]int64, 0, len(jobs)-k)
+			for _, pj := range jobs[k:] {
+				ids = append(ids, pj.GetId())
+			}
+			w.log.Warn("server returned more jobs than requested; ignoring the extras", "requested", k, "extras", len(ids), "job_ids", ids)
+			jobs = jobs[:k]
+		}
 		// Give back the slots this lease didn't fill. Without this, one
 		// empty long-poll would keep every slot and the worker would stop
 		// taking jobs without any error.
