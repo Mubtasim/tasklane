@@ -68,6 +68,20 @@ func (q Queue) WithDefaults() Queue {
 	return q
 }
 
+// StatsWindow is how far back QueueStats counts completed jobs. Completed
+// jobs pile up until they are pruned, so counting all of them would get
+// slower as the table grows; a recent window costs what the recent
+// throughput costs, whatever the table size.
+const StatsWindow = 10 * time.Second
+
+// QueueStats are a queue's live job counts.
+type QueueStats struct {
+	Available         int64
+	Leased            int64
+	Dead              int64
+	RecentlyCompleted int64 // completed within the last StatsWindow
+}
+
 type NewJob struct {
 	Queue          string
 	Kind           string
@@ -111,6 +125,10 @@ type Store interface {
 	CreateQueue(ctx context.Context, q Queue) error
 	// GetQueue returns ErrNotFound for an unknown queue.
 	GetQueue(ctx context.Context, name string) (Queue, error)
+	// QueueStats counts the queue's available, leased and dead jobs and the
+	// jobs completed within the last StatsWindow. It returns ErrNotFound for
+	// an unknown queue.
+	QueueStats(ctx context.Context, queue string) (QueueStats, error)
 
 	// Enqueue inserts 1 to 1000 jobs atomically and returns one result per
 	// job, in the caller's order. A job whose idempotency key already exists
