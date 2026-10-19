@@ -103,10 +103,14 @@ type run struct {
 	vt    time.Duration
 	slots chan struct{} // holds one value per running job; capacity = Concurrency
 	jobs  sync.WaitGroup
+
+	mu     sync.Mutex
+	active map[*activeJob]struct{}
 }
 
-// Run leases and runs jobs until ctx is cancelled, then waits for running
-// jobs and returns nil. It returns an error only when retrying can't help:
+// Run leases and runs jobs until ctx is cancelled, then shuts down
+// gracefully: it stops leasing, gives running jobs up to ShutdownTimeout to
+// finish, nacks the ones that don't, and returns nil. It returns an error only when retrying can't help:
 // the queue doesn't exist or the API key is rejected. While the server is
 // unreachable it keeps retrying with backoff.
 func (w *Worker) Run(ctx context.Context) error {
@@ -117,9 +121,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	if err != nil || ctx.Err() != nil {
 		return err
 	}
-	r := &run{vt: vt, slots: make(chan struct{}, w.opts.Concurrency)}
+	r := &run{vt: vt, slots: make(chan struct{}, w.opts.Concurrency), active: map[*activeJob]struct{}{}}
 	err = w.leaseLoop(ctx, r)
-	r.jobs.Wait()
+	w.drain(r)
 	return err
 }
 

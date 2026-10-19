@@ -63,15 +63,24 @@ func (e *retryAtError) Unwrap() error { return e.err }
 
 // activeJob is a job this worker is running.
 type activeJob struct {
-	job    *LeasedJob
-	cancel context.CancelFunc // cancels the handler's context
-	lost   atomic.Bool        // the server reported the lease gone
+	job           *LeasedJob
+	cancel        context.CancelFunc // cancels the handler's context
+	stopHeartbeat context.CancelFunc
+	lost          atomic.Bool // the server reported the lease gone
+	finished      atomic.Bool // the final Ack or Nack has been claimed
 
 	mu sync.Mutex
 	// deadline is when the lease expires by this process's monotonic clock.
 	// It is counted from before the request that set the lease was sent, so
 	// it is never later than the server's lease_expires_at.
 	deadline time.Time
+}
+
+// claim reports whether the caller may send the job's final Ack or Nack:
+// only the first caller may, so the job's goroutine and a shutdown never
+// both answer for it.
+func (a *activeJob) claim() bool {
+	return a.finished.CompareAndSwap(false, true)
 }
 
 func (a *activeJob) leaseDeadline() time.Time {
@@ -110,9 +119,12 @@ func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 	// Not derived from Run's context: a shutdown lets running jobs finish.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a := &activeJob{job: job, cancel: cancel, deadline: leasedAt.Add(r.vt)}
+	hbCtx, stopHeartbeat := context.WithCancel(context.Background())
+	defer stopHeartbeat()
+	a := &activeJob{job: job, cancel: cancel, stopHeartbeat: stopHeartbeat, deadline: leasedAt.Add(r.vt)}
+	r.add(a)
+	defer r.remove(a)
 	if err == nil {
-		hbCtx, stopHeartbeat := context.WithCancel(context.Background())
 		hbDone := make(chan struct{})
 		go func() {
 			defer close(hbDone)
@@ -124,8 +136,10 @@ func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 		stopHeartbeat()
 		<-hbDone
 	}
-	if a.lost.Load() {
-		return // the job may belong to another worker now: no Ack or Nack
+	// After a lost lease the job may belong to another worker; after the
+	// shutdown deadline, drain has already nacked it.
+	if a.lost.Load() || !a.claim() {
+		return
 	}
 	w.finish(a, err)
 }
