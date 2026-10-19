@@ -329,7 +329,7 @@ Decided 2026-10-20. This section is the M2b spec.
 Package `github.com/mubtasim/tasklane/sdk/go/tasklane`, in the server's module (Go compiles only imported packages, so SDK users don't build the server or its dependencies). gRPC only.
 
 ```go
-client, err := tasklane.Dial(ctx, "localhost:7070", tasklane.WithAPIKey("secret"))
+client, err := tasklane.Dial("localhost:7070", tasklane.WithAPIKey("secret"))
 defer client.Close()
 
 // Producer
