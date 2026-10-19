@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -62,7 +63,9 @@ func (e *retryAtError) Unwrap() error { return e.err }
 
 // activeJob is a job this worker is running.
 type activeJob struct {
-	job *LeasedJob
+	job    *LeasedJob
+	cancel context.CancelFunc // cancels the handler's context
+	lost   atomic.Bool        // the server reported the lease gone
 
 	mu sync.Mutex
 	// deadline is when the lease expires by this process's monotonic clock.
@@ -104,12 +107,25 @@ func leasedJobFromProto(pj *tasklanev1.Job) (*LeasedJob, error) {
 func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 	defer func() { <-r.slots }()
 	job, err := leasedJobFromProto(pj)
-	a := &activeJob{job: job, deadline: leasedAt.Add(r.vt)}
+	// Not derived from Run's context: a shutdown lets running jobs finish.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := &activeJob{job: job, cancel: cancel, deadline: leasedAt.Add(r.vt)}
 	if err == nil {
-		// Not derived from Run's context: a shutdown lets running jobs finish.
-		ctx, cancel := context.WithCancel(context.Background())
+		hbCtx, stopHeartbeat := context.WithCancel(context.Background())
+		hbDone := make(chan struct{})
+		go func() {
+			defer close(hbDone)
+			w.heartbeat(hbCtx, a, r.vt)
+		}()
 		err = w.call(ctx, job)
-		cancel()
+		// Stop heartbeating before the final call, so no heartbeat races
+		// the Ack or Nack.
+		stopHeartbeat()
+		<-hbDone
+	}
+	if a.lost.Load() {
+		return // the job may belong to another worker now: no Ack or Nack
 	}
 	w.finish(a, err)
 }
