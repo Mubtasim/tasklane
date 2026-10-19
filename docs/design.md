@@ -329,7 +329,7 @@ Decided 2026-10-20. This section is the M2b spec.
 Package `github.com/mubtasim/tasklane/sdk/go/tasklane`, in the server's module (Go compiles only imported packages, so SDK users don't build the server or its dependencies). gRPC only.
 
 ```go
-client, err := tasklane.Dial(ctx, "localhost:9090", tasklane.WithAPIKey("secret"))
+client, err := tasklane.Dial(ctx, "localhost:7070", tasklane.WithAPIKey("secret"))
 defer client.Close()
 
 // Producer
@@ -410,7 +410,7 @@ The same query later feeds the M3 backpressure cache and the M4 `tasklane_queue_
 - `cmd/tasklane-watch`: redraws once a second: `queue=demo  available 120 | leased 15 | dead 4 | completed 42/s` (`completed_last_10s / 10`). It is the start of the v1.1 CLI.
 - `examples/demo/producer`: creates the `demo` queue (`visibility_timeout` 15 s, `max_attempts` 5) and enqueues about 10 jobs/s: `normal` ~85% (sleeps 0.2–2 s, succeeds), `flaky` ~12% (fails 30% of runs), `poison` ~3% (always fails, reaches the DLQ).
 - `examples/demo/worker`: handlers for the three kinds, `Concurrency` 5.
-- `deploy/docker-compose.yml` with one multi-stage `Dockerfile`: `postgres` (not published on the host), `tasklane` (8080 and 9090 published), `producer`, `worker-1..3` (`stop_grace_period: 30s`, since Docker's default of 10 s is shorter than `ShutdownTimeout`). About 250 MB of RAM in total. `tasklane-watch` runs on the host.
+- `deploy/docker-compose.yml` with one multi-stage `Dockerfile`: `postgres` (not published on the host), `tasklane` (8080 and 7070 published), `producer`, `worker-1..3` (`stop_grace_period: 30s`, since Docker's default of 10 s is shorter than `ShutdownTimeout`). About 250 MB of RAM in total. `tasklane-watch` runs on the host.
 - Two failure paths to show: `docker compose kill worker-1` (SIGKILL: its jobs stay leased ~15 s until the reaper returns them) and `docker compose stop worker-2` (SIGTERM: running jobs finish, unfinished ones are Nacked and return within seconds). The README gets a Demo section with the tmux layout.
 - Deferred: two server copies with one killed (needs multi-address dialing or a proxy).
 
