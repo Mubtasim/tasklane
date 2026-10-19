@@ -33,15 +33,27 @@ func (w *Worker) drain(r *run) {
 	}
 
 	var nacks sync.WaitGroup
+	var finishing []*activeJob
 	for _, a := range r.snapshot() {
-		if a.lost.Load() || !a.claim() {
-			// Lost: the job may belong to another worker. Otherwise the
-			// job's own goroutine is already sending its Ack or Nack.
+		if a.lost.Load() {
+			continue // the job may belong to another worker
+		}
+		if !a.claim() {
+			// The job's own goroutine won: its handler finished in time
+			// and its Ack or Nack is in flight. Wait for it below.
+			finishing = append(finishing, a)
 			continue
 		}
 		a.stopHeartbeat()
 		a.cancel()
 		nacks.Go(func() {
+			// Join the heartbeat before the Nack, as runJob does before
+			// its final call. A lost lease can only be reported before
+			// the heartbeat exits, so check it after the join.
+			<-a.hbDone
+			if a.lost.Load() {
+				return
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), finishTimeout)
 			defer cancel()
 			_, err := w.client.api.Nack(ctx, &tasklanev1.NackRequest{Id: a.job.ID, LeaseToken: a.job.token, Error: shutdownNackError})
@@ -53,6 +65,20 @@ func (w *Worker) drain(r *run) {
 		})
 	}
 	nacks.Wait()
+
+	// Jobs that finished inside the window get their Ack or Nack; wait for
+	// it, but no longer than a Nack of our own may take, so Run stays
+	// bounded by ShutdownTimeout + finishTimeout.
+	grace := time.NewTimer(finishTimeout)
+	defer grace.Stop()
+	for _, a := range finishing {
+		select {
+		case <-a.sent:
+		case <-grace.C:
+			w.log.Warn("shutdown: a job's Ack or Nack is still in flight; the lease expiry covers it", "job_id", a.job.ID)
+			return
+		}
+	}
 }
 
 func (r *run) add(a *activeJob) {

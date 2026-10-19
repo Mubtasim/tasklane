@@ -3,6 +3,7 @@ package tasklane
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,9 +137,12 @@ func TestShutdownDoesNotNackAJobWhoseLeaseWasLost(t *testing.T) {
 	started := make(chan struct{})
 	release, gate := releaseOnCleanup(t)
 	w := testWorker(c, WorkerOptions{ShutdownTimeout: 50 * time.Millisecond, VisibilityTimeout: 30 * time.Millisecond})
-	w.Handle("slow", func(context.Context, *LeasedJob) error {
+	cancelled := make(chan struct{})
+	w.Handle("slow", func(ctx context.Context, _ *LeasedJob) error {
 		close(started)
-		<-gate // ignores its context
+		<-ctx.Done() // the heartbeat cancels it after setting lost
+		close(cancelled)
+		<-gate // then ignores the cancellation
 		return nil
 	})
 	f.set(func(f *fakeServer) {
@@ -148,11 +152,37 @@ func TestShutdownDoesNotNackAJobWhoseLeaseWasLost(t *testing.T) {
 
 	f.push(fakeJob(1, "slow"))
 	awaitClosed(t, started)
-	waitFor(t, func() bool { return len(f.calls().heartbeats) > 0 })
+	awaitClosed(t, cancelled)
 	stopWithin(t, stop, time.Second)
 	release()
 	require.Never(t, func() bool {
 		calls := f.calls()
 		return len(calls.acks) > 0 || len(calls.nacks) > 0
 	}, 150*time.Millisecond, 5*time.Millisecond)
+}
+
+func TestShutdownWaitsForAnAckInFlightAtTheDeadline(t *testing.T) {
+	f, c := newFake(t)
+	var acked atomic.Bool
+	f.set(func(f *fakeServer) {
+		f.ackFn = func(*tasklanev1.AckRequest) error {
+			time.Sleep(150 * time.Millisecond) // slow: still running at the deadline
+			acked.Store(true)
+			return nil
+		}
+	})
+	started := make(chan struct{})
+	w := testWorker(c, WorkerOptions{ShutdownTimeout: 200 * time.Millisecond})
+	w.Handle("late", func(context.Context, *LeasedJob) error {
+		close(started)
+		time.Sleep(120 * time.Millisecond) // returns shortly before the deadline
+		return nil
+	})
+	stop := startWorker(t, w)
+
+	f.push(fakeJob(1, "late"))
+	awaitClosed(t, started)
+	stopWithin(t, stop, 2*time.Second)
+	require.True(t, acked.Load(), "Run returned before the job's Ack finished")
+	require.Empty(t, f.calls().nacks)
 }

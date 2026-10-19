@@ -66,8 +66,10 @@ type activeJob struct {
 	job           *LeasedJob
 	cancel        context.CancelFunc // cancels the handler's context
 	stopHeartbeat context.CancelFunc
-	lost          atomic.Bool // the server reported the lease gone
-	finished      atomic.Bool // the final Ack or Nack has been claimed
+	lost          atomic.Bool   // the server reported the lease gone
+	finished      atomic.Bool   // the final Ack or Nack has been claimed
+	hbDone        chan struct{} // closed once the heartbeat goroutine has exited (or never started)
+	sent          chan struct{} // closed when the job's own goroutine has sent its final call
 
 	mu sync.Mutex
 	// deadline is when the lease expires by this process's monotonic clock.
@@ -121,26 +123,31 @@ func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 	defer cancel()
 	hbCtx, stopHeartbeat := context.WithCancel(context.Background())
 	defer stopHeartbeat()
-	a := &activeJob{job: job, cancel: cancel, stopHeartbeat: stopHeartbeat, deadline: leasedAt.Add(r.vt)}
+	a := &activeJob{job: job, cancel: cancel, stopHeartbeat: stopHeartbeat, deadline: leasedAt.Add(r.vt),
+		hbDone: make(chan struct{}), sent: make(chan struct{})}
+	if err != nil {
+		close(a.hbDone) // no heartbeat runs for a job that can't be decoded
+	}
 	r.add(a)
 	defer r.remove(a)
 	if err == nil {
-		hbDone := make(chan struct{})
 		go func() {
-			defer close(hbDone)
+			defer close(a.hbDone)
 			w.heartbeat(hbCtx, a, r.vt)
 		}()
 		err = w.call(ctx, job)
 		// Stop heartbeating before the final call, so no heartbeat races
 		// the Ack or Nack.
 		stopHeartbeat()
-		<-hbDone
+		<-a.hbDone
 	}
 	// After a lost lease the job may belong to another worker; after the
 	// shutdown deadline, drain has already nacked it.
 	if a.lost.Load() || !a.claim() {
 		return
 	}
+	// Tell drain the final call is in flight, so it can wait for it.
+	defer close(a.sent)
 	w.finish(a, err)
 }
 
