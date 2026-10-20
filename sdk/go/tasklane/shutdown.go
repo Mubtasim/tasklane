@@ -32,6 +32,9 @@ func (w *Worker) drain(r *run) {
 	case <-deadline.C:
 	}
 
+	// Shutdown Nacks and the Acks or Nacks already in flight share one
+	// grace period, so Run returns within ShutdownTimeout + finishTimeout.
+	graceEnd := time.Now().Add(w.finishTimeout)
 	var nacks sync.WaitGroup
 	var finishing []*activeJob
 	for _, a := range r.snapshot() {
@@ -54,7 +57,7 @@ func (w *Worker) drain(r *run) {
 			if a.lost.Load() {
 				return
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), finishTimeout)
+			ctx, cancel := context.WithDeadline(context.Background(), graceEnd)
 			defer cancel()
 			_, err := w.client.api.Nack(ctx, &tasklanev1.NackRequest{Id: a.job.ID, LeaseToken: a.job.token, Error: shutdownNackError})
 			if err != nil {
@@ -64,21 +67,21 @@ func (w *Worker) drain(r *run) {
 			w.log.Info("nacked an unfinished job at shutdown", "job_id", a.job.ID, "kind", a.job.Kind)
 		})
 	}
-	nacks.Wait()
 
 	// Jobs that finished inside the window get their Ack or Nack; wait for
-	// it, but no longer than a Nack of our own may take, so Run stays
-	// bounded by ShutdownTimeout + finishTimeout.
-	grace := time.NewTimer(finishTimeout)
+	// it until the grace period ends.
+	grace := time.NewTimer(time.Until(graceEnd))
 	defer grace.Stop()
 	for _, a := range finishing {
 		select {
 		case <-a.sent:
 		case <-grace.C:
 			w.log.Warn("shutdown: a job's Ack or Nack is still in flight; the lease expiry covers it", "job_id", a.job.ID)
+			nacks.Wait()
 			return
 		}
 	}
+	nacks.Wait()
 }
 
 func (r *run) add(a *activeJob) {

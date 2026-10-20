@@ -186,3 +186,50 @@ func TestShutdownWaitsForAnAckInFlightAtTheDeadline(t *testing.T) {
 	require.True(t, acked.Load(), "Run returned before the job's Ack finished")
 	require.Empty(t, f.calls().nacks)
 }
+
+// A slow shutdown Nack and a slow in-flight Ack share one grace period after
+// ShutdownTimeout, so Run returns within ShutdownTimeout + finishTimeout.
+func TestShutdownWaitsOneGracePeriodForSlowNacksAndAcks(t *testing.T) {
+	f, c := newFake(t)
+	_, gate := releaseOnCleanup(t)
+	f.set(func(f *fakeServer) {
+		f.ackFn = func(*tasklanev1.AckRequest) error {
+			<-gate // still in flight when Run returns
+			return nil
+		}
+		f.nackFn = func(*tasklanev1.NackRequest) error {
+			<-gate // the client gives up at its deadline
+			return nil
+		}
+	})
+	var started sync.WaitGroup
+	started.Add(2)
+	const shutdownTimeout, finishTimeout = 100 * time.Millisecond, 300 * time.Millisecond
+	w := testWorker(c, WorkerOptions{Concurrency: 2, ShutdownTimeout: shutdownTimeout})
+	w.finishTimeout = finishTimeout
+	w.Handle("late", func(context.Context, *LeasedJob) error {
+		started.Done()
+		time.Sleep(50 * time.Millisecond) // returns before the deadline; its Ack hangs
+		return nil
+	})
+	w.Handle("overrun", func(ctx context.Context, _ *LeasedJob) error {
+		started.Done()
+		<-ctx.Done() // cancelled at the deadline; its shutdown Nack hangs
+		return ctx.Err()
+	})
+	stop := startWorker(t, w)
+
+	f.push(fakeJob(1, "late"), fakeJob(2, "overrun"))
+	allStarted := make(chan struct{})
+	go func() {
+		started.Wait()
+		close(allStarted)
+	}()
+	awaitClosed(t, allStarted)
+	start := time.Now()
+	stopWithin(t, stop, 2*time.Second)
+	elapsed := time.Since(start)
+	require.Less(t, elapsed, shutdownTimeout+finishTimeout+150*time.Millisecond)
+	require.Len(t, f.calls().acks, 1)
+	require.Len(t, f.calls().nacks, 1)
+}

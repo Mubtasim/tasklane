@@ -17,10 +17,10 @@ import (
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 )
 
-// finishTimeout bounds an Ack or Nack attempt whose lease deadline has
-// already passed (it may still succeed: nobody else holds the job until the
-// reaper runs), and each Nack sent at shutdown.
-const finishTimeout = 2 * time.Second
+// defaultFinishTimeout bounds an Ack or Nack attempt whose lease deadline
+// has already passed (it may still succeed: nobody else holds the job until
+// the reaper runs), and the Nacks and in-flight Acks a shutdown waits for.
+const defaultFinishTimeout = 2 * time.Second
 
 // HandlerFunc runs one job. Returning nil acks the job; returning an error
 // nacks it, and the server retries it after a backoff delay (or moves it to
@@ -200,7 +200,7 @@ func (w *Worker) finish(a *activeJob, err error) {
 func (w *Worker) send(a *activeJob, what string, call func(context.Context) error) {
 	for attempt := 0; ; attempt++ {
 		deadline := a.leaseDeadline()
-		ctx, cancel := context.WithTimeout(context.Background(), max(time.Until(deadline), finishTimeout))
+		ctx, cancel := context.WithTimeout(context.Background(), max(time.Until(deadline), w.finishTimeout))
 		err := call(ctx)
 		cancel()
 		switch {

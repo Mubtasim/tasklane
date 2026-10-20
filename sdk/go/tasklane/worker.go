@@ -35,8 +35,9 @@ type WorkerOptions struct {
 	// VisibilityTimeout is the lease length; zero uses the queue's setting.
 	VisibilityTimeout time.Duration
 	// ShutdownTimeout is how long running jobs may take to finish after
-	// Run's context is cancelled (default 25 s). Give the process at least
-	// this long to stop: Docker's default grace period is only 10 s.
+	// Run's context is cancelled (default 25 s); the Nacks and Acks after it
+	// take up to 2 s more. Give the process at least that long to stop:
+	// Docker's default grace period is only 10 s.
 	ShutdownTimeout time.Duration
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
@@ -55,8 +56,9 @@ type Worker struct {
 	started  atomic.Bool
 
 	// Tests shorten these.
-	leaseWait time.Duration
-	retry     backoff.Policy
+	leaseWait     time.Duration
+	retry         backoff.Policy
+	finishTimeout time.Duration
 }
 
 // NewWorker returns a worker for queue.
@@ -71,12 +73,13 @@ func (c *Client) NewWorker(queue string, opts WorkerOptions) *Worker {
 		opts.Logger = slog.Default()
 	}
 	return &Worker{
-		client:    c,
-		queue:     queue,
-		opts:      opts,
-		log:       opts.Logger.With("queue", queue),
-		handlers:  map[string]HandlerFunc{},
-		leaseWait: defaultLeaseWait,
+		client:        c,
+		queue:         queue,
+		opts:          opts,
+		log:           opts.Logger.With("queue", queue),
+		handlers:      map[string]HandlerFunc{},
+		leaseWait:     defaultLeaseWait,
+		finishTimeout: defaultFinishTimeout,
 		// Full jitter, ceiling 1 s doubling to a 30 s cap: workers that lost
 		// the server at the same moment don't come back in lockstep.
 		retry: backoff.Policy{Base: time.Second, Cap: 30 * time.Second, Rand: rand.Float64},
@@ -110,7 +113,8 @@ type run struct {
 
 // Run leases and runs jobs until ctx is cancelled, then shuts down
 // gracefully: it stops leasing, gives running jobs up to ShutdownTimeout to
-// finish, nacks the ones that don't, and returns nil. It returns an error only when retrying can't help:
+// finish, nacks the ones that don't, and returns nil (within about
+// ShutdownTimeout + 2 s). It returns an error only when retrying can't help:
 // the queue doesn't exist or the API key is rejected. While the server is
 // unreachable it keeps retrying with backoff.
 func (w *Worker) Run(ctx context.Context) error {
