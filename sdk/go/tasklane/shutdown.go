@@ -43,7 +43,7 @@ func (w *Worker) drain(r *run) {
 		}
 		if !a.claim() {
 			// The job's own goroutine won: its handler finished in time
-			// and its Ack or Nack is in flight. Wait for it below.
+			// and its Ack or Nack is about to be sent. Wait for it below.
 			finishing = append(finishing, a)
 			continue
 		}

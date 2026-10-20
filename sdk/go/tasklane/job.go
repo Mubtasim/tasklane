@@ -69,7 +69,7 @@ type activeJob struct {
 	lost          atomic.Bool   // the server reported the lease gone
 	finished      atomic.Bool   // the final Ack or Nack has been claimed
 	hbDone        chan struct{} // closed once the heartbeat goroutine has exited (or never started)
-	sent          chan struct{} // closed when the job's own goroutine has sent its final call
+	sent          chan struct{} // closed when the job's own goroutine is done with the final call it claimed
 
 	mu sync.Mutex
 	// deadline is when the lease expires by this process's monotonic clock.
@@ -140,18 +140,24 @@ func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 			w.heartbeat(hbCtx, a, r.vt)
 		}()
 		err = w.call(ctx, job)
-		// Stop heartbeating before the final call, so no heartbeat races
-		// the Ack or Nack.
-		stopHeartbeat()
-		<-a.hbDone
 	}
-	// After a lost lease the job may belong to another worker; after the
-	// shutdown deadline, drain has already nacked it.
-	if a.lost.Load() || !a.claim() {
+	// Claim the final call as soon as the handler returns, so a shutdown
+	// that reaches its deadline now can't nack a job that just succeeded.
+	// If drain claimed it first, drain answers for the job.
+	if !a.claim() {
 		return
 	}
-	// Tell drain the final call is in flight, so it can wait for it.
+	// Tell drain when the final call is done, so it can wait for it.
 	defer close(a.sent)
+	// Stop heartbeating before the final call, so no heartbeat races the
+	// Ack or Nack. A lost lease can only be reported before the heartbeat
+	// exits, so check it after the join: the job may belong to another
+	// worker now.
+	stopHeartbeat()
+	<-a.hbDone
+	if a.lost.Load() {
+		return
+	}
 	w.finish(a, err)
 }
 
