@@ -175,8 +175,8 @@ func (w *Worker) leaseLoop(ctx context.Context, r *run) error {
 			}
 		}
 
-		leasedAt := time.Now()
 		jobs, err := w.lease(ctx, k, r.vt)
+		leasedAt := time.Now()
 		// The server must not return more than k jobs. If it does, run only
 		// k: the extras' leases expire and the reaper retries them.
 		if len(jobs) > k {

@@ -73,8 +73,12 @@ type activeJob struct {
 
 	mu sync.Mutex
 	// deadline is when the lease expires by this process's monotonic clock.
-	// It is counted from before the request that set the lease was sent, so
-	// it is never later than the server's lease_expires_at.
+	// It is counted from when the Lease response arrived, not from when the
+	// request was sent: the server sets lease_expires_at when it leases the
+	// job, which can be a whole long-poll later. Its now() is at most one
+	// network latency earlier than our clock reading, and a late Ack is
+	// either rejected harmlessly or accepted before the reaper runs.
+	// Heartbeats move it from the moment each one was sent.
 	deadline time.Time
 }
 
@@ -114,7 +118,7 @@ func leasedJobFromProto(pj *tasklanev1.Job) (*LeasedJob, error) {
 }
 
 // runJob runs one leased job, sends its Ack or Nack and frees its slot.
-// leasedAt is when the Lease request was sent.
+// leasedAt is when the Lease response arrived.
 func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 	defer func() { <-r.slots }()
 	job, err := leasedJobFromProto(pj)

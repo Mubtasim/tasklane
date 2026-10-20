@@ -387,3 +387,42 @@ func TestExtraJobsFromTheServerAreIgnored(t *testing.T) {
 	require.Len(t, acks, 1)
 	require.Equal(t, int64(1), acks[0].GetId())
 }
+
+// The local lease deadline must start when the Lease response arrives: the
+// server sets lease_expires_at when it leases the job, which can be a whole
+// long-poll after the request was sent.
+func TestAckIsRetriedAfterALongPollThatOutlastsTheLease(t *testing.T) {
+	f, c := newFake(t)
+	var leased atomic.Bool
+	var calls atomic.Int32
+	f.set(func(f *fakeServer) {
+		f.leaseFn = func(ctx context.Context, _ *tasklanev1.LeaseRequest) (*tasklanev1.LeaseResponse, error) {
+			first := leased.CompareAndSwap(false, true)
+			wait := 20 * time.Millisecond
+			if first {
+				wait = 100 * time.Millisecond // the job arrives late in the poll, after more than vt
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(wait):
+			}
+			if !first {
+				return &tasklanev1.LeaseResponse{}, nil
+			}
+			return &tasklanev1.LeaseResponse{Jobs: []*tasklanev1.Job{fakeJob(1, "ok")}}, nil
+		}
+		f.ackFn = func(*tasklanev1.AckRequest) error {
+			if calls.Add(1) <= 2 {
+				return status.Error(codes.Unavailable, "connection refused")
+			}
+			return nil
+		}
+	})
+	w := testWorker(c, WorkerOptions{VisibilityTimeout: 50 * time.Millisecond})
+	w.Handle("ok", succeed)
+	startWorker(t, w)
+
+	waitFor(t, func() bool { return len(f.calls().acks) == 3 })
+	require.Never(t, func() bool { return len(f.calls().acks) > 3 }, 50*time.Millisecond, 5*time.Millisecond)
+}
