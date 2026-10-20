@@ -103,7 +103,12 @@ Requires Go and Docker (integration tests start PostgreSQL in a container).
 
     go test ./...
 
-The API is defined in `proto/tasklane/v1/tasklane.proto`. After changing it, run `buf lint && buf generate` (buf and the plugins are installed with `go install`; see `docs/plans/2026-10-18-m2a-api-server.md`, Task 1) and commit `gen/`.
+The API is defined in `proto/tasklane/v1/tasklane.proto`. After changing it, run `buf lint && buf generate` and commit `gen/`. buf and the plugins install with `go install`:
+
+    go install github.com/bufbuild/buf/cmd/buf@v1.74.0
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+    go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.32.0
 
 ## License
 
