@@ -103,7 +103,7 @@ Cost of the choice: the lease loop must hand back the k − m slots it didn't fi
 
 ## Q12. A heartbeat comes back "lease lost". What does the SDK do, step by step, and why doesn't that make duplicate execution impossible?
 
-"Lease lost" means the heartbeat failed with `FAILED_PRECONDITION` (the token no longer matches) or `NOT_FOUND`. `UNAVAILABLE` and other transient errors are not lost leases: they are retried until the local lease deadline.
+"Lease lost" means the heartbeat failed with `FAILED_PRECONDITION` (the token no longer matches) or `NOT_FOUND`. `UNAVAILABLE` and other transient errors are not lost leases: the heartbeat simply tries again at the next tick (every vt/3) until the handler returns or the server reports the lease lost. The local lease deadline only bounds the retries of the final Ack or Nack.
 
 1. **Mark the job lost** (`lost = true`) and stop heartbeating it.
 2. **Cancel the handler's context.** Cancellation is cooperative: the handler stops only if it checks `ctx`.
@@ -120,7 +120,7 @@ This is at-least-once delivery by design. Exactly-once *effects* come from the h
 
 ## Q13. Kubernetes stops a worker with SIGTERM while a 2-minute job runs. What happens second by second until the job runs again, with and without the shutdown Nack? What if SIGKILL arrives first?
 
-On SIGTERM the worker stops leasing, lets running handlers continue and keeps heartbeating them; at `ShutdownTimeout` (25 s) it cancels what's still running, nacks it with "worker shutting down" (2 s deadline) and exits. Assume a 15 s visibility timeout and Kubernetes' default 30 s grace period.
+On SIGTERM the worker stops leasing, lets running handlers continue and keeps heartbeating them; at `ShutdownTimeout` (25 s) it cancels what's still running, nacks it with "worker shutting down" and exits. Those Nacks and any Ack still in flight share one 2 s grace period, so the worker exits by t≈27 at the latest. Assume a 15 s visibility timeout and Kubernetes' default 30 s grace period.
 
 - **With the Nack:** t=0 SIGTERM, job keeps running, heartbeats every 5 s. t=25 handler cancelled, Nack sent; the job is scheduled after its backoff (~1 s + jitter). t≈27 another worker leases it (within the 1 s re-check). The pod exits before SIGKILL at t=30.
 - **Without the Nack:** the last heartbeat (~t=25) pushed the lease to ~t=40. The process exits; the job sits leased to nobody until it expires, then the reaper and backoff add a few seconds: runs again at ~t=42–45. About **one visibility timeout later**.
