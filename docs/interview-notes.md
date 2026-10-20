@@ -88,3 +88,61 @@ Nack is different: a repeated nack is rejected harmlessly, because the job is al
 The fix was to make an undeliverable response impossible: a per-job payload cap (256 KiB), explicit matching message limits on both sides (16 MiB), and a cap of 50 jobs per lease, so the largest legal lease always fits. Size errors return 400/413, not a retryable 429.
 
 A follow-up review found the cap measured JSON bytes while the wire carries protobuf `Struct`, which is about 3.7× larger for number-heavy payloads, so it was moved to protobuf bytes. Lesson: measure a limit in the units it is enforced in. Recovery still exists in the worst case: stranded jobs return after the visibility timeout.
+
+## Q11. Your worker runs 20 handlers. Why does it hold one long-poll instead of 20, and what does that save, idle and busy? Numbers for 10 workers.
+
+Not connections: gRPC multiplexes every call from a process over one HTTP/2 connection either way. The difference is **parked Lease requests**, and each one costs the server work.
+
+- **Idle (empty queue):** a parked lease re-checks the database every second (Q8). One lease per handler is 10 × 20 = 200 parked leases, so about **200 queries/s** against Postgres that find nothing; one per process is **10 queries/s**. Each long-poll also times out after 20 s and is re-issued: 200 / 20 = 10 RPCs/s against 10 / 20 = 0.5/s. Plus 200 server goroutines and timers instead of 10.
+- **One job arrives:** the NOTIFY wakes every waiter on the queue. 200 wake-ups mean 200 `SKIP LOCKED` queries for one row (one wins, 199 return empty and park again): a thundering herd. With 10, it's 10 queries.
+- **Busy (queue full):** one lease takes up to k free slots in **one transaction** (`LIMIT k`), so filling 20 slots is 1 query and 1 RPC, not 20. Fewer transactions also means less contention on the rows at the head of the queue index.
+
+Workers never query Postgres themselves: the waiting lease is held inside the server, and the server runs the query and answers the open request.
+
+Cost of the choice: the lease loop must hand back the k − m slots it didn't fill (see Q15), and one slow handler doesn't delay leasing, because the loop runs separately from the handlers.
+
+## Q12. A heartbeat comes back "lease lost". What does the SDK do, step by step, and why doesn't that make duplicate execution impossible?
+
+"Lease lost" means the heartbeat failed with `FAILED_PRECONDITION` (the token no longer matches) or `NOT_FOUND`. `UNAVAILABLE` and other transient errors are not lost leases: they are retried until the local lease deadline.
+
+1. **Mark the job lost** (`lost = true`) and stop heartbeating it.
+2. **Cancel the handler's context.** Cancellation is cooperative: the handler stops only if it checks `ctx`.
+3. **Send no Ack and no Nack.** The job may already belong to another worker under a new token; either call would be rejected anyway, and a Nack must not affect someone else's attempt. The new holder decides the outcome.
+4. **Free the slot when the handler returns** (not when the cancel is sent). A handler that ignores `ctx` keeps its slot until it finishes.
+5. Log it (`lease lost; cancelling the handler`).
+
+**Why duplicates are still possible:**
+- **Late detection:** the lease expires in the database, but the worker finds out only at its next heartbeat, up to vt/3 later (5 s in the demo). Longer if the worker was frozen. During that window both workers may run the job.
+- **Side effects can't be undone:** the handler may already have sent the email or charged the card before the cancel arrives, or even finished and had its Ack rejected. The next worker runs it again.
+- **Cancellation is a request, not a kill:** a handler that doesn't check `ctx` runs to completion.
+
+This is at-least-once delivery by design. Exactly-once *effects* come from the handler: use the job ID (or the idempotency key) as a dedupe key at the side effect (an email provider's idempotency key, a unique constraint written in the same transaction as the business change), or pass the lease token as a **fencing token** so downstream storage rejects writes from a stale holder.
+
+## Q13. Kubernetes stops a worker with SIGTERM while a 2-minute job runs. What happens second by second until the job runs again, with and without the shutdown Nack? What if SIGKILL arrives first?
+
+On SIGTERM the worker stops leasing, lets running handlers continue and keeps heartbeating them; at `ShutdownTimeout` (25 s) it cancels what's still running, nacks it with "worker shutting down" (2 s deadline) and exits. Assume a 15 s visibility timeout and Kubernetes' default 30 s grace period.
+
+- **With the Nack:** t=0 SIGTERM, job keeps running, heartbeats every 5 s. t=25 handler cancelled, Nack sent; the job is scheduled after its backoff (~1 s + jitter). t≈27 another worker leases it (within the 1 s re-check). The pod exits before SIGKILL at t=30.
+- **Without the Nack:** the last heartbeat (~t=25) pushed the lease to ~t=40. The process exits; the job sits leased to nobody until it expires, then the reaper and backoff add a few seconds: runs again at ~t=42–45. About **one visibility timeout later**.
+- **SIGKILL first** (grace period shorter than `ShutdownTimeout`, e.g. Docker's default 10 s): killed at t=10 with no Nack; the lease (last extended at ≤t=10) expires by t≈25, the reaper returns it, runs again at ~t=27–29 with `last_error: lease expired`. Same path as a crash.
+
+Takeaways:
+- The job restarts **from zero** in every case and uses one attempt (attempts are counted at lease). Long jobs need idempotent handlers and, ideally, checkpoints.
+- The Nack is an optimisation for **speed**, not correctness: lease expiry guarantees recovery even under SIGKILL.
+- Align timeouts across layers: `terminationGracePeriodSeconds` (or compose `stop_grace_period`) > `ShutdownTimeout` + Nack/in-flight Ack time (30 s > 25 s + ~2 s).
+
+## Q14. Why does `GetQueue` count completed jobs only over the last 10 seconds, what makes that cheap, what breaks if you count all of them, and why is a counters table no better?
+
+- **Why a window:** the live view wants a **rate** (`completed/s` = count over 10 s ÷ 10), not a lifetime total. A total also stops meaning anything once completed jobs are pruned.
+- **Why it's cheap:** the B-tree index on `finished_at` lets Postgres jump straight to `now() - 10 s` and read only the rows after it: about 100 entries at 10 jobs/s, however big the table gets. The cost depends on the window, not the table size.
+- **Counting everything:** Postgres keeps no stored row count, because under MVCC each transaction can see a different set of rows, so `COUNT(*)` has to visit every row (or index entry) and check visibility. With millions of completed jobs, every dashboard refresh (once a second per viewer) becomes a scan that grows forever.
+- **Counters table:** every Ack would run `UPDATE counters SET n = n + 1` on **the same row**. That row's lock is held until commit, so all Acks from all workers serialise on one row (a **hot row**), and every update leaves a dead row version behind for vacuum. You trade a slow read for a slow, contended write path, which is worse because Acks are the hot path. The usual fix, sharded counters (N rows, add to a random one, sum on read), adds complexity a live view doesn't need. Staleness is not the problem: every count is a snapshot anyway.
+
+## Q15. The lease loop gives back the k − m unused slots after each lease. What happens over time if that line is missing, how would you notice in production, and which test catches it?
+
+The loop takes every free slot (k), leases `max_jobs = k` and gets m ≤ k jobs. Each of the m jobs frees its own slot when it finishes. The other **k − m slots got no job, so nothing would ever free them**: that is the leak.
+
+- **How fast:** an empty poll has m = 0, so the **first empty poll leaks every free slot**. On a quiet queue the worker is dead after one 20 s long-poll. On a busy queue m is usually k, so it leaks a little on each partial lease: capacity drops gradually, then reaches zero.
+- **What it looks like:** the process is alive, logs no errors, passes health checks and makes no lease calls. Every worker has the same bug, so the fleet stops. `available` grows without bound; the jobs are never leased, so attempts never increase and **nothing reaches the DLQ**. No retry or alert path fires on its own.
+- **How you'd notice:** queue depth (`available`) rising while `leased` ≈ 0 and worker CPU is idle. That's distinctive: a real capacity problem shows `leased` at the maximum. Also, per worker, the lease call rate drops to zero and in-flight jobs sit below concurrency while work is waiting. Alert on "oldest available job age" (or depth growing with low `leased`).
+- **The test:** `TestSlotsComeBackAfterEmptyLeases` (sdk/go/tasklane/worker_test.go). With concurrency 2 against an empty fake server it waits for 3 lease calls (two empty polls), then pushes a job and expects it acked and the next lease to ask for `max_jobs = 2`. Without the give-back the loop blocks after the first empty poll, so the third lease call never happens and the test times out. A unit test with a fake server is enough; no real server is needed.
