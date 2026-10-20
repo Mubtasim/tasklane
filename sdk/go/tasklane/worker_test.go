@@ -426,3 +426,28 @@ func TestAckIsRetriedAfterALongPollThatOutlastsTheLease(t *testing.T) {
 	waitFor(t, func() bool { return len(f.calls().acks) == 3 })
 	require.Never(t, func() bool { return len(f.calls().acks) > 3 }, 50*time.Millisecond, 5*time.Millisecond)
 }
+
+// Successful heartbeats move the local lease deadline, so the final Ack of a
+// job that ran longer than the visibility timeout is still retried.
+func TestHeartbeatsKeepTheAckRetryableAfterALongJob(t *testing.T) {
+	f, c := newFake(t)
+	var calls atomic.Int32
+	f.set(func(f *fakeServer) {
+		f.ackFn = func(*tasklanev1.AckRequest) error {
+			if calls.Add(1) == 1 {
+				return status.Error(codes.Unavailable, "connection refused")
+			}
+			return nil
+		}
+	})
+	w := testWorker(c, WorkerOptions{VisibilityTimeout: 60 * time.Millisecond}) // heartbeat every 20 ms
+	w.Handle("long", func(context.Context, *LeasedJob) error {
+		time.Sleep(150 * time.Millisecond) // well past the first lease
+		return nil
+	})
+	startWorker(t, w)
+
+	f.push(fakeJob(1, "long"))
+	waitFor(t, func() bool { return len(f.calls().acks) == 2 })
+	require.GreaterOrEqual(t, len(f.calls().heartbeats), 3)
+}
