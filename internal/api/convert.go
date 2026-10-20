@@ -139,6 +139,16 @@ func queueFromStore(q store.Queue) *tasklanev1.Queue {
 	}
 }
 
+func statsFromStore(s store.QueueStats) *tasklanev1.QueueStats {
+	return &tasklanev1.QueueStats{
+		Available:         s.Available,
+		Leased:            s.Leased,
+		Dead:              s.Dead,
+		RecentlyCompleted: s.RecentlyCompleted,
+		RecentWindow:      durationpb.New(store.StatsWindow),
+	}
+}
+
 func jobSpecToStore(queue string, spec *tasklanev1.JobSpec) (store.NewJob, error) {
 	if spec == nil {
 		return store.NewJob{}, invalid("job is required")
@@ -151,19 +161,21 @@ func jobSpecToStore(queue string, spec *tasklanev1.JobSpec) (store.NewJob, error
 	case len(spec.GetTraceContext()) > maxTraceContextBytes:
 		return store.NewJob{}, invalid("trace_context must be at most %d bytes", maxTraceContextBytes)
 	}
-	payload, err := payloadToStore(spec.GetPayload())
-	if err != nil {
-		return store.NewJob{}, err
-	}
 	// Both sizes are capped: the JSON is what the database stores, and the
 	// protobuf Struct is what Lease sends. A Struct is several times the size
 	// of its JSON for number-heavy payloads (about 11 bytes per number
 	// against 2), so the JSON length alone would not bound the response.
-	if len(payload) > MaxPayloadBytes {
-		return store.NewJob{}, invalid("payload must be at most %d bytes as JSON, got %d", MaxPayloadBytes, len(payload))
-	}
+	// The protobuf size is checked first because it is cheap: an oversized
+	// payload is rejected before it is encoded as JSON.
 	if n := proto.Size(spec.GetPayload()); n > MaxPayloadBytes {
 		return store.NewJob{}, invalid("payload must be at most %d bytes as protobuf, got %d", MaxPayloadBytes, n)
+	}
+	payload, err := payloadToStore(spec.GetPayload())
+	if err != nil {
+		return store.NewJob{}, err
+	}
+	if len(payload) > MaxPayloadBytes {
+		return store.NewJob{}, invalid("payload must be at most %d bytes as JSON, got %d", MaxPayloadBytes, len(payload))
 	}
 	priority, err := priorityToStore(spec.GetPriority())
 	if err != nil {

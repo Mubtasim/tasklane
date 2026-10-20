@@ -19,7 +19,7 @@ service TasklaneService {
     };
   }
 
-  // GetQueue returns a queue's settings.
+  // GetQueue returns a queue's settings and live job counts.
   rpc GetQueue(GetQueueRequest) returns (GetQueueResponse) {
     option (google.api.http) = {get: "/v1/queues/{name}"};
   }
@@ -172,6 +172,18 @@ message GetQueueRequest {
 
 message GetQueueResponse {
   Queue queue = 1;
+  QueueStats stats = 2;
+}
+
+// QueueStats are a queue's live job counts.
+message QueueStats {
+  int64 available = 1;
+  int64 leased = 2;
+  int64 dead = 3;
+  // Jobs completed within recent_window. Completed jobs pile up until they
+  // are pruned, so they are counted over a recent window only.
+  int64 recently_completed = 4;
+  google.protobuf.Duration recent_window = 5;
 }
 
 message EnqueueRequest {
@@ -197,7 +209,7 @@ message EnqueueBatchResponse {
 
 message LeaseRequest {
   string queue = 1;
-  // 1 to 1000; 0 means 1.
+  // 0 means 1; values above 50 are clamped to 50.
   int32 max_jobs = 2;
   // Long-poll duration, capped at 30 s. Unset or zero returns immediately.
   google.protobuf.Duration wait = 3;

@@ -38,7 +38,7 @@ const (
 type TasklaneServiceClient interface {
 	// CreateQueue creates a queue. Zero-valued settings take the server defaults.
 	CreateQueue(ctx context.Context, in *CreateQueueRequest, opts ...grpc.CallOption) (*CreateQueueResponse, error)
-	// GetQueue returns a queue's settings.
+	// GetQueue returns a queue's settings and live job counts.
 	GetQueue(ctx context.Context, in *GetQueueRequest, opts ...grpc.CallOption) (*GetQueueResponse, error)
 	// Enqueue adds one job. With an idempotency key that already exists in the
 	// queue, it returns the existing job with created = false.
@@ -165,7 +165,7 @@ func (c *tasklaneServiceClient) GetJob(ctx context.Context, in *GetJobRequest, o
 type TasklaneServiceServer interface {
 	// CreateQueue creates a queue. Zero-valued settings take the server defaults.
 	CreateQueue(context.Context, *CreateQueueRequest) (*CreateQueueResponse, error)
-	// GetQueue returns a queue's settings.
+	// GetQueue returns a queue's settings and live job counts.
 	GetQueue(context.Context, *GetQueueRequest) (*GetQueueResponse, error)
 	// Enqueue adds one job. With an idempotency key that already exists in the
 	// queue, it returns the existing job with created = false.

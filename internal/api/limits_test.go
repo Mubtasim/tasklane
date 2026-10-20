@@ -96,7 +96,9 @@ func fillBatch(req *tasklanev1.EnqueueBatchRequest, spec *tasklanev1.JobSpec, li
 
 // The limits must make a full lease fit in one message, by construction.
 func TestFullLeaseFitsInOneMessage(t *testing.T) {
-	const perJobOverhead = 4 << 10 // kind, key, trace context, timestamps, token
+	// kind (255 B), idempotency key (255 B), trace context (512 B), last_error
+	// (up to 4 KiB), timestamps and the token, with room to spare.
+	const perJobOverhead = 16 << 10
 	require.LessOrEqual(t, MaxLeaseJobs*(MaxPayloadBytes+perJobOverhead), MaxMessageBytes)
 }
 
@@ -239,6 +241,9 @@ func TestOversizeValuesAreInvalidArgument(t *testing.T) {
 // limits, 5 jobs of 1 MiB exceeded the client's default 4 MiB receive limit
 // after the jobs were already leased.
 func TestLeaseOfMaxJobsAtMaxPayloadSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow: each lease moves about 13 MiB (tens of seconds under -race)")
+	}
 	e := newEnv(t, nil)
 	ctx := context.Background()
 	e.mustQueue(t, "emails")
@@ -264,6 +269,9 @@ func TestLeaseOfMaxJobsAtMaxPayloadSucceeds(t *testing.T) {
 // JSON size, so only a cap measured in protobuf bytes keeps the lease under
 // MaxMessageBytes.
 func TestLeaseOfMaxJobsAtMaxNumericPayloadSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow: each lease moves about 13 MiB (tens of seconds under -race)")
+	}
 	e := newEnv(t, nil)
 	ctx := context.Background()
 	e.mustQueue(t, "emails")
