@@ -40,8 +40,8 @@ services:
       TASKLANE_API_KEYS: ${TASKLANE_API_KEY:-demo-key}
       TASKLANE_REAPER_INTERVAL: 2s
     ports:
-      - "7070:7070"
-      - "8080:8080"
+      - "127.0.0.1:7070:7070"
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
