@@ -1,0 +1,74 @@
+# Tasklane demo: PostgreSQL, one server, a producer and three workers.
+# From the repo root:  docker compose -f deploy/docker-compose.yml up --build
+name: tasklane-demo
+
+x-demo-env: &demo-env
+  TASKLANE_ADDR: tasklane:7070
+  TASKLANE_API_KEY: ${TASKLANE_API_KEY:-demo-key}
+  DEMO_QUEUE: demo
+
+x-worker: &worker
+  image: tasklane:dev
+  pull_policy: never
+  entrypoint: ["/usr/local/bin/worker"]
+  # Longer than the worker's 25 s ShutdownTimeout: Docker's default is 10 s,
+  # after which it sends SIGKILL.
+  stop_grace_period: 30s
+  depends_on: [tasklane]
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: tasklane
+      POSTGRES_PASSWORD: tasklane
+      POSTGRES_DB: tasklane
+    # Not published on the host, so it can't clash with a local PostgreSQL.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tasklane -d tasklane"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  tasklane:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: tasklane:dev
+    environment:
+      TASKLANE_DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
+      TASKLANE_API_KEYS: ${TASKLANE_API_KEY:-demo-key}
+      TASKLANE_REAPER_INTERVAL: 2s
+    ports:
+      - "7070:7070"
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  producer:
+    image: tasklane:dev
+    pull_policy: never
+    entrypoint: ["/usr/local/bin/producer"]
+    environment:
+      <<: *demo-env
+      DEMO_RATE: "10"
+    depends_on: [tasklane]
+
+  worker-1:
+    <<: *worker
+    environment:
+      <<: *demo-env
+      WORKER_NAME: worker-1
+
+  worker-2:
+    <<: *worker
+    environment:
+      <<: *demo-env
+      WORKER_NAME: worker-2
+
+  worker-3:
+    <<: *worker
+    environment:
+      <<: *demo-env
+      WORKER_NAME: worker-3
