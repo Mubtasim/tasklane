@@ -215,6 +215,10 @@ func (w *Worker) send(a *activeJob, what string, call func(context.Context) erro
 		case status.Code(err) == codes.FailedPrecondition:
 			w.log.Info(what+" rejected: the lease is no longer ours", "job_id", a.job.ID, "err", err)
 			return
+		case status.Code(err) == codes.Canceled:
+			// The Client was closed: no retry can get through.
+			w.log.Warn(what+" cancelled: the client is closed (the job will be retried)", "job_id", a.job.ID, "err", err)
+			return
 		case fatal(err):
 			w.log.Error(what+" failed", "job_id", a.job.ID, "err", err)
 			return

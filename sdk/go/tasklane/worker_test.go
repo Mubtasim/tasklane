@@ -451,3 +451,26 @@ func TestHeartbeatsKeepTheAckRetryableAfterALongJob(t *testing.T) {
 	waitFor(t, func() bool { return len(f.calls().acks) == 2 })
 	require.GreaterOrEqual(t, len(f.calls().heartbeats), 3)
 }
+
+// After Client.Close every call fails with CANCELED: send must stop instead
+// of retrying until the lease deadline.
+func TestSendStopsWhenTheClientIsClosed(t *testing.T) {
+	_, c := newFake(t)
+	w := testWorker(c, WorkerOptions{})
+	a := &activeJob{job: &LeasedJob{ID: 1}, deadline: time.Now().Add(time.Minute)}
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.send(a, "ack", func(context.Context) error {
+			calls.Add(1)
+			return status.Error(codes.Canceled, "grpc: the client connection is closing")
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("send kept retrying after the client was closed")
+	}
+	require.Equal(t, int32(1), calls.Load())
+}
