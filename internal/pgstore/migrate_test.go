@@ -16,7 +16,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 
 	var n int
 	require.NoError(t, testPool.QueryRow(ctx, "SELECT count(*) FROM tasklane_migrations").Scan(&n))
-	require.Equal(t, 1, n)
+	require.Equal(t, 2, n) // 0001_init.sql and 0002_dead_index.sql
 }
 
 func TestMigrateCreatesTables(t *testing.T) {

@@ -28,6 +28,9 @@ const (
 	TasklaneService_Nack_FullMethodName         = "/tasklane.v1.TasklaneService/Nack"
 	TasklaneService_Heartbeat_FullMethodName    = "/tasklane.v1.TasklaneService/Heartbeat"
 	TasklaneService_GetJob_FullMethodName       = "/tasklane.v1.TasklaneService/GetJob"
+	TasklaneService_CancelJob_FullMethodName    = "/tasklane.v1.TasklaneService/CancelJob"
+	TasklaneService_ListDeadJobs_FullMethodName = "/tasklane.v1.TasklaneService/ListDeadJobs"
+	TasklaneService_RedriveJobs_FullMethodName  = "/tasklane.v1.TasklaneService/RedriveJobs"
 )
 
 // TasklaneServiceClient is the client API for TasklaneService service.
@@ -57,6 +60,14 @@ type TasklaneServiceClient interface {
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 	// GetJob returns a job. The lease token is never included.
 	GetJob(ctx context.Context, in *GetJobRequest, opts ...grpc.CallOption) (*GetJobResponse, error)
+	// CancelJob cancels a job that is still available. Cancelling a cancelled
+	// job succeeds; a leased or finished job is FAILED_PRECONDITION.
+	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error)
+	// ListDeadJobs returns a queue's dead jobs, newest first, a page at a time.
+	ListDeadJobs(ctx context.Context, in *ListDeadJobsRequest, opts ...grpc.CallOption) (*ListDeadJobsResponse, error)
+	// RedriveJobs makes dead jobs available again with their attempts reset:
+	// the listed ids, or all of the queue's dead jobs in batches of 1000.
+	RedriveJobs(ctx context.Context, in *RedriveJobsRequest, opts ...grpc.CallOption) (*RedriveJobsResponse, error)
 }
 
 type tasklaneServiceClient struct {
@@ -157,6 +168,36 @@ func (c *tasklaneServiceClient) GetJob(ctx context.Context, in *GetJobRequest, o
 	return out, nil
 }
 
+func (c *tasklaneServiceClient) CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelJobResponse)
+	err := c.cc.Invoke(ctx, TasklaneService_CancelJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tasklaneServiceClient) ListDeadJobs(ctx context.Context, in *ListDeadJobsRequest, opts ...grpc.CallOption) (*ListDeadJobsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDeadJobsResponse)
+	err := c.cc.Invoke(ctx, TasklaneService_ListDeadJobs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tasklaneServiceClient) RedriveJobs(ctx context.Context, in *RedriveJobsRequest, opts ...grpc.CallOption) (*RedriveJobsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RedriveJobsResponse)
+	err := c.cc.Invoke(ctx, TasklaneService_RedriveJobs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TasklaneServiceServer is the server API for TasklaneService service.
 // All implementations must embed UnimplementedTasklaneServiceServer
 // for forward compatibility.
@@ -184,6 +225,14 @@ type TasklaneServiceServer interface {
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	// GetJob returns a job. The lease token is never included.
 	GetJob(context.Context, *GetJobRequest) (*GetJobResponse, error)
+	// CancelJob cancels a job that is still available. Cancelling a cancelled
+	// job succeeds; a leased or finished job is FAILED_PRECONDITION.
+	CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error)
+	// ListDeadJobs returns a queue's dead jobs, newest first, a page at a time.
+	ListDeadJobs(context.Context, *ListDeadJobsRequest) (*ListDeadJobsResponse, error)
+	// RedriveJobs makes dead jobs available again with their attempts reset:
+	// the listed ids, or all of the queue's dead jobs in batches of 1000.
+	RedriveJobs(context.Context, *RedriveJobsRequest) (*RedriveJobsResponse, error)
 	mustEmbedUnimplementedTasklaneServiceServer()
 }
 
@@ -220,6 +269,15 @@ func (UnimplementedTasklaneServiceServer) Heartbeat(context.Context, *HeartbeatR
 }
 func (UnimplementedTasklaneServiceServer) GetJob(context.Context, *GetJobRequest) (*GetJobResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetJob not implemented")
+}
+func (UnimplementedTasklaneServiceServer) CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelJob not implemented")
+}
+func (UnimplementedTasklaneServiceServer) ListDeadJobs(context.Context, *ListDeadJobsRequest) (*ListDeadJobsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDeadJobs not implemented")
+}
+func (UnimplementedTasklaneServiceServer) RedriveJobs(context.Context, *RedriveJobsRequest) (*RedriveJobsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RedriveJobs not implemented")
 }
 func (UnimplementedTasklaneServiceServer) mustEmbedUnimplementedTasklaneServiceServer() {}
 func (UnimplementedTasklaneServiceServer) testEmbeddedByValue()                         {}
@@ -404,6 +462,60 @@ func _TasklaneService_GetJob_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TasklaneService_CancelJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TasklaneServiceServer).CancelJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TasklaneService_CancelJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TasklaneServiceServer).CancelJob(ctx, req.(*CancelJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TasklaneService_ListDeadJobs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDeadJobsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TasklaneServiceServer).ListDeadJobs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TasklaneService_ListDeadJobs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TasklaneServiceServer).ListDeadJobs(ctx, req.(*ListDeadJobsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TasklaneService_RedriveJobs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RedriveJobsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TasklaneServiceServer).RedriveJobs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TasklaneService_RedriveJobs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TasklaneServiceServer).RedriveJobs(ctx, req.(*RedriveJobsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TasklaneService_ServiceDesc is the grpc.ServiceDesc for TasklaneService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -446,6 +558,18 @@ var TasklaneService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetJob",
 			Handler:    _TasklaneService_GetJob_Handler,
+		},
+		{
+			MethodName: "CancelJob",
+			Handler:    _TasklaneService_CancelJob_Handler,
+		},
+		{
+			MethodName: "ListDeadJobs",
+			Handler:    _TasklaneService_ListDeadJobs_Handler,
+		},
+		{
+			MethodName: "RedriveJobs",
+			Handler:    _TasklaneService_RedriveJobs_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

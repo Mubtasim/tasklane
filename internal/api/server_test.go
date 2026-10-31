@@ -8,7 +8,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -306,4 +308,36 @@ func TestGetQueueReturnsLiveStats(t *testing.T) {
 	require.Equal(t, int64(0), st.GetDead())
 	require.Equal(t, int64(1), st.GetRecentlyCompleted())
 	require.Equal(t, 10*time.Second, st.GetRecentWindow().AsDuration())
+}
+
+func TestEnqueueRefusedWhenQueueIsFull(t *testing.T) {
+	e := newEnv(t, nil)
+	ctx := context.Background()
+	_, err := e.client.CreateQueue(ctx, &tasklanev1.CreateQueueRequest{Queue: &tasklanev1.Queue{Name: "small", MaxDepth: 2}})
+	require.NoError(t, err)
+	for range 2 {
+		_, err := e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "small", Job: &tasklanev1.JobSpec{Kind: "k"}})
+		require.NoError(t, err, "no refresh has run yet: the cache fails open")
+	}
+	require.NoError(t, e.server.depths.refresh(ctx, e.store))
+
+	_, err = e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "small", Job: &tasklanev1.JobSpec{Kind: "k"}})
+	st := status.Convert(err)
+	require.Equal(t, codes.ResourceExhausted, st.Code())
+	require.Len(t, st.Details(), 1)
+	require.Equal(t, time.Second, st.Details()[0].(*errdetails.RetryInfo).GetRetryDelay().AsDuration())
+
+	_, err = e.client.EnqueueBatch(ctx, &tasklanev1.EnqueueBatchRequest{Queue: "small", Jobs: []*tasklanev1.JobSpec{{Kind: "k"}}})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err), "a batch is refused whole")
+
+	// Draining the queue makes room after the next refresh.
+	jobs, err := e.client.Lease(ctx, &tasklanev1.LeaseRequest{Queue: "small", MaxJobs: 2})
+	require.NoError(t, err)
+	for _, j := range jobs.GetJobs() {
+		_, err := e.client.Ack(ctx, &tasklanev1.AckRequest{Id: j.GetId(), LeaseToken: j.GetLeaseToken()})
+		require.NoError(t, err)
+	}
+	require.NoError(t, e.server.depths.refresh(ctx, e.store))
+	_, err = e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "small", Job: &tasklanev1.JobSpec{Kind: "k"}})
+	require.NoError(t, err)
 }

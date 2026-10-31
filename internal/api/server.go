@@ -37,6 +37,7 @@ type Server struct {
 	notifier     Notifier
 	log          *slog.Logger
 	pollInterval time.Duration
+	depths       *depthCache
 
 	stopOnce sync.Once
 	stopping chan struct{}
@@ -55,7 +56,7 @@ func WithPollInterval(d time.Duration) Option {
 }
 
 func NewServer(st store.Store, n Notifier, log *slog.Logger, opts ...Option) *Server {
-	s := &Server{store: st, notifier: n, log: log, pollInterval: DefaultPollInterval, stopping: make(chan struct{})}
+	s := &Server{store: st, notifier: n, log: log, pollInterval: DefaultPollInterval, depths: newDepthCache(), stopping: make(chan struct{})}
 	for _, o := range opts {
 		o(s)
 	}
@@ -102,6 +103,9 @@ func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	if s.depths.isFull(req.GetQueue()) {
+		return nil, queueFullError(req.GetQueue())
+	}
 	res, err := s.store.Enqueue(ctx, []store.NewJob{job})
 	if err != nil {
 		return nil, toStatus(s.log, "Enqueue", err)
@@ -112,6 +116,9 @@ func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*
 func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchRequest) (*tasklanev1.EnqueueBatchResponse, error) {
 	if n := proto.Size(req); n > MaxMessageBytes-maxBatchSlack {
 		return nil, invalid("batch must be at most %d bytes as protobuf, got %d", MaxMessageBytes-maxBatchSlack, n)
+	}
+	if s.depths.isFull(req.GetQueue()) {
+		return nil, queueFullError(req.GetQueue())
 	}
 	jobs := make([]store.NewJob, 0, len(req.GetJobs()))
 	for i, spec := range req.GetJobs() {
@@ -229,7 +236,7 @@ func (s *Server) Nack(ctx context.Context, req *tasklanev1.NackRequest) (*taskla
 	}
 	// A long error (a stack trace, say) is truncated rather than rejected:
 	// failing the Nack would only leave the job to the reaper.
-	errMsg := truncateUTF8(req.GetError(), maxErrorBytes)
+	errMsg := store.TruncateUTF8(req.GetError(), store.MaxErrorBytes)
 	if err := s.store.Nack(ctx, req.GetId(), token, errMsg, retryAt); err != nil {
 		return nil, toStatus(s.log, "Nack", err)
 	}

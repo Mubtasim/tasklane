@@ -72,6 +72,12 @@ func TestToStatusMapsErrors(t *testing.T) {
 	require.NoError(t, toStatus(slog.New(slog.DiscardHandler), "/test", nil))
 }
 
+func TestToStatusMapsWrongState(t *testing.T) {
+	err := toStatus(slog.New(slog.DiscardHandler), "CancelJob", fmt.Errorf("%w: job 1 is leased", store.ErrWrongState))
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "job 1 is leased")
+}
+
 func TestInternalErrorsAreLoggedNotLeaked(t *testing.T) {
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))

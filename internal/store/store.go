@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -44,6 +45,9 @@ var (
 	ErrInvalid = errors.New("tasklane: invalid argument")
 	// ErrAlreadyExists means the resource, such as a queue, already exists.
 	ErrAlreadyExists = errors.New("tasklane: already exists")
+	// ErrWrongState means the job exists but its state doesn't allow the
+	// operation, such as cancelling a job that is already leased.
+	ErrWrongState = errors.New("tasklane: wrong job state")
 )
 
 type Queue struct {
@@ -82,6 +86,14 @@ type QueueStats struct {
 	RecentlyCompleted int64 // completed within the last StatsWindow
 }
 
+// QueueDepth is a queue's backpressure input: its available and leased jobs
+// (delayed jobs and jobs waiting to retry included) against its max_depth.
+type QueueDepth struct {
+	Queue    string
+	Depth    int64
+	MaxDepth int64
+}
+
 type NewJob struct {
 	Queue          string
 	Kind           string
@@ -96,6 +108,13 @@ type NewJob struct {
 type EnqueueResult struct {
 	ID      int64
 	Created bool // false when the idempotency key matched an existing job
+}
+
+// DeadCursor marks where a page of dead jobs ended: the last job's
+// FinishedAt and ID. The next page starts after it.
+type DeadCursor struct {
+	FinishedAt time.Time
+	ID         int64
 }
 
 type Job struct {
@@ -129,6 +148,9 @@ type Store interface {
 	// jobs completed within the last StatsWindow. It returns ErrNotFound for
 	// an unknown queue.
 	QueueStats(ctx context.Context, queue string) (QueueStats, error)
+	// QueueDepths returns every queue's depth and max_depth in one
+	// statement, for the API's backpressure cache.
+	QueueDepths(ctx context.Context) ([]QueueDepth, error)
 
 	// Enqueue inserts 1 to 1000 jobs atomically and returns one result per
 	// job, in the caller's order. A job whose idempotency key already exists
@@ -164,6 +186,51 @@ type Store interface {
 	// reached max_attempts moves to StateDead instead of being retried.
 	ReapExpired(ctx context.Context, limit int) (int, error)
 
+	// PruneFinished deletes up to limit completed and cancelled jobs that
+	// finished more than age ago and returns how many it deleted. Like the
+	// reaper, it is safe to run on every server at once.
+	PruneFinished(ctx context.Context, age time.Duration, limit int) (int, error)
+	// PruneDead does the same for dead jobs.
+	PruneDead(ctx context.Context, age time.Duration, limit int) (int, error)
+
 	// GetJob returns ErrNotFound for an unknown job.
 	GetJob(ctx context.Context, id int64) (Job, error)
+
+	// CancelJob moves an available job to StateCancelled and returns it.
+	// Cancelling a cancelled job returns it unchanged, so a retry is
+	// harmless. A job in any other state returns ErrWrongState; an unknown
+	// job, ErrNotFound. Cancelling never makes a job runnable, so it wakes
+	// no leases.
+	CancelJob(ctx context.Context, id int64) (Job, error)
+
+	// ListDeadJobs returns up to limit dead jobs of the queue, newest first
+	// (finished_at, then id, both descending), starting after the cursor; a
+	// nil cursor starts at the newest. It returns ErrNotFound for an unknown
+	// queue and ErrInvalid for a limit below 1.
+	ListDeadJobs(ctx context.Context, queue string, after *DeadCursor, limit int) ([]Job, error)
+
+	// RedriveDead makes up to limit dead jobs of the queue available again,
+	// with attempts reset to 0, run_at now and finished_at cleared, in one
+	// transaction whose commit wakes long-polling leases. With ids, only
+	// those jobs are considered and any that aren't dead jobs of this queue
+	// are ignored; with nil ids, any dead job of the queue. It returns how
+	// many jobs it redrove. last_error is kept. It returns ErrNotFound for an
+	// unknown queue and ErrInvalid for a limit below 1.
+	RedriveDead(ctx context.Context, queue string, ids []int64, limit int) (int, error)
+}
+
+// MaxErrorBytes caps a job's last_error. Longer messages are truncated, not
+// rejected: refusing a Nack over its message would only leave the job to the
+// reaper.
+const MaxErrorBytes = 4096
+
+// TruncateUTF8 cuts s to at most n bytes without splitting a character.
+func TruncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

@@ -19,7 +19,28 @@ func TestLoadConfigDefaults(t *testing.T) {
 		GRPCAddr:       ":7070",
 		HTTPAddr:       ":8080",
 		ReaperInterval: 5 * time.Second,
+		Retention:      24 * time.Hour,
+		DeadRetention:  168 * time.Hour,
+		PruneInterval:  time.Minute,
 	}, cfg)
+}
+
+func TestLoadConfigRetention(t *testing.T) {
+	cfg, err := LoadConfig(env(map[string]string{
+		"TASKLANE_DATABASE_URL":   "postgres://x",
+		"TASKLANE_RETENTION":      "1h",
+		"TASKLANE_DEAD_RETENTION": "48h",
+		"TASKLANE_PRUNE_INTERVAL": "10s",
+	}))
+	require.NoError(t, err)
+	require.Equal(t, time.Hour, cfg.Retention)
+	require.Equal(t, 48*time.Hour, cfg.DeadRetention)
+	require.Equal(t, 10*time.Second, cfg.PruneInterval)
+
+	for _, key := range []string{"TASKLANE_RETENTION", "TASKLANE_DEAD_RETENTION", "TASKLANE_PRUNE_INTERVAL"} {
+		_, err := LoadConfig(env(map[string]string{"TASKLANE_DATABASE_URL": "postgres://x", key: "0s"}))
+		require.ErrorContains(t, err, key)
+	}
 }
 
 func TestLoadConfigTrimsDatabaseURL(t *testing.T) {

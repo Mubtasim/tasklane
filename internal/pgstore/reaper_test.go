@@ -2,8 +2,10 @@ package pgstore_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -79,4 +81,49 @@ func TestStalledWorkerCannotAckAfterReassignment(t *testing.T) {
 	// retried ack still succeeds.
 	require.ErrorIs(t, s.Ack(ctx, a.ID, a.LeaseToken), store.ErrLeaseLost, "A's token after B completed")
 	require.NoError(t, s.Ack(ctx, b.ID, b.LeaseToken), "B's repeated ack")
+}
+
+func TestReapKeepsThePreviousError(t *testing.T) {
+	s := newStore(t) // zero backoff: a nacked job is leasable at once
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	first := mustLeaseOne(t, s, "emails", time.Minute)
+	require.NoError(t, s.Nack(ctx, first.ID, first.LeaseToken, "smtp: connection refused", nil))
+
+	mustLeaseOne(t, s, "emails", 50*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	_, err := s.ReapExpired(ctx, 100)
+	require.NoError(t, err)
+	got, err := s.GetJob(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "lease expired (previous: smtp: connection refused)", got.LastError)
+
+	// A second expiry doesn't nest the message.
+	mustLeaseOne(t, s, "emails", 50*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	_, err = s.ReapExpired(ctx, 100)
+	require.NoError(t, err)
+	got, err = s.GetJob(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "lease expired (previous: smtp: connection refused)", got.LastError)
+}
+
+func TestReapTruncatesALongPreviousError(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	first := mustLeaseOne(t, s, "emails", time.Minute)
+	require.NoError(t, s.Nack(ctx, first.ID, first.LeaseToken, strings.Repeat("€", 1365), nil)) // 4095 bytes
+
+	mustLeaseOne(t, s, "emails", 50*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	_, err := s.ReapExpired(ctx, 100)
+	require.NoError(t, err)
+	got, err := s.GetJob(ctx, id)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(got.LastError), store.MaxErrorBytes)
+	require.True(t, utf8.ValidString(got.LastError))
+	require.True(t, strings.HasPrefix(got.LastError, "lease expired (previous: €"))
 }

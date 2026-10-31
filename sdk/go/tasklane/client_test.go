@@ -2,10 +2,12 @@ package tasklane
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -128,4 +130,36 @@ func TestServerErrorsAreStatusErrors(t *testing.T) {
 
 	_, err := c.GetQueue(context.Background(), "q")
 	require.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func queueFullStatus(t *testing.T) error {
+	t.Helper()
+	st, err := status.New(codes.ResourceExhausted, `queue "q" is full`).
+		WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(time.Second)})
+	require.NoError(t, err)
+	return st.Err()
+}
+
+func TestEnqueueReturnsErrQueueFull(t *testing.T) {
+	f, c := newFake(t)
+	f.set(func(f *fakeServer) { f.enqueueErr = queueFullStatus(t) })
+
+	_, err := c.Enqueue(context.Background(), "q", Job{Kind: "k"})
+	require.ErrorIs(t, err, ErrQueueFull)
+	var full *QueueFullError
+	require.ErrorAs(t, err, &full)
+	require.Equal(t, time.Second, full.RetryAfter)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err), "still a status error underneath")
+
+	_, err = c.EnqueueBatch(context.Background(), "q", []Job{{Kind: "k"}})
+	require.ErrorIs(t, err, ErrQueueFull)
+}
+
+func TestOtherResourceExhaustedIsNotQueueFull(t *testing.T) {
+	f, c := newFake(t)
+	f.set(func(f *fakeServer) { f.enqueueErr = status.Error(codes.ResourceExhausted, "message too large") })
+
+	_, err := c.Enqueue(context.Background(), "q", Job{Kind: "k"})
+	require.Error(t, err)
+	require.False(t, errors.Is(err, ErrQueueFull), "only a status with RetryInfo is a full queue")
 }

@@ -122,7 +122,7 @@ CREATE INDEX jobs_leased ON jobs (lease_expires_at) WHERE state = 'leased';
 CREATE UNIQUE INDEX jobs_idempotency ON jobs (queue, idempotency_key) WHERE idempotency_key IS NOT NULL;
 -- Pruner and DLQ listing
 CREATE INDEX jobs_finished ON jobs (finished_at) WHERE state IN ('completed', 'cancelled');
-CREATE INDEX jobs_dead ON jobs (queue, finished_at) WHERE state = 'dead';
+CREATE INDEX jobs_dead ON jobs (queue, finished_at, id) WHERE state = 'dead';   -- id added in M3a (§15.2)
 ```
 
 Decisions:
@@ -177,7 +177,7 @@ RETURNING j.*;
 
 **Reaper:** every server runs it every 5 s. It processes expired leases in batches with `FOR UPDATE SKIP LOCKED`, so several servers can run it at once without conflicting.
 
-**Pruner:** deletes `completed` and `cancelled` jobs older than the retention period, in batches. Dead jobs are kept until they are redriven or deleted through the admin API.
+**Pruner:** deletes `completed` and `cancelled` jobs older than the retention period (default 24 h), and dead jobs older than the dead retention (default 7 days), in batches (§15.3).
 
 **Priorities are strict.** A steady stream of priority-1 (critical) work starves priority-4 (low) jobs. This is a deliberate v1 trade-off; the fix (aging, i.e. raising a job's effective priority as it waits) is planned for v1.1.
 
@@ -314,11 +314,12 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M1 | mid-Nov 2026 | Repo, schema and migrations, `PostgresStore` with enqueue/lease/ack/nack and integration tests |
 | M2a | end of Nov | API server: proto + buf, gRPC and HTTP gateway, error mapping, API-key auth, idempotent ack, long-poll leasing with LISTEN/NOTIFY, reaper loop, graceful shutdown |
 | M2b | early Dec | Go SDK (producer + worker runner with heartbeats), live queue stats, `tasklane-watch`, docker-compose demo with flaky and poison jobs (§14) |
-| M3 | mid-Dec | Pruner, DLQ listing and redrive, cancel, backpressure, `LeaseStream` |
+| M3a | mid-Dec | Pruner, DLQ listing and redrive, cancel, backpressure (§15) |
+| M3b | mid-Dec | `LeaseStream`, designed separately; first question: does it beat batched long-polls enough to be worth it |
 | M4 | end of Dec | Metrics, tracing, Grafana dashboard, chaos and invariant tests |
 | M5 | mid-Jan 2027 | TS and C# SDKs, load tests and benchmark report, v1.0.0 release and a blog post |
 
-Notes for M3: like `Enqueue`, `RedriveJobs` and `CancelJob` must send `pg_notify('tasklane_jobs', queue)` inside their transaction whenever they change which jobs are runnable (redrive always does), or waiting leases only notice at their next one-second re-check. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.
+Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.
 
 ## 14. M2b: Go SDK, live queue stats and demo
 
@@ -389,7 +390,7 @@ Rejected alternative: `Concurrency` goroutines that each lease one job. That hol
 
 1. The lease loop stops; no new jobs are taken.
 2. Running handlers get up to `WorkerOptions.ShutdownTimeout` (default 25 s) to finish and Ack or Nack normally.
-3. At the deadline the runner cancels the remaining `jobCtx`s and Nacks those jobs with `worker shutting down`, each with a 2 s deadline, then returns without waiting for handlers that ignore their context.
+3. At the deadline the runner cancels the remaining `jobCtx`s and Nacks those jobs with `worker shutting down`; these Nacks and any Acks still in flight share one 2 s budget, then returns without waiting for handlers that ignore their context.
 
 If the Nack can't be sent (SIGKILL, network down), the lease simply expires and the reaper retries the job, so the Nack is a best-effort speed-up over a safe fallback. Either way the attempt is already counted, because `attempts` is incremented at lease time.
 
@@ -426,3 +427,133 @@ The same query later feeds the M3 backpressure cache and the M4 `tasklane_queue_
 - Raise per-job size headroom from 4 KiB to 16 KiB so `last_error` is covered.
 - Check the protobuf size before the gateway's JSON marshal.
 - Fix the stale `LeaseRequest.max_jobs` proto comment ("1 to 1000"): the server clamps to 50 (`MaxLeaseJobs`).
+
+## 15. M3a: cancel, dead-letter operations, pruning and backpressure
+
+Decided 2026-10-31. This section is the M3a spec. `LeaseStream` moved to M3b and gets its own design.
+
+### 15.1 API
+
+Three new unary RPCs, so the existing unary auth interceptor covers them:
+
+| RPC | HTTP | Request → response |
+|---|---|---|
+| `CancelJob` | `POST /v1/jobs/{id}:cancel` | `id` → the job, now `cancelled` |
+| `ListDeadJobs` | `GET /v1/queues/{queue}/dead` | `page_size` (default and max 100), `page_token` → dead jobs, newest first, and `next_page_token` (empty on the last page) (the server reads one job more than the page, so a last page never carries a token) |
+| `RedriveJobs` | `POST /v1/queues/{queue}/dead:redrive` | `ids` (at most 1,000) or `all = true` → `redriven`, and `skipped` (IDs that were not dead jobs of this queue) |
+
+- **Cancel** works only while the job is `available`. Cancelling an already-cancelled job returns it with success, so a retried cancel is harmless. A leased, completed or dead job is `FAILED_PRECONDITION` (409) with the current state in the message; an unknown job is `NOT_FOUND`.
+- **Redrive** with both `ids` and `all`, or neither, is `INVALID_ARGUMENT`. IDs that are not dead are skipped and counted, not errors, so a retried redrive is harmless.
+- **Page tokens** are opaque to clients: the last row's `(finished_at, id)`, base64-encoded. A token that does not decode is `INVALID_ARGUMENT`.
+- **Enqueue over `max_depth`** (and `EnqueueBatch`, refused whole) is `RESOURCE_EXHAUSTED` (429) with a 1 s retry-after hint, the depth refresh interval (§15.3). This is the only change to an existing RPC. The depth check runs before the store, so while a queue is full an enqueue retry that carries an existing idempotency key also gets 429. A cancelled job keeps its idempotency key until it is pruned (the retention window), so re-enqueueing with that key returns the cancelled job. Any API key may call the admin RPCs (no roles in v1; see §12).
+
+**Go SDK:** `Client.CancelJob`, `Client.ListDeadJobs`, `Client.RedriveJobs` (by IDs) and `Client.RedriveAll`. `Enqueue` and `EnqueueBatch` return `ErrQueueFull` (matched with `errors.Is`, carrying the retry-after) on 429 and do not retry it: a full queue is a signal for the producer's owner, like every other producer error (§14.1).
+
+### 15.2 Storage
+
+New `Store` methods, implemented in `pgstore`, so `RaftStore` can implement them later.
+
+**Cancel** is one conditional update:
+
+```sql
+UPDATE jobs SET state = 'cancelled', finished_at = now()
+WHERE id = $1 AND state = 'available'
+RETURNING *;
+```
+
+On zero rows the store re-reads the job: `cancelled` returns it, a missing job is `NOT_FOUND`, any other state is `FAILED_PRECONDITION`. No `NOTIFY`: cancelling never makes a job runnable.
+
+*Race with Lease.* Lease selects rows `FOR UPDATE SKIP LOCKED`. If Lease locks the row first, Cancel's update waits for the lock; when Lease commits, Postgres re-checks `state = 'available'` on the new row version (EvalPlanQual), finds `leased` and updates nothing, so Cancel returns 409. If Cancel locks it first, Lease skips the row. Exactly one of them wins.
+
+**ListDeadJobs** is a keyset page:
+
+```sql
+SELECT * FROM jobs
+WHERE queue = $1 AND state = 'dead' AND (finished_at, id) < ($2, $3)   -- omitted on the first page
+ORDER BY finished_at DESC, id DESC
+LIMIT $4;
+```
+
+A migration replaces `jobs_dead (queue, finished_at)` with `jobs_dead (queue, finished_at, id)`, so the tiebreak is in the index and every page is an index range scan. Keyset rather than `OFFSET`, whose cost grows with the page number.
+
+**RedriveJobs** runs in batches of up to 1,000, one transaction each:
+
+```sql
+WITH d AS (
+    SELECT id FROM jobs
+    WHERE queue = $1 AND state = 'dead'      -- by IDs: WHERE id = ANY($2) AND queue = $1 AND state = 'dead'
+    ORDER BY finished_at, id                 -- by IDs: ORDER BY id
+    LIMIT 1000
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE jobs j
+SET state = 'available', attempts = 0, run_at = now(), finished_at = NULL
+FROM d WHERE j.id = d.id;
+```
+
+All-mode orders by `(finished_at, id)` on `jobs_dead`, so every batch starts at the front of the partial index (redriven rows leave it); ids-mode looks up the primary key. They are two statements so neither plan depends on a NULL check.
+
+The same transaction sends `pg_notify('tasklane_jobs', queue)` when it changed at least one row. `all` repeats batches until one updates nothing or the request is cancelled; the response counts every committed batch.
+
+- Not atomic, by choice: one transaction over 200,000 rows would hold locks for seconds, write a burst of WAL and leave bloat, and a timeout would undo everything. If the server stops halfway, the committed batches stay redriven and calling `all` again finishes the rest.
+- `last_error` is kept, so the operator still sees why the job died until it fails again.
+- `finished_at = NULL` matters: dead retention is measured from `finished_at`, so a job that dies again starts a fresh retention period.
+- Redriving many jobs makes them all runnable at once. Workers take only what their slots allow, but the retries can hit a just-recovered dependency hard; the docs say so, and per-queue rate limits (v1.1) are the fix.
+
+**Pruner** deletes in batches of 1,000 with `SKIP LOCKED`, so every server can run it:
+
+```sql
+DELETE FROM jobs WHERE id IN (
+    SELECT id FROM jobs
+    WHERE state IN ('completed', 'cancelled') AND finished_at < now() - $1::interval
+    LIMIT 1000 FOR UPDATE SKIP LOCKED);
+-- the same for state = 'dead' with the dead retention
+```
+
+The first uses `jobs_finished`. The second has no queue to fix the `jobs_dead` prefix, so it scans that index across queues; dead jobs are few and this runs once a minute.
+
+**Queue depth** for backpressure is one statement for all queues, with each queue's `max_depth`:
+
+```sql
+SELECT q.name, q.max_depth,
+    (SELECT count(*) FROM jobs j WHERE j.queue = q.name AND j.state = 'available') +
+    (SELECT count(*) FROM jobs j WHERE j.queue = q.name AND j.state = 'leased')
+FROM queues q;
+```
+
+The available count is an index-only range on `jobs_available`, which starts with `queue`; leased jobs are bounded by the workers' slots. A queue with no jobs gets depth 0.
+
+**Reaper message.** When an expired lease follows an earlier failure, the reaper writes `lease expired (previous: <last_error>)`, truncated to 4 KiB at a UTF-8 boundary, instead of overwriting the real error with `lease expired`.
+
+### 15.3 Server loops and configuration
+
+- **Pruner** (`internal/pruner`): every server, every `TASKLANE_PRUNE_INTERVAL`. One pass deletes batch after batch until a batch is short, so a large backlog clears in one pass without one large transaction, and logs the rows deleted. Started and stopped with the server, like the reaper.
+- **Depth cache** (`internal/api`): one goroutine refreshes `map[queue]depth` every second; `Enqueue` refuses when the cached depth is at or above `max_depth`, so the limit is soft (it can overshoot by about one second of traffic). A queue missing from the map has depth 0. If refreshes fail, the last good values are used for up to 10 s, then the cache **fails open** and stops refusing: refusing all enqueues on unknown data would turn a short database blip into a producer outage, and while the database is down `Enqueue` fails with `UNAVAILABLE` anyway.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TASKLANE_RETENTION` | `24h` | Age at which completed and cancelled jobs are pruned (also the idempotency-key window, §4) |
+| `TASKLANE_DEAD_RETENTION` | `168h` | Age at which dead jobs are pruned |
+| `TASKLANE_PRUNE_INTERVAL` | `1m` | Pruner period |
+
+Dead jobs expire like messages in an SQS dead-letter queue. The docs say so; M4's dead-job metric and example alert are what make failures seen before they expire.
+
+### 15.4 Demo
+
+- README gains an Operations section with `curl` examples against the compose demo: list dead jobs, redrive all, cancel a delayed job.
+- The demo's poison jobs already fill the DLQ, so redriving them shows in `tasklane-watch`: `dead` drops, `available` jumps, and they die again.
+- Backpressure: a queue with `max_depth = 50` and the workers stopped; the demo producer handles `ErrQueueFull` and logs `queue full, retry after 1s`.
+
+### 15.5 Testing
+
+- **pgstore integration tests:** every cancel outcome; Cancel racing Lease over many rounds (exactly one wins each time); keyset paging with equal `finished_at` values; redrive by IDs with skips, redrive all across several batches, `NOTIFY` delivered only on commit; pruner retention boundaries for both rules; the reaper message.
+- **API tests:** error mapping (409, 404, 400, 429 with retry-after), the page-token round trip and a malformed token.
+- **Depth cache unit tests** with a fake clock: refresh, stale values, fail-open after 10 s, unknown queue.
+- **SDK tests** (`bufconn`): the three methods and `ErrQueueFull`.
+- Everything runs with `-race`. The demo is checked by hand.
+
+### 15.6 Carried over
+
+- Interview notes Q16 onward at the M3a checkpoint.
+
+Out of scope: `LeaseStream` (M3b), a CLI, rate limits, a delete-dead-jobs RPC.

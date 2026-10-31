@@ -4,7 +4,7 @@ A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
 
-**Status:** early development (milestone M2b: Go SDK and demo). Not ready for production use.
+**Status:** early development (milestone M3a: cancel, dead-letter operations, pruning, backpressure). Not ready for production use.
 
 - Design: [docs/design.md](docs/design.md)
 
@@ -33,6 +33,8 @@ With API keys set, add the header to every `/v1` request:
 curl -H "Authorization: Bearer key1" -d '{"name":"emails"}' localhost:8080/v1/queues
 ```
 
+**Upgrading to M3a.** Migration `0002` rebuilds one partial index (`jobs_dead`) and blocks writes to `jobs` while it builds. The first pruner pass on an existing database deletes the whole completed and cancelled backlog older than the retention (in batches, but expect a WAL and autovacuum burst).
+
 | Variable | Default | |
 |---|---|---|
 | `TASKLANE_DATABASE_URL` | (required) | PostgreSQL connection string |
@@ -40,6 +42,9 @@ curl -H "Authorization: Bearer key1" -d '{"name":"emails"}' localhost:8080/v1/qu
 | `TASKLANE_HTTP_ADDR` | `:8080` | HTTP/JSON gateway listen address |
 | `TASKLANE_API_KEYS` | empty (auth off) | comma-separated API keys |
 | `TASKLANE_REAPER_INTERVAL` | `5s` | how often expired leases are reaped |
+| `TASKLANE_RETENTION` | `24h` | completed and cancelled jobs are deleted after this; also the idempotency-key window |
+| `TASKLANE_DEAD_RETENTION` | `168h` | dead jobs are deleted after this (like an SQS dead-letter queue) |
+| `TASKLANE_PRUNE_INTERVAL` | `1m` | how often old jobs are pruned |
 
 ## Go SDK
 
@@ -96,6 +101,29 @@ docker compose -f deploy/docker-compose.yml stop worker-2   # SIGTERM: a gracefu
 - **Graceful shutdown:** worker-2 stops leasing, lets running jobs finish (up to 25 s), nacks any that don't, and exits. Its jobs come back within seconds.
 
 Bring them back with `docker compose -f deploy/docker-compose.yml start worker-1 worker-2`, and stop everything with `docker compose -f deploy/docker-compose.yml down`.
+
+### Operations
+
+Against the running demo (the HTTP gateway is on `localhost:8080`, the demo API key is `demo-key`):
+
+```bash
+H='Authorization: Bearer demo-key'
+# Dead jobs, newest first (poison jobs land here after 5 attempts)
+curl -H "$H" 'localhost:8080/v1/queues/demo/dead?page_size=5'
+# Send every dead job back with its attempts reset; watch `dead` drop and `available` jump in tasklane-watch
+curl -H "$H" -d '{"all":true}' localhost:8080/v1/queues/demo/dead:redrive
+# Cancel a job that hasn't run yet: enqueue one for later, then cancel it by its job_id
+curl -H "$H" -d '{"kind":"normal","run_at":"2030-01-01T00:00:00Z"}' localhost:8080/v1/queues/demo/jobs
+curl -H "$H" -d '{}' localhost:8080/v1/jobs/<job_id>:cancel
+```
+
+Backpressure: a queue refuses enqueues once its available and leased jobs reach `max_depth` (HTTP 429 with `Retry-After`, `tasklane.ErrQueueFull` in the Go SDK). The limit is soft: each server recounts once a second. To see it, run a second producer into a small queue that no worker reads:
+
+```bash
+TASKLANE_API_KEY=demo-key DEMO_QUEUE=bp DEMO_MAX_DEPTH=50 go run ./examples/demo/producer
+```
+
+After about 50 jobs it logs `queue full, retry after` once a second.
 
 ## Development
 
