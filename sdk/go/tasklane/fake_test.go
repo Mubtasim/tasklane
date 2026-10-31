@@ -42,6 +42,10 @@ type fakeServer struct {
 	ackFn       func(req *tasklanev1.AckRequest) error
 	nackFn      func(req *tasklanev1.NackRequest) error
 	heartbeatFn func(req *tasklanev1.HeartbeatRequest) error
+	enqueueErr  error // returned by Enqueue and EnqueueBatch after recording the request
+	cancelFn    func(req *tasklanev1.CancelJobRequest) (*tasklanev1.CancelJobResponse, error)
+	listDeadFn  func(req *tasklanev1.ListDeadJobsRequest) (*tasklanev1.ListDeadJobsResponse, error)
+	redriveFn   func(req *tasklanev1.RedriveJobsRequest) (*tasklanev1.RedriveJobsResponse, error)
 
 	recorded fakeCalls
 }
@@ -155,6 +159,9 @@ func (f *fakeServer) Enqueue(_ context.Context, req *tasklanev1.EnqueueRequest) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recorded.enqueues = append(f.recorded.enqueues, req)
+	if f.enqueueErr != nil {
+		return nil, f.enqueueErr
+	}
 	return &tasklanev1.EnqueueResponse{JobId: int64(len(f.recorded.enqueues)), Created: true}, nil
 }
 
@@ -162,6 +169,9 @@ func (f *fakeServer) EnqueueBatch(_ context.Context, req *tasklanev1.EnqueueBatc
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recorded.batches = append(f.recorded.batches, req)
+	if f.enqueueErr != nil {
+		return nil, f.enqueueErr
+	}
 	res := &tasklanev1.EnqueueBatchResponse{}
 	for i := range req.GetJobs() {
 		res.Results = append(res.Results, &tasklanev1.EnqueueResult{JobId: int64(i + 1), Created: true})
@@ -238,4 +248,34 @@ func (f *fakeServer) Heartbeat(_ context.Context, req *tasklanev1.HeartbeatReque
 		}
 	}
 	return &tasklanev1.HeartbeatResponse{LeaseExpiresAt: timestamppb.New(time.Now().Add(req.GetVisibilityTimeout().AsDuration()))}, nil
+}
+
+func (f *fakeServer) CancelJob(_ context.Context, req *tasklanev1.CancelJobRequest) (*tasklanev1.CancelJobResponse, error) {
+	f.mu.Lock()
+	fn := f.cancelFn
+	f.mu.Unlock()
+	if fn == nil {
+		return nil, status.Error(codes.Unimplemented, "no cancelFn")
+	}
+	return fn(req)
+}
+
+func (f *fakeServer) ListDeadJobs(_ context.Context, req *tasklanev1.ListDeadJobsRequest) (*tasklanev1.ListDeadJobsResponse, error) {
+	f.mu.Lock()
+	fn := f.listDeadFn
+	f.mu.Unlock()
+	if fn == nil {
+		return nil, status.Error(codes.Unimplemented, "no listDeadFn")
+	}
+	return fn(req)
+}
+
+func (f *fakeServer) RedriveJobs(_ context.Context, req *tasklanev1.RedriveJobsRequest) (*tasklanev1.RedriveJobsResponse, error) {
+	f.mu.Lock()
+	fn := f.redriveFn
+	f.mu.Unlock()
+	if fn == nil {
+		return nil, status.Error(codes.Unimplemented, "no redriveFn")
+	}
+	return fn(req)
 }

@@ -14,7 +14,8 @@ import (
 // Server errors are returned as gRPC status errors: check them with
 // status.Code(err), for example codes.AlreadyExists from CreateQueue. The
 // client does not retry producer calls; to retry an Enqueue safely, give the
-// job an IdempotencyKey and send it again.
+// job an IdempotencyKey and send it again. A full queue is the exception:
+// Enqueue and EnqueueBatch return an error matching ErrQueueFull.
 
 // Priority orders leasing: lower values run first. The zero value lets the
 // server use PriorityDefault.
@@ -82,7 +83,7 @@ func (c *Client) Enqueue(ctx context.Context, queue string, job Job) (EnqueueRes
 	}
 	res, err := c.api.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: queue, Job: spec})
 	if err != nil {
-		return EnqueueResult{}, err
+		return EnqueueResult{}, queueFull(err)
 	}
 	return EnqueueResult{JobID: res.GetJobId(), Created: res.GetCreated()}, nil
 }
@@ -100,7 +101,7 @@ func (c *Client) EnqueueBatch(ctx context.Context, queue string, jobs []Job) ([]
 	}
 	res, err := c.api.EnqueueBatch(ctx, &tasklanev1.EnqueueBatchRequest{Queue: queue, Jobs: specs})
 	if err != nil {
-		return nil, err
+		return nil, queueFull(err)
 	}
 	out := make([]EnqueueResult, len(res.GetResults()))
 	for i, r := range res.GetResults() {
