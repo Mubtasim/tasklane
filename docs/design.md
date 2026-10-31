@@ -576,7 +576,7 @@ Decided 2026-11-01. This section is the M4a spec. Tracing, invariant and chaos t
 | `proto` | `buf lint`; on pull requests `buf breaking` against `main`; `buf generate` followed by `git diff --exit-code gen/`; `promtool check rules deploy/prometheus/alerts.yml` |
 | `docker` | `docker build` of the server image, without pushing (publishing to GHCR comes with v1.0.0 in M5) |
 
-- **Pinned tools.** buf and the protoc plugins are `tool` directives in a separate `tools/go.mod` and run as `go tool -modfile=tools/go.mod <tool>`, so local runs and CI use the same versions and SDK users don't inherit buf's dependencies through the main `go.mod`. The README's generate command changes to match.
+- **Pinned tools.** buf and the protoc plugins are `tool` directives in a separate `tools.mod` (with `tools.sum`) at the repo root and run as `go tool -modfile=tools.mod <tool>`; `buf.gen.yaml` runs the plugins the same way, so local runs and CI use the same versions and SDK users don't inherit buf's dependencies through the main `go.mod`. The README's generate command changes to match.
 - **First lint run.** Every finding in existing code is fixed in M4a; no linter is disabled to get a green build.
 - **Flaky tests** are fixed by widening their timing margins (the M2b follow-ups list the tight ones), never retried.
 - The README gets a CI badge. Requiring CI on `main` is a branch rule the maintainer sets in the GitHub UI.
@@ -584,7 +584,7 @@ Decided 2026-11-01. This section is the M4a spec. Tracing, invariant and chaos t
 
 ### 16.2 Metrics
 
-A new package `internal/metrics` defines every metric on its own registry (not the global one, so tests can create a fresh one) using `prometheus/client_golang`. The server serves it at `/metrics` on `TASKLANE_METRICS_ADDR` (default `:9464`; empty disables metrics), a port separate from the API so operators can keep it internal. `/healthz` and `/readyz` stay on the HTTP port. `/metrics` has no API key.
+A new package `internal/metrics` defines every metric on its own registry (not the global one, so tests can create a fresh one) using `prometheus/client_golang`. The server serves it at `/metrics` on `TASKLANE_METRICS_ADDR` (default `:9464`; `off` disables metrics), a port separate from the API so operators can keep it internal. `/healthz` and `/readyz` stay on the HTTP port. `/metrics` has no API key.
 
 | Metric | Type | Labels | Recorded |
 |---|---|---|---|
@@ -596,28 +596,33 @@ A new package `internal/metrics` defines every metric on its own registry (not t
 | `tasklane_jobs_reaped_total` | counter | `queue` | per expired lease the reaper handles (retry or dead) |
 | `tasklane_jobs_cancelled_total` | counter | `queue` | per job cancelled; a repeated cancel doesn't count |
 | `tasklane_jobs_redriven_total` | counter | `queue` | per dead job made available again |
-| `tasklane_jobs_pruned_total` | counter | `state` | per job deleted by the pruner |
+| `tasklane_jobs_pruned_total` | counter | `state` (`finished` for completed and cancelled, `dead`) | per job deleted by the pruner |
 | `tasklane_enqueue_refused_total` | counter | `queue` | per `Enqueue`/`EnqueueBatch` call refused by backpressure |
 | `tasklane_rpc_duration_seconds` | histogram | `method`, `code` | every RPC, from a unary gRPC interceptor; HTTP calls pass through the gateway, so they are included |
 | `tasklane_queue_wait_seconds` | histogram | `queue` | per job leased: the lease time minus the time the job became ready (`run_at`), both from Postgres `now()` |
 | `tasklane_queue_depth` | gauge | `queue`, `state` (`available`, `leased`) | from the depth refresh; `available` includes delayed jobs, as in the backpressure check |
-| `tasklane_oldest_ready_job_age_seconds` | gauge | `queue` | from the depth refresh: now minus the oldest `run_at` among available jobs whose `run_at` has passed; 0 when there are none |
+| `tasklane_oldest_ready_job_age_seconds` | gauge | `queue` | from the depth refresh: now minus the oldest `run_at` among available jobs whose `run_at` has passed; 0 when there are none or the queue is paused |
 | `tasklane_queue_stats_age_seconds` | gauge | | seconds since the last successful depth refresh |
-| DB pool and Go runtime | gauge | | the pgxpool stats (in use, idle, waiting) and the standard Go and process collectors |
+| `tasklane_db_pool_acquired_connections`, `_idle_connections`, `_max_connections` | gauge | | the pgxpool stats, read on each scrape |
+| `tasklane_db_pool_empty_acquire_total` | counter | | acquires that had to wait for a connection |
+| Go runtime and process | | | the standard Go and process collectors (`go_goroutines`, `process_resident_memory_bytes`, …) |
 
 - **Counters count real changes after commit.** The store reports how many rows actually changed (a repeated Ack, cancel or idempotent enqueue changes none), and the API increments only after the transaction commits, so a rolled-back call counts nothing.
+- **Every known queue's counters start at 0.** Each depth refresh creates the queue's counter series at 0, so graphs show 0 rather than no data and `increase()` sees a queue's first dead job (a series born at 1 has no increase).
 - **Labels are bounded.** `queue` is chosen by operators; `kind` (free text from producers), `job_id` and `priority` are never labels.
 - **Gauges come from the existing one-second depth refresh (§15.3)**, which also returns the state split and the oldest ready age. The oldest ready age is one index lookup per priority on `jobs_available`. Each refresh replaces all gauge series, so a deleted queue's series disappear. While refreshes fail, the gauges keep their last values and `tasklane_queue_stats_age_seconds` grows.
 - **Several servers** each report the same database-wide gauges, so dashboards and alerts aggregate gauges with `max by (queue)` and counters with `sum`.
 
 ### 16.3 Dashboard and alerts
 
-`deploy/grafana/tasklane.json`, provisioned on startup, with a `queue` variable and a 5 s refresh:
+`deploy/grafana/dashboards/tasklane.json`, provisioned on startup (with the Prometheus data source) from `deploy/grafana/provisioning/`, with a `queue` variable and a 5 s refresh:
 
 1. Stats: throughput (acked/s), available, leased, dead in the last hour, oldest ready job age, refused enqueues/s, with yellow and red thresholds.
 2. Jobs per second by outcome (enqueued, acked, nacked, dead, reaped); queue depth by state.
 3. Queue wait p50 and p99; RPC latency p99 by method; RPC errors by code.
-4. DB pool (in use, idle, waiting); Go runtime (goroutines, memory).
+4. DB pool (in use, idle, max, waits per second); goroutines; resident memory.
+
+The RPC latency panel leaves out `Lease`, whose duration includes the long-poll wait (up to 30 s).
 
 `deploy/prometheus/alerts.yml` (example rules; nothing is routed to a notifier):
 
