@@ -633,12 +633,12 @@ The RPC latency panel leaves out `Lease`, whose duration includes the long-poll 
 | `TasklaneDeadJobs` | any job became dead in the last 10 m |
 | `TasklaneReapRateHigh` | reaped > 10% of leased for 10 m |
 | `TasklaneQueueFull` | enqueues refused for 5 m |
-| `TasklaneErrors` | `INTERNAL` or `UNAVAILABLE` > 5% of RPCs for 5 m |
+| `TasklaneErrors` | `Internal` or `Unavailable` (as gRPC code strings) > 5% of RPCs for 5 m |
 
 ### 16.4 Demo
 
 - `deploy/docker-compose.yml` gains Prometheus (`127.0.0.1:9090`, scrape every 5 s, 1 day of retention, the alert rules loaded) and Grafana (`127.0.0.1:3000`, anonymous read-only access, the dashboard provisioned), both with pinned images and started by the plain `docker compose up`. Together they add about 300 MB of RAM.
-- The README gains a Monitoring section: what each panel shows, a walkthrough (kill a worker, watch acked/s drop, available climb and the reaped spike about one visibility timeout later, then restart it), and a dashboard screenshot.
+- The README gains a Monitoring section: what each panel shows, a walkthrough (kill a worker: acked/s holds while the others have spare capacity, available and queue wait rise, the reaped spike follows after the visibility timeout; stop two workers to see throughput drop), and a dashboard screenshot.
 
 ### 16.5 Testing
 
