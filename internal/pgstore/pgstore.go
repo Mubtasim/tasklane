@@ -32,7 +32,8 @@ const jobColumns = `j.id, j.queue, j.kind, j.payload, j.priority, j.state, j.run
 	j.attempts, j.max_attempts, j.last_error, j.lease_token, j.lease_expires_at,
 	j.idempotency_key, j.trace_context, j.created_at, j.finished_at`
 
-func scanJob(row pgx.Row) (store.Job, error) {
+// scanJob scans jobColumns, then any extra columns the query appends.
+func scanJob(row pgx.Row, extra ...any) (store.Job, error) {
 	var (
 		j                         store.Job
 		state                     string
@@ -40,9 +41,10 @@ func scanJob(row pgx.Row) (store.Job, error) {
 		token                     pgtype.UUID
 		leaseExp, finished        pgtype.Timestamptz
 	)
-	err := row.Scan(&j.ID, &j.Queue, &j.Kind, &j.Payload, &j.Priority, &state, &j.RunAt,
+	dest := []any{&j.ID, &j.Queue, &j.Kind, &j.Payload, &j.Priority, &state, &j.RunAt,
 		&j.Attempts, &j.MaxAttempts, &lastErr, &token, &leaseExp,
-		&idemKey, &traceCx, &j.CreatedAt, &finished)
+		&idemKey, &traceCx, &j.CreatedAt, &finished}
+	err := row.Scan(append(dest, extra...)...)
 	if err != nil {
 		return store.Job{}, err
 	}

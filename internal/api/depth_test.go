@@ -35,11 +35,11 @@ func newTestCache() (*depthCache, *time.Time) {
 func TestDepthCacheFullAtMaxDepth(t *testing.T) {
 	c, _ := newTestCache()
 	st := &depthStore{depths: []store.QueueDepth{
-		{Queue: "full", Depth: 50, MaxDepth: 50},
-		{Queue: "over", Depth: 51, MaxDepth: 50},
-		{Queue: "room", Depth: 49, MaxDepth: 50},
+		{Queue: "full", Available: 30, Leased: 20, MaxDepth: 50},
+		{Queue: "over", Available: 40, Leased: 11, MaxDepth: 50},
+		{Queue: "room", Available: 40, Leased: 9, MaxDepth: 50},
 	}}
-	require.NoError(t, c.refresh(context.Background(), st))
+	mustRefresh(t, c, context.Background(), st)
 	require.True(t, c.isFull("full"), "at max_depth is full")
 	require.True(t, c.isFull("over"))
 	require.False(t, c.isFull("room"))
@@ -53,12 +53,13 @@ func TestDepthCacheFailsOpenBeforeTheFirstRefresh(t *testing.T) {
 
 func TestDepthCacheKeepsValuesThroughShortOutages(t *testing.T) {
 	c, now := newTestCache()
-	st := &depthStore{depths: []store.QueueDepth{{Queue: "q", Depth: 5, MaxDepth: 5}}}
-	require.NoError(t, c.refresh(context.Background(), st))
+	st := &depthStore{depths: []store.QueueDepth{{Queue: "q", Available: 3, Leased: 2, MaxDepth: 5}}}
+	mustRefresh(t, c, context.Background(), st)
 
 	st.err = errors.New("db down")
 	*now = now.Add(9 * time.Second)
-	require.Error(t, c.refresh(context.Background(), st))
+	_, err := c.refresh(context.Background(), st)
+	require.Error(t, err)
 	require.True(t, c.isFull("q"), "the last good values are used for up to 10 s")
 
 	*now = now.Add(2 * time.Second) // 11 s since the last good refresh
@@ -74,4 +75,11 @@ func TestQueueFullErrorCarriesRetryInfo(t *testing.T) {
 	ri, ok := st.Details()[0].(*errdetails.RetryInfo)
 	require.True(t, ok)
 	require.Equal(t, time.Second, ri.GetRetryDelay().AsDuration())
+}
+
+// mustRefresh refreshes the cache and fails the test on error.
+func mustRefresh(t *testing.T, c *depthCache, ctx context.Context, st store.Store) {
+	t.Helper()
+	_, err := c.refresh(ctx, st)
+	require.NoError(t, err)
 }

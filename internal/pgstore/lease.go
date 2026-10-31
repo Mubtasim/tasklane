@@ -35,7 +35,7 @@ SET state = 'leased',
         coalesce($3::bigint, (SELECT visibility_timeout_ms FROM queues WHERE name = $1))
 FROM next
 WHERE j.id = next.id
-RETURNING ` + jobColumns
+RETURNING ` + jobColumns + `, now()`
 
 func (s *Store) Lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]store.Job, error) {
 	if n < 1 || n > maxLeaseBatch {
@@ -45,7 +45,12 @@ func (s *Store) Lease(ctx context.Context, queue string, n int, ttl time.Duratio
 	if err != nil {
 		return nil, err
 	}
-	jobs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (store.Job, error) { return scanJob(r) })
+	jobs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (store.Job, error) {
+		var leasedAt time.Time
+		j, err := scanJob(r, &leasedAt)
+		j.LeasedAt = leasedAt
+		return j, err
+	})
 	if err != nil {
 		return nil, err
 	}

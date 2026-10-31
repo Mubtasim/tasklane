@@ -141,3 +141,19 @@ func TestGetJobNotFound(t *testing.T) {
 	_, err := s.GetJob(context.Background(), math.MaxInt64)
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
+
+func TestLeaseSetsLeasedAt(t *testing.T) {
+	s := newStore(t)
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	runAt := time.Now().Add(-time.Minute)
+	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k", RunAt: runAt})
+
+	j := mustLeaseOne(t, s, "emails", 0)
+	require.Equal(t, id, j.ID)
+	require.WithinDuration(t, time.Now(), j.LeasedAt, 5*time.Second)
+	require.InDelta(t, time.Minute.Seconds(), j.LeasedAt.Sub(j.RunAt).Seconds(), 5)
+
+	got, err := s.GetJob(context.Background(), id)
+	require.NoError(t, err)
+	require.True(t, got.LeasedAt.IsZero(), "only Lease sets LeasedAt")
+}

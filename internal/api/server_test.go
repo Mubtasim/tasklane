@@ -319,7 +319,7 @@ func TestEnqueueRefusedWhenQueueIsFull(t *testing.T) {
 		_, err := e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "small", Job: &tasklanev1.JobSpec{Kind: "k"}})
 		require.NoError(t, err, "no refresh has run yet: the cache fails open")
 	}
-	require.NoError(t, e.server.depths.refresh(ctx, e.store))
+	mustRefresh(t, e.server.depths, ctx, e.store)
 
 	_, err = e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "small", Job: &tasklanev1.JobSpec{Kind: "k"}})
 	st := status.Convert(err)
@@ -337,7 +337,7 @@ func TestEnqueueRefusedWhenQueueIsFull(t *testing.T) {
 		_, err := e.client.Ack(ctx, &tasklanev1.AckRequest{Id: j.GetId(), LeaseToken: j.GetLeaseToken()})
 		require.NoError(t, err)
 	}
-	require.NoError(t, e.server.depths.refresh(ctx, e.store))
+	mustRefresh(t, e.server.depths, ctx, e.store)
 	_, err = e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "small", Job: &tasklanev1.JobSpec{Kind: "k"}})
 	require.NoError(t, err)
 }

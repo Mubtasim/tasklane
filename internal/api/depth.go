@@ -37,15 +37,16 @@ func newDepthCache() *depthCache {
 	return &depthCache{now: time.Now}
 }
 
-// refresh recounts every queue. On error it keeps the previous values.
-func (c *depthCache) refresh(ctx context.Context, st store.Store) error {
+// refresh recounts every queue and returns the depths it just stored. On
+// error it keeps the previous values and returns nil.
+func (c *depthCache) refresh(ctx context.Context, st store.Store) ([]store.QueueDepth, error) {
 	depths, err := st.QueueDepths(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	full := make(map[string]bool)
 	for _, d := range depths {
-		if d.Depth >= d.MaxDepth {
+		if d.Depth() >= d.MaxDepth {
 			full[d.Queue] = true
 		}
 	}
@@ -53,7 +54,7 @@ func (c *depthCache) refresh(ctx context.Context, st store.Store) error {
 	defer c.mu.Unlock()
 	c.full = full
 	c.refreshedAt = c.now()
-	return nil
+	return depths, nil
 }
 
 // isFull reports whether the queue was full at the last good refresh. It
@@ -88,7 +89,7 @@ func (s *Server) RunDepthRefresh(ctx context.Context) {
 	ticker := time.NewTicker(depthRefreshInterval)
 	defer ticker.Stop()
 	for {
-		if err := s.depths.refresh(ctx, s.store); err != nil && ctx.Err() == nil {
+		if _, err := s.depths.refresh(ctx, s.store); err != nil && ctx.Err() == nil {
 			s.log.Warn("refresh queue depths failed", "err", err)
 		}
 		select {

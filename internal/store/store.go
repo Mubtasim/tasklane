@@ -86,13 +86,19 @@ type QueueStats struct {
 	RecentlyCompleted int64 // completed within the last StatsWindow
 }
 
-// QueueDepth is a queue's backpressure input: its available and leased jobs
-// (delayed jobs and jobs waiting to retry included) against its max_depth.
+// QueueDepth is a queue's backpressure and monitoring input.
 type QueueDepth struct {
-	Queue    string
-	Depth    int64
-	MaxDepth int64
+	Queue     string
+	MaxDepth  int64
+	Available int64 // delayed jobs and jobs waiting to retry included
+	Leased    int64
+	// OldestReady is how long the oldest available job whose run_at has
+	// passed has been ready; 0 when there is none or the queue is paused.
+	OldestReady time.Duration
 }
+
+// Depth is what max_depth limits: available plus leased jobs.
+func (d QueueDepth) Depth() int64 { return d.Available + d.Leased }
 
 type NewJob struct {
 	Queue          string
@@ -134,6 +140,7 @@ type Job struct {
 	TraceContext   string
 	CreatedAt      time.Time
 	FinishedAt     time.Time // zero until completed, dead or cancelled
+	LeasedAt       time.Time // set only on jobs returned by Lease: the database time the lease was taken
 }
 
 // AckResult is what an Ack did. Repeated is true when the job was already
@@ -170,8 +177,9 @@ type Store interface {
 	// jobs completed within the last StatsWindow. It returns ErrNotFound for
 	// an unknown queue.
 	QueueStats(ctx context.Context, queue string) (QueueStats, error)
-	// QueueDepths returns every queue's depth and max_depth in one
-	// statement, for the API's backpressure cache.
+	// QueueDepths returns every queue's available and leased counts,
+	// max_depth and oldest ready age in one statement, for the API's
+	// backpressure cache and the depth gauges.
 	QueueDepths(ctx context.Context) ([]QueueDepth, error)
 
 	// Enqueue inserts 1 to 1000 jobs atomically and returns one result per
