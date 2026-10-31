@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -40,6 +44,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools.sum
       - run: go tool -modfile=tools.mod buf lint
       - if: github.event_name == 'pull_request'
         run: go tool -modfile=tools.mod buf breaking --against ".git#branch=origin/${{ github.base_ref }}"

@@ -66,6 +66,26 @@ func TestMetricsCountRealChanges(t *testing.T) {
 	require.Positive(t, m.Value("tasklane_db_pool_max_connections"))
 }
 
+// A batch that partly hits idempotency keys counts only the jobs it created.
+func TestMetricsBatchCountsOnlyNewJobs(t *testing.T) {
+	m := metrics.New()
+	e := newEnv(t, nil, WithMetrics(m))
+	ctx := context.Background()
+	_, err := e.client.CreateQueue(ctx, &tasklanev1.CreateQueueRequest{Queue: &tasklanev1.Queue{Name: "q"}})
+	require.NoError(t, err)
+	_, err = e.client.Enqueue(ctx, &tasklanev1.EnqueueRequest{Queue: "q", Job: &tasklanev1.JobSpec{Kind: "k", IdempotencyKey: "a"}})
+	require.NoError(t, err)
+	require.Equal(t, 1.0, m.Value("tasklane_jobs_enqueued_total", "queue", "q"))
+
+	_, err = e.client.EnqueueBatch(ctx, &tasklanev1.EnqueueBatchRequest{Queue: "q", Jobs: []*tasklanev1.JobSpec{
+		{Kind: "k", IdempotencyKey: "a"},
+		{Kind: "k", IdempotencyKey: "b"},
+		{Kind: "k", IdempotencyKey: "c"},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 3.0, m.Value("tasklane_jobs_enqueued_total", "queue", "q"), "1 from the first call plus 2 new jobs")
+}
+
 func TestMetricsRefusedEnqueueAndGauges(t *testing.T) {
 	m := metrics.New()
 	e := newEnv(t, nil, WithMetrics(m))
@@ -80,6 +100,11 @@ func TestMetricsRefusedEnqueueAndGauges(t *testing.T) {
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	require.Equal(t, 1.0, m.Value("tasklane_enqueue_refused_total", "queue", "small"))
 	require.Equal(t, 1.0, m.Value("tasklane_queue_depth", "queue", "small", "state", "available"))
+
+	// A refused batch counts once, not once per job.
+	_, err = e.client.EnqueueBatch(ctx, &tasklanev1.EnqueueBatchRequest{Queue: "small", Jobs: []*tasklanev1.JobSpec{{Kind: "k"}, {Kind: "k"}}})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, 2.0, m.Value("tasklane_enqueue_refused_total", "queue", "small"))
 
 	// A zero-valued counter series exists for the known queue, so graphs
 	// show 0 rather than no data. m.Value can't tell 0 from absent: read

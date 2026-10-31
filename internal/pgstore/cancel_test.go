@@ -3,6 +3,7 @@ package pgstore_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,6 +42,34 @@ func TestCancelTwiceSucceeds(t *testing.T) {
 	require.Equal(t, first.FinishedAt, second.FinishedAt, "the second cancel changes nothing")
 	require.True(t, firstCancelled)
 	require.False(t, secondCancelled, "a repeat cancel reports no change")
+}
+
+// Retries of a cancel can race each other; exactly one of them changes the job.
+func TestConcurrentCancelsChangeOnce(t *testing.T) {
+	s := newStore(t)
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	var changed atomic.Int32
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, cancelled, err := s.CancelJob(ctx, id)
+			if err != nil {
+				t.Errorf("concurrent CancelJob = %v, want nil", err)
+				return
+			}
+			if cancelled {
+				changed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	require.EqualValues(t, 1, changed.Load(), "exactly one racing cancel changes the job")
 }
 
 func TestCancelLeasedJobIsWrongState(t *testing.T) {

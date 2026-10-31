@@ -124,11 +124,13 @@ func run(log *slog.Logger) error {
 
 	// Metrics get their own port (design §16.2), so operators can expose the
 	// API without exposing traffic numbers.
-	var metricsServer *http.Server
-	if cfg.MetricsAddr != "" {
-		mux := http.NewServeMux()
-		mux.Handle("GET /metrics", m.Handler())
-		metricsServer = &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	metricsServer := newMetricsServer(cfg, m)
+	var metricsLis net.Listener
+	if metricsServer != nil {
+		metricsLis, err = net.Listen("tcp", cfg.MetricsAddr)
+		if err != nil {
+			return err
+		}
 	}
 
 	errc := make(chan error, 3)
@@ -140,7 +142,7 @@ func run(log *slog.Logger) error {
 	}()
 	if metricsServer != nil {
 		go func() {
-			if err := metricsServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			if err := metricsServer.Serve(metricsLis); !errors.Is(err, http.ErrServerClosed) {
 				errc <- err
 			}
 		}()
@@ -192,6 +194,22 @@ func run(log *slog.Logger) error {
 		log.Info("tasklane stopped cleanly")
 	}
 	return serveErr
+}
+
+// newMetricsServer returns the server for /metrics, or nil when metrics are
+// switched off (an empty MetricsAddr).
+func newMetricsServer(cfg Config, m *metrics.Metrics) *http.Server {
+	if cfg.MetricsAddr == "" {
+		return nil
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", m.Handler())
+	return &http.Server{
+		Addr:              cfg.MetricsAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 }
 
 var errShuttingDown = errors.New("shutting down")

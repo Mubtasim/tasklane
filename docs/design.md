@@ -414,7 +414,7 @@ The same query later feeds the M3 backpressure cache and the M4 `tasklane_queue_
 - `cmd/tasklane-watch`: redraws once a second: `queue=demo  available 120 | leased 15 | dead 4 | completed 42/s` (`recently_completed / recent_window`). It is the start of the v1.1 CLI.
 - `examples/demo/producer`: creates the `demo` queue (`visibility_timeout` 15 s, `max_attempts` 5) and enqueues about 10 jobs/s: `normal` ~85% (sleeps 0.2–2 s, succeeds), `flaky` ~12% (fails 30% of runs), `poison` ~3% (always fails, reaches the DLQ).
 - `examples/demo/worker`: handlers for the three kinds, `Concurrency` 5.
-- `deploy/docker-compose.yml` with one multi-stage `Dockerfile`: `postgres` (not published on the host), `tasklane` (8080 and 7070 published), `producer`, `worker-1..3` (`stop_grace_period: 30s`, since Docker's default of 10 s is shorter than `ShutdownTimeout`). About 250 MB of RAM in total. `tasklane-watch` runs on the host.
+- `deploy/docker-compose.yml` with one multi-stage `Dockerfile`: `postgres` (not published on the host), `tasklane` (8080 and 7070 published), `producer`, `worker-1..3` (`stop_grace_period: 30s`, since Docker's default of 10 s is shorter than `ShutdownTimeout`). About 250 MB of RAM in total (before M4a added Prometheus and Grafana). `tasklane-watch` runs on the host.
 - Two failure paths to show: `docker compose kill worker-1` (SIGKILL: its jobs stay leased ~15 s until the reaper returns them) and `docker compose stop worker-2` (SIGTERM: running jobs finish, unfinished ones are Nacked and return within seconds). The README gets a Demo section with the tmux layout.
 - Deferred: two server copies with one killed (needs multi-address dialing or a proxy).
 
@@ -567,14 +567,15 @@ Decided 2026-11-01. This section is the M4a spec. Tracing, invariant and chaos t
 
 ### 16.1 CI
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request, with four parallel jobs on GitHub's Ubuntu runners:
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request, with five parallel jobs on GitHub's Ubuntu runners:
 
 | Job | Runs |
 |---|---|
 | `lint` | `golangci-lint` (pinned) with `.golangci.yml`: the default linters (errcheck, govet, staticcheck, unused, ineffassign) plus errorlint and misspell, and the gofmt and goimports formatters |
 | `test` | `go test -race -count=1 ./...`; testcontainers starts Postgres 17 in the runner's Docker |
-| `proto` | `buf lint`; on pull requests `buf breaking` against `main`; `buf generate` followed by `git diff --exit-code gen/`; `promtool check rules deploy/prometheus/alerts.yml` |
+| `proto` | `buf lint`; on pull requests `buf breaking` against `main`; `buf generate` followed by `git diff --exit-code gen/` |
 | `docker` | `docker build` of the server image, without pushing (publishing to GHCR comes with v1.0.0 in M5) |
+| `deploy` | `promtool check config` on `deploy/prometheus/prometheus.yml` (which also checks the rule files it loads); `docker compose -f deploy/docker-compose.yml config --quiet` |
 
 - **Pinned tools.** buf and the protoc plugins are `tool` directives in a separate `tools.mod` (with `tools.sum`) at the repo root and run as `go tool -modfile=tools.mod <tool>`; `buf.gen.yaml` runs the plugins the same way, so local runs and CI use the same versions and SDK users don't inherit buf's dependencies through the main `go.mod`. The README's generate command changes to match.
 - **First lint run.** Every finding in existing code is fixed in M4a; no linter is disabled to get a green build.
@@ -643,7 +644,7 @@ The RPC latency panel leaves out `Lease`, whose duration includes the long-poll 
 ### 16.5 Testing
 
 - **Unit:** each counter on its success path, its failure path and its idempotent-retry path; the interceptor records method and code; gauges are replaced on refresh and keep their values on a failed one.
-- **Integration:** a real server with known jobs; scrape `/metrics` and check the counters and gauges; `/metrics` is absent when `TASKLANE_METRICS_ADDR` is empty.
+- **Integration:** a real server with known jobs; scrape `/metrics` and check the counters and gauges; `/metrics` is not served when `TASKLANE_METRICS_ADDR` is `off`.
 - **Files:** `promtool check rules` in CI; a Go test parses the dashboard JSON and checks every panel has a query.
 - Everything runs with `-race`, locally and in CI. The demo and screenshot are checked by hand.
 

@@ -625,7 +625,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(go_goroutines{job=\"tasklane\"})"
+          "expr": "sum(go_goroutines and on(instance) tasklane_queue_stats_age_seconds)"
         }
       ],
       "fieldConfig": {
@@ -664,7 +664,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(process_resident_memory_bytes{job=\"tasklane\"})"
+          "expr": "sum(process_resident_memory_bytes and on(instance) tasklane_queue_stats_age_seconds)"
         }
       ],
       "fieldConfig": {

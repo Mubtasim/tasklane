@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,16 +72,23 @@ func TestConcurrentSameTokenAcksAllSucceed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
+	var changed atomic.Int32
 	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := ackErr(s, ctx, j.ID, j.LeaseToken); err != nil {
+			res, err := s.Ack(ctx, j.ID, j.LeaseToken)
+			if err != nil {
 				t.Errorf("concurrent Ack with the same token = %v, want nil", err)
+				return
+			}
+			if !res.Repeated {
+				changed.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
+	require.EqualValues(t, 1, changed.Load(), "exactly one racing ack changes the job")
 
 	got, err := s.GetJob(ctx, j.ID)
 	require.NoError(t, err)

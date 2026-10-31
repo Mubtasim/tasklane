@@ -157,7 +157,7 @@ The API is defined in `proto/tasklane/v1/tasklane.proto`. After changing it, run
     go tool -modfile=tools.mod buf lint
     go tool -modfile=tools.mod buf generate
 
-and commit `gen/`. buf and the protoc plugins are pinned in `tools.mod`, so there is nothing to install. Lint with [golangci-lint](https://golangci-lint.run) v2 (`golangci-lint run ./...`); CI runs the linters, the tests with `-race`, `buf lint`, `buf breaking` and the image build on every push and pull request.
+and commit `gen/`. buf and the protoc plugins are pinned in `tools.mod`, so there is nothing to install. Lint with [golangci-lint](https://golangci-lint.run) v2 (`golangci-lint run ./...`); CI runs the linters, the tests with `-race`, `buf lint`, `buf breaking` and the image build on pushes to `main` and on pull requests.
 
 ## License
 
