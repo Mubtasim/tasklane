@@ -6,6 +6,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/mubtasim/tasklane/internal/store"
 )
 
 const (
@@ -15,7 +17,7 @@ const (
 
 // Store is the part of store.Store the reaper needs.
 type Store interface {
-	ReapExpired(ctx context.Context, limit int) (int, error)
+	ReapExpired(ctx context.Context, limit int) ([]store.ReapedJob, error)
 }
 
 // Run reaps once immediately and then every interval until ctx is cancelled.
@@ -47,13 +49,14 @@ func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *s
 
 func reapAll(ctx context.Context, s Store, batch int, log *slog.Logger) {
 	for ctx.Err() == nil {
-		n, err := s.ReapExpired(ctx, batch)
+		reaped, err := s.ReapExpired(ctx, batch)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Error("reap expired leases failed", "err", err)
 			}
 			return
 		}
+		n := len(reaped)
 		if n > 0 {
 			log.Info("reaped expired leases", "count", n)
 		}

@@ -215,7 +215,7 @@ func (s *Server) Ack(ctx context.Context, req *tasklanev1.AckRequest) (*tasklane
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.Ack(ctx, req.GetId(), token); err != nil {
+	if _, err := s.store.Ack(ctx, req.GetId(), token); err != nil {
 		return nil, toStatus(s.log, "Ack", err)
 	}
 	return &tasklanev1.AckResponse{}, nil
@@ -237,7 +237,7 @@ func (s *Server) Nack(ctx context.Context, req *tasklanev1.NackRequest) (*taskla
 	// A long error (a stack trace, say) is truncated rather than rejected:
 	// failing the Nack would only leave the job to the reaper.
 	errMsg := store.TruncateUTF8(req.GetError(), store.MaxErrorBytes)
-	if err := s.store.Nack(ctx, req.GetId(), token, errMsg, retryAt); err != nil {
+	if _, err := s.store.Nack(ctx, req.GetId(), token, errMsg, retryAt); err != nil {
 		return nil, toStatus(s.log, "Nack", err)
 	}
 	return &tasklanev1.NackResponse{}, nil

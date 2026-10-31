@@ -136,6 +136,28 @@ type Job struct {
 	FinishedAt     time.Time // zero until completed, dead or cancelled
 }
 
+// AckResult is what an Ack did. Repeated is true when the job was already
+// completed with the same token (a retry after a lost response): success,
+// but nothing changed.
+type AckResult struct {
+	Queue    string
+	Repeated bool
+}
+
+// NackResult is what a Nack did: the job went back to available, or to dead
+// when it had used all its attempts.
+type NackResult struct {
+	Queue string
+	Dead  bool
+}
+
+// ReapedJob is one expired lease the reaper handled: retried, or dead when
+// the job had used all its attempts.
+type ReapedJob struct {
+	Queue string
+	Dead  bool
+}
+
 type Store interface {
 	// CreateQueue returns ErrAlreadyExists if the name is taken, and
 	// ErrInvalid for an empty or unsafe name (1-128 characters from
@@ -171,20 +193,25 @@ type Store interface {
 	// ErrNotFound if the job does not exist.
 
 	// Ack marks the leased job completed and keeps its token, so repeating
-	// the Ack with the same token returns nil (a retry after a lost response).
-	Ack(ctx context.Context, id int64, token uuid.UUID) error
+	// the Ack with the same token succeeds (a retry after a lost response).
+	// The result carries the job's queue and says whether this call changed
+	// anything (Repeated is true when it did not).
+	Ack(ctx context.Context, id int64, token uuid.UUID) (AckResult, error)
 	// Nack fails the current attempt. A job whose attempts have reached
 	// max_attempts moves to StateDead; otherwise it becomes available again at
-	// retryAt, or after the store's backoff delay when retryAt is nil.
-	Nack(ctx context.Context, id int64, token uuid.UUID, errMsg string, retryAt *time.Time) error
+	// retryAt, or after the store's backoff delay when retryAt is nil. The
+	// result carries the job's queue and whether it went to StateDead; on an
+	// error it is the zero value.
+	Nack(ctx context.Context, id int64, token uuid.UUID, errMsg string, retryAt *time.Time) (NackResult, error)
 	// Heartbeat extends the lease and returns the new expiry. A ttl <= 0 uses
 	// the queue's visibility timeout.
 	Heartbeat(ctx context.Context, id int64, token uuid.UUID, ttl time.Duration) (time.Time, error)
 
 	// ReapExpired treats up to limit expired leases as failed attempts and
-	// returns how many it processed. Like Nack, a job whose attempts have
-	// reached max_attempts moves to StateDead instead of being retried.
-	ReapExpired(ctx context.Context, limit int) (int, error)
+	// returns one ReapedJob per lease it processed (nil on an error or when
+	// nothing had expired). Like Nack, a job whose attempts have reached
+	// max_attempts moves to StateDead instead of being retried.
+	ReapExpired(ctx context.Context, limit int) ([]ReapedJob, error)
 
 	// PruneFinished deletes up to limit completed and cancelled jobs that
 	// finished more than age ago and returns how many it deleted. Like the
@@ -200,8 +227,9 @@ type Store interface {
 	// Cancelling a cancelled job returns it unchanged, so a retry is
 	// harmless. A job in any other state returns ErrWrongState; an unknown
 	// job, ErrNotFound. Cancelling never makes a job runnable, so it wakes
-	// no leases.
-	CancelJob(ctx context.Context, id int64) (Job, error)
+	// no leases. cancelled is true when this call cancelled the job and false
+	// when it was already cancelled.
+	CancelJob(ctx context.Context, id int64) (job Job, cancelled bool, err error)
 
 	// ListDeadJobs returns up to limit dead jobs of the queue, newest first
 	// (finished_at, then id, both descending), starting after the cursor; a

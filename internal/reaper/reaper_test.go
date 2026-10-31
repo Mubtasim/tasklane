@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/mubtasim/tasklane/internal/store"
 )
 
 // fakeStore returns scripted results, then 0, and records every call.
@@ -31,7 +33,7 @@ func newFakeStore(results ...result) *fakeStore {
 	return &fakeStore{results: results, called: make(chan struct{}, 100)}
 }
 
-func (f *fakeStore) ReapExpired(ctx context.Context, limit int) (int, error) {
+func (f *fakeStore) ReapExpired(ctx context.Context, limit int) ([]store.ReapedJob, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -40,11 +42,11 @@ func (f *fakeStore) ReapExpired(ctx context.Context, limit int) (int, error) {
 	default: // the test isn't counting this many calls
 	}
 	if len(f.results) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	r := f.results[0]
 	f.results = f.results[1:]
-	return r.n, r.err
+	return make([]store.ReapedJob, r.n), r.err
 }
 
 func (f *fakeStore) callCount() int {
@@ -143,9 +145,9 @@ func TestStopsOnCancel(t *testing.T) {
 // fullStore always reports a full batch, as if the backlog never ended.
 type fullStore struct{ calls atomic.Int64 }
 
-func (f *fullStore) ReapExpired(ctx context.Context, limit int) (int, error) {
+func (f *fullStore) ReapExpired(ctx context.Context, limit int) ([]store.ReapedJob, error) {
 	f.calls.Add(1)
-	return limit, nil
+	return make([]store.ReapedJob, limit), nil
 }
 
 func TestAlwaysFullBatchStopsOnCancel(t *testing.T) {

@@ -23,7 +23,7 @@ const (
 )
 
 func (s *Server) CancelJob(ctx context.Context, req *tasklanev1.CancelJobRequest) (*tasklanev1.CancelJobResponse, error) {
-	j, err := s.store.CancelJob(ctx, req.GetId())
+	j, _, err := s.store.CancelJob(ctx, req.GetId())
 	if err != nil {
 		return nil, toStatus(s.log, "CancelJob", err)
 	}

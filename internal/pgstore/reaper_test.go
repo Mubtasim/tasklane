@@ -20,9 +20,9 @@ func TestReapExpiredRetriesJob(t *testing.T) {
 	mustLeaseOne(t, s, "emails", 50*time.Millisecond)
 
 	time.Sleep(100 * time.Millisecond)
-	n, err := s.ReapExpired(ctx, 100)
+	reaped, err := s.ReapExpired(ctx, 100)
 	require.NoError(t, err)
-	require.Equal(t, 1, n)
+	require.Len(t, reaped, 1)
 
 	got, err := s.GetJob(ctx, id)
 	require.NoError(t, err)
@@ -53,9 +53,9 @@ func TestReapIgnoresLiveLeases(t *testing.T) {
 	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	mustLeaseOne(t, s, "emails", time.Hour)
 
-	n, err := s.ReapExpired(context.Background(), 100)
+	reaped, err := s.ReapExpired(context.Background(), 100)
 	require.NoError(t, err)
-	require.Zero(t, n)
+	require.Empty(t, reaped)
 }
 
 // The scenario from interview-notes Q1: worker A stalls past its lease, the
@@ -74,13 +74,13 @@ func TestStalledWorkerCannotAckAfterReassignment(t *testing.T) {
 
 	require.Equal(t, a.ID, b.ID)
 	require.NotEqual(t, a.LeaseToken, b.LeaseToken)
-	require.ErrorIs(t, s.Ack(ctx, a.ID, a.LeaseToken), store.ErrLeaseLost, "A's token is fenced off")
-	require.NoError(t, s.Ack(ctx, b.ID, b.LeaseToken))
+	require.ErrorIs(t, ackErr(s, ctx, a.ID, a.LeaseToken), store.ErrLeaseLost, "A's token is fenced off")
+	require.NoError(t, ackErr(s, ctx, b.ID, b.LeaseToken))
 
 	// Once B has completed the job, A's old token is still rejected and B's
 	// retried ack still succeeds.
-	require.ErrorIs(t, s.Ack(ctx, a.ID, a.LeaseToken), store.ErrLeaseLost, "A's token after B completed")
-	require.NoError(t, s.Ack(ctx, b.ID, b.LeaseToken), "B's repeated ack")
+	require.ErrorIs(t, ackErr(s, ctx, a.ID, a.LeaseToken), store.ErrLeaseLost, "A's token after B completed")
+	require.NoError(t, ackErr(s, ctx, b.ID, b.LeaseToken), "B's repeated ack")
 }
 
 func TestReapKeepsThePreviousError(t *testing.T) {
@@ -89,7 +89,7 @@ func TestReapKeepsThePreviousError(t *testing.T) {
 	mustQueue(t, s, store.Queue{Name: "emails"})
 	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	first := mustLeaseOne(t, s, "emails", time.Minute)
-	require.NoError(t, s.Nack(ctx, first.ID, first.LeaseToken, "smtp: connection refused", nil))
+	require.NoError(t, nackErr(s, ctx, first.ID, first.LeaseToken, "smtp: connection refused", nil))
 
 	mustLeaseOne(t, s, "emails", 50*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
@@ -115,7 +115,7 @@ func TestReapTruncatesALongPreviousError(t *testing.T) {
 	mustQueue(t, s, store.Queue{Name: "emails"})
 	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	first := mustLeaseOne(t, s, "emails", time.Minute)
-	require.NoError(t, s.Nack(ctx, first.ID, first.LeaseToken, strings.Repeat("€", 1365), nil)) // 4095 bytes
+	require.NoError(t, nackErr(s, ctx, first.ID, first.LeaseToken, strings.Repeat("€", 1365), nil)) // 4095 bytes
 
 	mustLeaseOne(t, s, "emails", 50*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
@@ -126,4 +126,20 @@ func TestReapTruncatesALongPreviousError(t *testing.T) {
 	require.LessOrEqual(t, len(got.LastError), store.MaxErrorBytes)
 	require.True(t, utf8.ValidString(got.LastError))
 	require.True(t, strings.HasPrefix(got.LastError, "lease expired (previous: €"))
+}
+
+func TestReapExpiredReportsQueueAndDead(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "a", MaxAttempts: 1})
+	mustQueue(t, s, store.Queue{Name: "b", MaxAttempts: 5})
+	mustEnqueue(t, s, store.NewJob{Queue: "a", Kind: "k"})
+	mustEnqueue(t, s, store.NewJob{Queue: "b", Kind: "k"})
+	mustLeaseOne(t, s, "a", time.Millisecond)
+	mustLeaseOne(t, s, "b", time.Millisecond)
+
+	time.Sleep(50 * time.Millisecond)
+	reaped, err := s.ReapExpired(ctx, 10)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []store.ReapedJob{{Queue: "a", Dead: true}, {Queue: "b", Dead: false}}, reaped)
 }
