@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -232,15 +231,4 @@ func jobFromStore(j store.Job, withToken bool) (*tasklanev1.Job, error) {
 		out.LeaseToken = j.LeaseToken.String()
 	}
 	return out, nil
-}
-
-// truncateUTF8 cuts s to at most n bytes without splitting a character.
-func truncateUTF8(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n]
 }

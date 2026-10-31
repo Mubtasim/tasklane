@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -205,4 +206,20 @@ type Store interface {
 	// many jobs it redrove. last_error is kept. It returns ErrNotFound for an
 	// unknown queue and ErrInvalid for a limit below 1.
 	RedriveDead(ctx context.Context, queue string, ids []int64, limit int) (int, error)
+}
+
+// MaxErrorBytes caps a job's last_error. Longer messages are truncated, not
+// rejected: refusing a Nack over its message would only leave the job to the
+// reaper.
+const MaxErrorBytes = 4096
+
+// TruncateUTF8 cuts s to at most n bytes without splitting a character.
+func TruncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

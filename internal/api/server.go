@@ -229,7 +229,7 @@ func (s *Server) Nack(ctx context.Context, req *tasklanev1.NackRequest) (*taskla
 	}
 	// A long error (a stack trace, say) is truncated rather than rejected:
 	// failing the Nack would only leave the job to the reaper.
-	errMsg := truncateUTF8(req.GetError(), maxErrorBytes)
+	errMsg := store.TruncateUTF8(req.GetError(), store.MaxErrorBytes)
 	if err := s.store.Nack(ctx, req.GetId(), token, errMsg, retryAt); err != nil {
 		return nil, toStatus(s.log, "Nack", err)
 	}

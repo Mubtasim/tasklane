@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	"github.com/mubtasim/tasklane/internal/store"
 )
 
 // payloadOfSize returns a payload whose JSON encoding is exactly n bytes.
@@ -192,18 +193,6 @@ func TestJobSpecToStoreEnforcesLimits(t *testing.T) {
 	bad(&tasklanev1.JobSpec{Kind: "k", TraceContext: strings.Repeat("t", 513)})
 }
 
-func TestTruncateUTF8(t *testing.T) {
-	require.Equal(t, "short", truncateUTF8("short", 10))
-	require.Equal(t, "abc", truncateUTF8("abcdef", 3))
-	// "é" is 2 bytes: cutting at 3 would split the second one.
-	require.Equal(t, "é", truncateUTF8("éé", 3))
-	long := strings.Repeat("€", 2000) // 3 bytes each
-	got := truncateUTF8(long, maxErrorBytes)
-	require.LessOrEqual(t, len(got), maxErrorBytes)
-	require.Greater(t, len(got), maxErrorBytes-3)
-	require.True(t, utf8.ValidString(got))
-}
-
 func TestProgramLimitExceededIsInvalidArgument(t *testing.T) {
 	err := toStatus(slog.New(slog.DiscardHandler), "Enqueue", &pgconn.PgError{Code: "54000", Message: "index row size 6016 exceeds btree version 4 maximum 2704"})
 	requireCode(t, codes.InvalidArgument, err)
@@ -303,8 +292,8 @@ func TestNackTruncatesLongErrors(t *testing.T) {
 	got, err := e.client.GetJob(ctx, &tasklanev1.GetJobRequest{Id: job.GetId()})
 	require.NoError(t, err)
 	stored := got.GetJob().GetLastError()
-	require.LessOrEqual(t, len(stored), maxErrorBytes)
-	require.Greater(t, len(stored), maxErrorBytes-3)
+	require.LessOrEqual(t, len(stored), store.MaxErrorBytes)
+	require.Greater(t, len(stored), store.MaxErrorBytes-3)
 	require.True(t, utf8.ValidString(stored))
 	require.True(t, strings.HasPrefix(msg, stored))
 }

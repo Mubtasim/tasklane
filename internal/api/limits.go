@@ -24,6 +24,4 @@ const (
 	maxKindBytes           = 255
 	maxIdempotencyKeyBytes = 255
 	maxTraceContextBytes   = 512
-	// maxErrorBytes caps Nack's error message; longer ones are truncated.
-	maxErrorBytes = 4096
 )
