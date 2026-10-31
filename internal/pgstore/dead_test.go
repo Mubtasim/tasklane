@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mubtasim/tasklane/internal/store"
@@ -86,4 +87,114 @@ func TestListDeadJobsEmptyAndUnknownQueue(t *testing.T) {
 
 	_, err = s.ListDeadJobs(ctx, "emails", nil, 0)
 	require.ErrorIs(t, err, store.ErrInvalid)
+}
+
+func TestRedriveDeadResetsJobs(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"})
+	bury(t, id, time.Now())
+
+	n, err := s.RedriveDead(ctx, "emails", nil, 1000)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	got, err := s.GetJob(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, store.StateAvailable, got.State)
+	require.Zero(t, got.Attempts, "a redriven job gets all its attempts back")
+	require.True(t, got.FinishedAt.IsZero(), "dead retention restarts if it dies again")
+	require.Equal(t, "boom", got.LastError, "the operator still sees why it died")
+	mustLeaseOne(t, s, "emails", time.Minute)
+}
+
+func TestRedriveDeadByIDsIgnoresOthers(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	mustQueue(t, s, store.Queue{Name: "other"})
+	dead := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"})
+	stillDead := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"})
+	available := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"})
+	otherQueue := mustEnqueue(t, s, store.NewJob{Queue: "other", Kind: "k"})
+	bury(t, dead, time.Now())
+	bury(t, stillDead, time.Now())
+	bury(t, otherQueue, time.Now())
+
+	n, err := s.RedriveDead(ctx, "emails", []int64{dead, available, otherQueue, 999}, 1000)
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "only the dead job of this queue")
+
+	got, err := s.GetJob(ctx, stillDead)
+	require.NoError(t, err)
+	require.Equal(t, store.StateDead, got.State, "not in the list")
+	got, err = s.GetJob(ctx, otherQueue)
+	require.NoError(t, err)
+	require.Equal(t, store.StateDead, got.State, "another queue's job")
+}
+
+func TestRedriveDeadRespectsLimit(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	for range 5 {
+		bury(t, mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"}), time.Now())
+	}
+	var counts []int
+	for range 4 {
+		n, err := s.RedriveDead(ctx, "emails", nil, 2)
+		require.NoError(t, err)
+		counts = append(counts, n)
+	}
+	require.Equal(t, []int{2, 2, 1, 0}, counts)
+}
+
+func TestRedriveDeadErrors(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+
+	n, err := s.RedriveDead(ctx, "emails", nil, 1000)
+	require.NoError(t, err, "nothing dead is not an error")
+	require.Zero(t, n)
+
+	_, err = s.RedriveDead(ctx, "nope", nil, 1000)
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	_, err = s.RedriveDead(ctx, "emails", nil, 0)
+	require.ErrorIs(t, err, store.ErrInvalid)
+}
+
+// A redrive makes jobs runnable, so it must NOTIFY like Enqueue, and only
+// when it changed something.
+func TestRedriveDeadNotifiesOnlyWhenItRedrove(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	conn, err := pgx.Connect(ctx, testDB.DSN)
+	require.NoError(t, err)
+	defer conn.Close(ctx)
+	_, err = conn.Exec(ctx, "LISTEN tasklane_jobs")
+	require.NoError(t, err)
+
+	_, err = s.RedriveDead(ctx, "emails", nil, 1000)
+	require.NoError(t, err)
+	quiet, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	_, err = conn.WaitForNotification(quiet)
+	cancel()
+	require.Error(t, err, "no notification when nothing was redriven")
+
+	bury(t, mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"}), time.Now())
+	// mustEnqueue itself notified; drain that first.
+	wait, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err = conn.WaitForNotification(wait)
+	require.NoError(t, err)
+
+	_, err = s.RedriveDead(ctx, "emails", nil, 1000)
+	require.NoError(t, err)
+	n, err := conn.WaitForNotification(wait)
+	require.NoError(t, err)
+	require.Equal(t, "emails", n.Payload)
 }

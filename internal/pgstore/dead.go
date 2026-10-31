@@ -49,3 +49,42 @@ func (s *Store) ListDeadJobs(ctx context.Context, queue string, after *store.Dea
 	}
 	return jobs, nil
 }
+
+// RedriveDead takes its batch FOR UPDATE SKIP LOCKED, so two operators
+// redriving the same queue at once split the jobs instead of waiting on each
+// other. A nil ids slice is sent as NULL, which the "IS NULL OR" turns into
+// "any dead job of the queue". The NOTIFY is part of the transaction, so
+// waiting leases hear it only once the jobs are visible.
+func (s *Store) RedriveDead(ctx context.Context, queue string, ids []int64, limit int) (int, error) {
+	if limit < 1 {
+		return 0, fmt.Errorf("%w: limit must be positive, got %d", store.ErrInvalid, limit)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		WITH d AS (
+			SELECT id FROM jobs
+			WHERE queue = $1 AND state = 'dead' AND ($2::bigint[] IS NULL OR id = ANY($2))
+			ORDER BY id
+			LIMIT $3
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE jobs j
+		SET state = 'available', attempts = 0, run_at = now(), finished_at = NULL
+		FROM d WHERE j.id = d.id`, queue, ids, limit)
+	if err != nil {
+		return 0, err
+	}
+	n := int(tag.RowsAffected())
+	if n == 0 {
+		return 0, queueExists(ctx, tx, queue)
+	}
+	if _, err := tx.Exec(ctx, "SELECT pg_notify($1, $2)", NotifyChannel, queue); err != nil {
+		return 0, err
+	}
+	return n, tx.Commit(ctx)
+}

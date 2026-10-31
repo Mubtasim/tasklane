@@ -189,4 +189,13 @@ type Store interface {
 	// nil cursor starts at the newest. It returns ErrNotFound for an unknown
 	// queue and ErrInvalid for a limit below 1.
 	ListDeadJobs(ctx context.Context, queue string, after *DeadCursor, limit int) ([]Job, error)
+
+	// RedriveDead makes up to limit dead jobs of the queue available again,
+	// with attempts reset to 0, run_at now and finished_at cleared, in one
+	// transaction whose commit wakes long-polling leases. With ids, only
+	// those jobs are considered and any that aren't dead jobs of this queue
+	// are ignored; with nil ids, any dead job of the queue. It returns how
+	// many jobs it redrove. last_error is kept. It returns ErrNotFound for an
+	// unknown queue and ErrInvalid for a limit below 1.
+	RedriveDead(ctx context.Context, queue string, ids []int64, limit int) (int, error)
 }
