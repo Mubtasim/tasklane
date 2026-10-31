@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -115,6 +118,11 @@ func isSendTooLarge(err error) bool {
 // FAILED_PRECONDITION to 400 by default, but a stale lease token is a 409.
 // A body over the limit is a 413, not the gateway's 400 for a decode error.
 func errorHandler(ctx context.Context, mux *runtime.ServeMux, m runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
+	// A full queue is a 429 already (the gateway's default for
+	// RESOURCE_EXHAUSTED); give HTTP clients the hint as a header too.
+	if d, ok := retryAfter(err); ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(d.Seconds()))))
+	}
 	if b, ok := r.Body.(*limitedBody); ok && b.tooLarge {
 		err = &runtime.HTTPStatusError{HTTPStatus: http.StatusRequestEntityTooLarge, Err: errBodyTooLarge}
 	} else if isSendTooLarge(err) {
@@ -123,4 +131,14 @@ func errorHandler(ctx context.Context, mux *runtime.ServeMux, m runtime.Marshale
 		err = &runtime.HTTPStatusError{HTTPStatus: http.StatusConflict, Err: err}
 	}
 	runtime.DefaultHTTPErrorHandler(ctx, mux, m, w, r, err)
+}
+
+// retryAfter returns the RetryInfo delay a status carries, if any.
+func retryAfter(err error) (time.Duration, bool) {
+	for _, d := range status.Convert(err).Details() {
+		if ri, ok := d.(*errdetails.RetryInfo); ok {
+			return ri.GetRetryDelay().AsDuration(), true
+		}
+	}
+	return 0, false
 }

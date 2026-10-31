@@ -197,3 +197,17 @@ func TestHealthEndpointsArePlainText(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPQueueFullIs429WithRetryAfter(t *testing.T) {
+	e := newEnv(t, nil)
+	base := newHTTP(t, e, func(context.Context) error { return nil })
+	code, _ := call(t, "POST", base+"/v1/queues", "", `{"name":"small","max_depth":"1"}`)
+	require.Equal(t, http.StatusOK, code)
+	code, _ = call(t, "POST", base+"/v1/queues/small/jobs", "", `{"kind":"k"}`)
+	require.Equal(t, http.StatusOK, code)
+	require.NoError(t, e.server.depths.refresh(context.Background(), e.store))
+
+	resp, _ := callRaw(t, "POST", base+"/v1/queues/small/jobs", "", `{"kind":"k"}`)
+	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	require.Equal(t, "1", resp.Header.Get("Retry-After"))
+}

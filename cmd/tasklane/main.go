@@ -80,6 +80,7 @@ func run(log *slog.Logger) error {
 	})
 
 	srv := api.NewServer(st, listener, log)
+	background.Go(func() { srv.RunDepthRefresh(bgCtx) })
 	grpcServer := api.NewGRPCServer(srv, cfg.APIKeys, log)
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {

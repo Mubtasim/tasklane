@@ -86,6 +86,14 @@ type QueueStats struct {
 	RecentlyCompleted int64 // completed within the last StatsWindow
 }
 
+// QueueDepth is a queue's backpressure input: its available and leased jobs
+// (delayed jobs and jobs waiting to retry included) against its max_depth.
+type QueueDepth struct {
+	Queue    string
+	Depth    int64
+	MaxDepth int64
+}
+
 type NewJob struct {
 	Queue          string
 	Kind           string
@@ -140,6 +148,9 @@ type Store interface {
 	// jobs completed within the last StatsWindow. It returns ErrNotFound for
 	// an unknown queue.
 	QueueStats(ctx context.Context, queue string) (QueueStats, error)
+	// QueueDepths returns every queue's depth and max_depth in one
+	// statement, for the API's backpressure cache.
+	QueueDepths(ctx context.Context) ([]QueueDepth, error)
 
 	// Enqueue inserts 1 to 1000 jobs atomically and returns one result per
 	// job, in the caller's order. A job whose idempotency key already exists
