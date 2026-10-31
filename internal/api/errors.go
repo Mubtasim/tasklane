@@ -31,6 +31,8 @@ func toStatus(log *slog.Logger, method string, err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, store.ErrLeaseLost):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, store.ErrWrongState):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, store.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, store.ErrAlreadyExists):

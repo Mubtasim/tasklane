@@ -44,6 +44,9 @@ var (
 	ErrInvalid = errors.New("tasklane: invalid argument")
 	// ErrAlreadyExists means the resource, such as a queue, already exists.
 	ErrAlreadyExists = errors.New("tasklane: already exists")
+	// ErrWrongState means the job exists but its state doesn't allow the
+	// operation, such as cancelling a job that is already leased.
+	ErrWrongState = errors.New("tasklane: wrong job state")
 )
 
 type Queue struct {
@@ -166,4 +169,11 @@ type Store interface {
 
 	// GetJob returns ErrNotFound for an unknown job.
 	GetJob(ctx context.Context, id int64) (Job, error)
+
+	// CancelJob moves an available job to StateCancelled and returns it.
+	// Cancelling a cancelled job returns it unchanged, so a retry is
+	// harmless. A job in any other state returns ErrWrongState; an unknown
+	// job, ErrNotFound. Cancelling never makes a job runnable, so it wakes
+	// no leases.
+	CancelJob(ctx context.Context, id int64) (Job, error)
 }
