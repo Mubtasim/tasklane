@@ -101,6 +101,13 @@ type EnqueueResult struct {
 	Created bool // false when the idempotency key matched an existing job
 }
 
+// DeadCursor marks where a page of dead jobs ended: the last job's
+// FinishedAt and ID. The next page starts after it.
+type DeadCursor struct {
+	FinishedAt time.Time
+	ID         int64
+}
+
 type Job struct {
 	ID             int64
 	Queue          string
@@ -176,4 +183,10 @@ type Store interface {
 	// job, ErrNotFound. Cancelling never makes a job runnable, so it wakes
 	// no leases.
 	CancelJob(ctx context.Context, id int64) (Job, error)
+
+	// ListDeadJobs returns up to limit dead jobs of the queue, newest first
+	// (finished_at, then id, both descending), starting after the cursor; a
+	// nil cursor starts at the newest. It returns ErrNotFound for an unknown
+	// queue and ErrInvalid for a limit below 1.
+	ListDeadJobs(ctx context.Context, queue string, after *DeadCursor, limit int) ([]Job, error)
 }

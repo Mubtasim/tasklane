@@ -4,6 +4,7 @@ package pgstore
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -94,4 +95,18 @@ func missingOrLost(ctx context.Context, q querier, id int64) error {
 		return store.ErrNotFound
 	}
 	return store.ErrLeaseLost
+}
+
+// queueExists returns ErrNotFound when the queue doesn't exist. Callers run
+// it after a query that matched no rows, to tell "unknown queue" from
+// "nothing to do".
+func queueExists(ctx context.Context, q querier, name string) error {
+	var exists bool
+	if err := q.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM queues WHERE name = $1)", name).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: queue %q", store.ErrNotFound, name)
+	}
+	return nil
 }
