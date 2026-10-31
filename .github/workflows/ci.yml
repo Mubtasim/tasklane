@@ -54,3 +54,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t tasklane:ci .
+
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prometheus config and alert rules are valid
+        run: >
+          docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro"
+          --entrypoint promtool prom/prometheus:v3.15.1
+          check config /etc/prometheus/prometheus.yml
+      - run: docker compose -f deploy/docker-compose.yml config --quiet
