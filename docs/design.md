@@ -637,8 +637,8 @@ The RPC latency panel leaves out `Lease`, whose duration includes the long-poll 
 
 ### 16.4 Demo
 
-- `deploy/docker-compose.yml` gains Prometheus (`127.0.0.1:9090`, scrape every 5 s, 1 day of retention, the alert rules loaded) and Grafana (`127.0.0.1:3000`, anonymous read-only access, the dashboard provisioned), both with pinned images and started by the plain `docker compose up`. Together they add about 300 MB of RAM.
-- The README gains a Monitoring section: what each panel shows, a walkthrough (kill a worker: acked/s holds while the others have spare capacity, available and queue wait rise, the reaped spike follows after the visibility timeout; stop two workers to see throughput drop), and a dashboard screenshot.
+- `deploy/docker-compose.yml` gains Prometheus (`127.0.0.1:9090`, scrape every 5 s, 1 day of retention, the alert rules loaded) and Grafana (`127.0.0.1:3000`, anonymous read-only access, the dashboard provisioned), both with pinned images and started by the plain `docker compose up`. Together they add about 375 MB of RAM.
+- The README gains a Monitoring section: what each panel shows, a walkthrough (kill a worker: acked/s holds while the others have spare capacity, available and queue wait rise, the reaped spike follows after the visibility timeout; stop `worker-2` and `worker-3`: one worker handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until they are started again), and a dashboard screenshot.
 
 ### 16.5 Testing
 

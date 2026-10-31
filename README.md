@@ -76,7 +76,7 @@ Delivery is at-least-once: a job can run twice (for example after a worker crash
 
 ## Demo
 
-One command starts PostgreSQL, the server, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus and Grafana. It needs Docker and about 550 MB of RAM.
+One command starts PostgreSQL, the server, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus and Grafana. It needs Docker and about 600 MB of RAM.
 
 The main way to watch is the Grafana dashboard at http://localhost:3000 (see [Monitoring](#monitoring)). `tasklane-watch` is a lighter alternative in the terminal.
 
@@ -142,7 +142,7 @@ The screenshot shows "Dead (last hour)" in red because the demo produces poison 
 - **Queue wait** (ready to leased, p50/p99), **RPC latency** and **RPC errors by code.**
 - **DB pool, goroutines and memory** for the server itself.
 
-Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill worker-1`. The acked rate barely moves, because the two other workers have spare capacity. Available jobs climb and queue wait p99 rises while they catch up. Once the visibility timeout passes, the reaped line spikes as the reaper returns the killed worker's jobs. `docker compose -f deploy/docker-compose.yml start worker-1` brings everything back to normal. Throughput only drops when the remaining workers can't keep up: stop two workers to see it.
+Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill worker-1`. The acked rate holds at about 9.7 jobs/s, because the two other workers have spare capacity. Available jobs climb to about 30 and queue wait p99 to about 5 s while they catch up. Once the demo's 15 s visibility timeout passes, about 4 jobs (the killed worker's leases) are reaped and returned to the queue. `docker compose -f deploy/docker-compose.yml start worker-1` brings everything back to normal. Throughput only drops when the remaining workers can't keep up. Run `docker compose -f deploy/docker-compose.yml stop worker-2 worker-3`: one worker (5 slots) handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until you `start` them again.
 
 Example alert rules are in `deploy/prometheus/alerts.yml` (server down, jobs stuck, dead jobs, high reap rate, queue full, RPC errors); see them at http://localhost:9090/alerts. The demo's poison jobs keep `TasklaneDeadJobs` firing, as they should. With several server copies, aggregate the queue gauges with `max by (queue)` (every server reports the same database-wide numbers) and counters with `sum`. All metrics are listed in [design §16.2](docs/design.md#162-metrics).
 
