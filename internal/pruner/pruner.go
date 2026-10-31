@@ -8,6 +8,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/mubtasim/tasklane/internal/metrics"
 )
 
 const (
@@ -30,6 +32,7 @@ type Config struct {
 	Retention     time.Duration
 	DeadRetention time.Duration
 	Batch         int
+	Metrics       *metrics.Metrics // nil records nothing
 }
 
 func (c Config) withDefaults() Config {
@@ -71,11 +74,11 @@ func Run(ctx context.Context, s Store, cfg Config, log *slog.Logger) {
 // short, so a large backlog clears in one pass without one large
 // transaction.
 func pass(ctx context.Context, s Store, cfg Config, log *slog.Logger) {
-	drain(ctx, "completed and cancelled", s.PruneFinished, cfg.Retention, cfg.Batch, log)
-	drain(ctx, "dead", s.PruneDead, cfg.DeadRetention, cfg.Batch, log)
+	drain(ctx, "completed and cancelled", metrics.PrunedFinished, s.PruneFinished, cfg.Retention, cfg.Batch, log, cfg.Metrics)
+	drain(ctx, "dead", metrics.PrunedDead, s.PruneDead, cfg.DeadRetention, cfg.Batch, log, cfg.Metrics)
 }
 
-func drain(ctx context.Context, what string, prune func(context.Context, time.Duration, int) (int, error), age time.Duration, batch int, log *slog.Logger) {
+func drain(ctx context.Context, what, state string, prune func(context.Context, time.Duration, int) (int, error), age time.Duration, batch int, log *slog.Logger, m *metrics.Metrics) {
 	total := 0
 	for ctx.Err() == nil {
 		n, err := prune(ctx, age, batch)
@@ -85,6 +88,7 @@ func drain(ctx context.Context, what string, prune func(context.Context, time.Du
 			}
 			break
 		}
+		m.Pruned(state, n)
 		total += n
 		if n < batch {
 			break

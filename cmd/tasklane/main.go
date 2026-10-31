@@ -22,6 +22,7 @@ import (
 
 	"github.com/mubtasim/tasklane/internal/api"
 	"github.com/mubtasim/tasklane/internal/backoff"
+	"github.com/mubtasim/tasklane/internal/metrics"
 	"github.com/mubtasim/tasklane/internal/notify"
 	"github.com/mubtasim/tasklane/internal/pgstore"
 	"github.com/mubtasim/tasklane/internal/pruner"
@@ -33,6 +34,8 @@ import (
 const (
 	httpShutdownTimeout = 10 * time.Second
 	grpcShutdownTimeout = 10 * time.Second
+	// A scrape is short, and the last scrape during a drain is useful.
+	metricsShutdownTimeout = 2 * time.Second
 )
 
 func main() {
@@ -56,6 +59,8 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("database config: %w", err)
 	}
 	defer pool.Close()
+	m := metrics.New()
+	m.WatchPool(pool.Stat)
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
@@ -77,12 +82,12 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	background.Go(func() { _ = listener.Run(bgCtx) }) // always nil once bgCtx is done
-	background.Go(func() { reaper.Run(bgCtx, st, cfg.ReaperInterval, reaper.DefaultBatch, log) })
+	background.Go(func() { reaper.Run(bgCtx, st, cfg.ReaperInterval, reaper.DefaultBatch, log, m) })
 	background.Go(func() {
-		pruner.Run(bgCtx, st, pruner.Config{Interval: cfg.PruneInterval, Retention: cfg.Retention, DeadRetention: cfg.DeadRetention}, log)
+		pruner.Run(bgCtx, st, pruner.Config{Interval: cfg.PruneInterval, Retention: cfg.Retention, DeadRetention: cfg.DeadRetention, Metrics: m}, log)
 	})
 
-	srv := api.NewServer(st, listener, log)
+	srv := api.NewServer(st, listener, log, api.WithMetrics(m))
 	background.Go(func() { srv.RunDepthRefresh(bgCtx) })
 	grpcServer := api.NewGRPCServer(srv, cfg.APIKeys, log)
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -117,14 +122,30 @@ func run(log *slog.Logger) error {
 		// would cut off long-polling leases (wait up to 30 s) mid-response.
 	}
 
-	errc := make(chan error, 2)
+	// Metrics get their own port (design §16.2), so operators can expose the
+	// API without exposing traffic numbers.
+	var metricsServer *http.Server
+	if cfg.MetricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", m.Handler())
+		metricsServer = &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	}
+
+	errc := make(chan error, 3)
 	go func() { errc <- grpcServer.Serve(grpcLis) }()
 	go func() {
 		if err := httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 		}
 	}()
-	log.Info("tasklane started", "grpc_addr", cfg.GRPCAddr, "http_addr", cfg.HTTPAddr)
+	if metricsServer != nil {
+		go func() {
+			if err := metricsServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				errc <- err
+			}
+		}()
+	}
+	log.Info("tasklane started", "grpc_addr", cfg.GRPCAddr, "http_addr", cfg.HTTPAddr, "metrics_addr", cfg.MetricsAddr)
 
 	var serveErr error
 	select {
@@ -156,6 +177,14 @@ func run(log *slog.Logger) error {
 	case <-time.After(grpcShutdownTimeout):
 		log.Warn("graceful stop timed out; closing remaining connections")
 		grpcServer.Stop()
+	}
+	if metricsServer != nil {
+		metricsCtx, cancelMetrics := context.WithTimeout(context.Background(), metricsShutdownTimeout)
+		if err := metricsServer.Shutdown(metricsCtx); err != nil {
+			log.Warn("metrics shutdown timed out; closing remaining connections", "err", err)
+			metricsServer.Close()
+		}
+		cancelMetrics()
 	}
 	stopBackground()
 	background.Wait()

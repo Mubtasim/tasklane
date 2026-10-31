@@ -81,7 +81,7 @@ func newEnv(t *testing.T) *env {
 	reaperDone := make(chan struct{})
 	go func() {
 		defer close(reaperDone)
-		reaper.Run(reaperCtx, st, 50*time.Millisecond, reaper.DefaultBatch, discard)
+		reaper.Run(reaperCtx, st, 50*time.Millisecond, reaper.DefaultBatch, discard, nil)
 	}()
 
 	dialer := grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })

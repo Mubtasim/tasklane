@@ -53,7 +53,8 @@ func NewGRPCServer(srv *Server, keys []string, log *slog.Logger) *grpc.Server {
 		log.Warn("no API keys configured (TASKLANE_API_KEYS); authentication is disabled")
 	}
 	gs := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(AuthInterceptor(keys)),
+		// Metrics go first, so refused calls (bad API key) are timed too.
+		grpc.ChainUnaryInterceptor(srv.metrics.UnaryInterceptor(), AuthInterceptor(keys)),
 		grpc.MaxRecvMsgSize(MaxMessageBytes),
 		grpc.MaxSendMsgSize(MaxMessageBytes),
 	)

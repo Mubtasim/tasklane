@@ -83,15 +83,26 @@ func queueFullError(queue string) error {
 	return withInfo.Err()
 }
 
+// refreshDepths recounts queue depths once and updates the backpressure
+// cache and the queue gauges.
+func (s *Server) refreshDepths(ctx context.Context) {
+	depths, err := s.depths.refresh(ctx, s.store)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Warn("refresh queue depths failed", "err", err)
+		}
+		return
+	}
+	s.metrics.SetQueueStats(depths)
+}
+
 // RunDepthRefresh recounts queue depths every second until ctx is
 // cancelled. Until it has run once, Enqueue refuses nothing.
 func (s *Server) RunDepthRefresh(ctx context.Context) {
 	ticker := time.NewTicker(depthRefreshInterval)
 	defer ticker.Stop()
 	for {
-		if _, err := s.depths.refresh(ctx, s.store); err != nil && ctx.Err() == nil {
-			s.log.Warn("refresh queue depths failed", "err", err)
-		}
+		s.refreshDepths(ctx)
 		select {
 		case <-ctx.Done():
 			return

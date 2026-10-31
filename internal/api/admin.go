@@ -23,9 +23,12 @@ const (
 )
 
 func (s *Server) CancelJob(ctx context.Context, req *tasklanev1.CancelJobRequest) (*tasklanev1.CancelJobResponse, error) {
-	j, _, err := s.store.CancelJob(ctx, req.GetId())
+	j, cancelled, err := s.store.CancelJob(ctx, req.GetId())
 	if err != nil {
 		return nil, toStatus(s.log, "CancelJob", err)
+	}
+	if cancelled {
+		s.metrics.Cancelled(j.Queue)
 	}
 	pj, err := jobFromStore(j, false)
 	if err != nil {
@@ -84,6 +87,7 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 		if err != nil {
 			return nil, toStatus(s.log, "RedriveJobs", err)
 		}
+		s.metrics.Redriven(req.GetQueue(), n)
 		return &tasklanev1.RedriveJobsResponse{Redriven: int64(n), Skipped: int64(len(ids) - n)}, nil
 	}
 	var total int64
@@ -92,6 +96,7 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 		if err != nil {
 			return nil, toStatus(s.log, "RedriveJobs", err)
 		}
+		s.metrics.Redriven(req.GetQueue(), n)
 		total += int64(n)
 		if n < redriveBatch {
 			return &tasklanev1.RedriveJobsResponse{Redriven: total}, nil

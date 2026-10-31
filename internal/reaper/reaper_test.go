@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mubtasim/tasklane/internal/metrics"
 	"github.com/mubtasim/tasklane/internal/store"
 )
 
@@ -75,7 +76,7 @@ func start(t *testing.T, s Store, interval time.Duration, log *slog.Logger) (sto
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		Run(ctx, s, interval, 10, log)
+		Run(ctx, s, interval, 10, log, nil)
 	}()
 	return func() {
 		cancel()
@@ -184,7 +185,7 @@ func TestNonPositiveSettingsUseDefaults(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			Run(ctx, f, tc.interval, tc.batch, discard())
+			Run(ctx, f, tc.interval, tc.batch, discard(), nil)
 		}()
 		waitCalls(t, f, 1)
 		time.Sleep(100 * time.Millisecond)
@@ -196,4 +197,22 @@ func TestNonPositiveSettingsUseDefaults(t *testing.T) {
 		}
 		require.Equal(t, 1, f.callCount(), "interval %v batch %d", tc.interval, tc.batch)
 	}
+}
+
+type reapedStore struct{ jobs []store.ReapedJob }
+
+func (r *reapedStore) ReapExpired(context.Context, int) ([]store.ReapedJob, error) {
+	jobs := r.jobs
+	r.jobs = nil
+	return jobs, nil
+}
+
+func TestReapAllRecordsMetrics(t *testing.T) {
+	m := metrics.New()
+	s := &reapedStore{jobs: []store.ReapedJob{{Queue: "q", Dead: true}}}
+
+	reapAll(context.Background(), s, 10, discard(), m)
+
+	require.Equal(t, 1.0, m.Value("tasklane_jobs_reaped_total", "queue", "q"))
+	require.Equal(t, 1.0, m.Value("tasklane_jobs_dead_total", "queue", "q", "reason", "expired"))
 }

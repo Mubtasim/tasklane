@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mubtasim/tasklane/internal/metrics"
 	"github.com/mubtasim/tasklane/internal/store"
 )
 
@@ -24,8 +25,8 @@ type Store interface {
 // While a call returns a full batch, it calls again at once instead of waiting
 // for the next tick, so a backlog drains quickly. Errors are logged, never
 // fatal: the next tick tries again. A non-positive interval or batch uses
-// DefaultInterval or DefaultBatch.
-func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *slog.Logger) {
+// DefaultInterval or DefaultBatch. m may be nil.
+func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *slog.Logger, m *metrics.Metrics) {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
@@ -35,7 +36,7 @@ func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *s
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		reapAll(ctx, s, batch, log)
+		reapAll(ctx, s, batch, log, m)
 		if ctx.Err() != nil {
 			return // select picks randomly when a tick is also ready
 		}
@@ -47,7 +48,7 @@ func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *s
 	}
 }
 
-func reapAll(ctx context.Context, s Store, batch int, log *slog.Logger) {
+func reapAll(ctx context.Context, s Store, batch int, log *slog.Logger, m *metrics.Metrics) {
 	for ctx.Err() == nil {
 		reaped, err := s.ReapExpired(ctx, batch)
 		if err != nil {
@@ -56,6 +57,7 @@ func reapAll(ctx context.Context, s Store, batch int, log *slog.Logger) {
 			}
 			return
 		}
+		m.Reaped(reaped)
 		n := len(reaped)
 		if n > 0 {
 			log.Info("reaped expired leases", "count", n)

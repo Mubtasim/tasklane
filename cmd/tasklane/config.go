@@ -19,6 +19,7 @@ type Config struct {
 	Retention      time.Duration // TASKLANE_RETENTION, default 24h: completed and cancelled jobs
 	DeadRetention  time.Duration // TASKLANE_DEAD_RETENTION, default 168h: dead jobs
 	PruneInterval  time.Duration // TASKLANE_PRUNE_INTERVAL, default 1m
+	MetricsAddr    string        // TASKLANE_METRICS_ADDR, default :9464; "off" disables (empty here)
 }
 
 // LoadConfig reads the configuration through getenv (os.Getenv in main), so
@@ -28,6 +29,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		DatabaseURL: strings.TrimSpace(getenv("TASKLANE_DATABASE_URL")),
 		GRPCAddr:    or(getenv("TASKLANE_GRPC_ADDR"), ":7070"),
 		HTTPAddr:    or(getenv("TASKLANE_HTTP_ADDR"), ":8080"),
+	}
+	cfg.MetricsAddr = or(getenv("TASKLANE_METRICS_ADDR"), ":9464")
+	if cfg.MetricsAddr == "off" {
+		cfg.MetricsAddr = ""
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("TASKLANE_DATABASE_URL is required")
