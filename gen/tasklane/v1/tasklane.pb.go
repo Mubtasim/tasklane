@@ -1507,6 +1507,325 @@ func (x *GetJobResponse) GetJob() *Job {
 	return nil
 }
 
+type CancelJobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobRequest) Reset() {
+	*x = CancelJobRequest{}
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobRequest) ProtoMessage() {}
+
+func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelJobRequest.ProtoReflect.Descriptor instead.
+func (*CancelJobRequest) Descriptor() ([]byte, []int) {
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *CancelJobRequest) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+type CancelJobResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The job, now cancelled.
+	Job           *Job `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobResponse) Reset() {
+	*x = CancelJobResponse{}
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobResponse) ProtoMessage() {}
+
+func (x *CancelJobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelJobResponse.ProtoReflect.Descriptor instead.
+func (*CancelJobResponse) Descriptor() ([]byte, []int) {
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *CancelJobResponse) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
+type ListDeadJobsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Queue string                 `protobuf:"bytes,1,opt,name=queue,proto3" json:"queue,omitempty"`
+	// 1 to 100; 0 or out of range means 100.
+	PageSize int32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// From a previous response's next_page_token; empty for the first page.
+	PageToken     string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDeadJobsRequest) Reset() {
+	*x = ListDeadJobsRequest{}
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDeadJobsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDeadJobsRequest) ProtoMessage() {}
+
+func (x *ListDeadJobsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDeadJobsRequest.ProtoReflect.Descriptor instead.
+func (*ListDeadJobsRequest) Descriptor() ([]byte, []int) {
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ListDeadJobsRequest) GetQueue() string {
+	if x != nil {
+		return x.Queue
+	}
+	return ""
+}
+
+func (x *ListDeadJobsRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListDeadJobsRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+type ListDeadJobsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Jobs  []*Job                 `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"`
+	// Empty on the last page.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDeadJobsResponse) Reset() {
+	*x = ListDeadJobsResponse{}
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDeadJobsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDeadJobsResponse) ProtoMessage() {}
+
+func (x *ListDeadJobsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDeadJobsResponse.ProtoReflect.Descriptor instead.
+func (*ListDeadJobsResponse) Descriptor() ([]byte, []int) {
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ListDeadJobsResponse) GetJobs() []*Job {
+	if x != nil {
+		return x.Jobs
+	}
+	return nil
+}
+
+func (x *ListDeadJobsResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
+}
+
+type RedriveJobsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Queue string                 `protobuf:"bytes,1,opt,name=queue,proto3" json:"queue,omitempty"`
+	// At most 1000. Ids that aren't dead jobs of this queue are skipped.
+	Ids []int64 `protobuf:"varint,2,rep,packed,name=ids,proto3" json:"ids,omitempty"`
+	// Redrive every dead job of the queue instead of ids.
+	All           bool `protobuf:"varint,3,opt,name=all,proto3" json:"all,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RedriveJobsRequest) Reset() {
+	*x = RedriveJobsRequest{}
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RedriveJobsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RedriveJobsRequest) ProtoMessage() {}
+
+func (x *RedriveJobsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RedriveJobsRequest.ProtoReflect.Descriptor instead.
+func (*RedriveJobsRequest) Descriptor() ([]byte, []int) {
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *RedriveJobsRequest) GetQueue() string {
+	if x != nil {
+		return x.Queue
+	}
+	return ""
+}
+
+func (x *RedriveJobsRequest) GetIds() []int64 {
+	if x != nil {
+		return x.Ids
+	}
+	return nil
+}
+
+func (x *RedriveJobsRequest) GetAll() bool {
+	if x != nil {
+		return x.All
+	}
+	return false
+}
+
+type RedriveJobsResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Redriven int64                  `protobuf:"varint,1,opt,name=redriven,proto3" json:"redriven,omitempty"`
+	// Ids (after removing duplicates) that weren't dead jobs of this queue.
+	Skipped       int64 `protobuf:"varint,2,opt,name=skipped,proto3" json:"skipped,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RedriveJobsResponse) Reset() {
+	*x = RedriveJobsResponse{}
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RedriveJobsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RedriveJobsResponse) ProtoMessage() {}
+
+func (x *RedriveJobsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tasklane_v1_tasklane_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RedriveJobsResponse.ProtoReflect.Descriptor instead.
+func (*RedriveJobsResponse) Descriptor() ([]byte, []int) {
+	return file_tasklane_v1_tasklane_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *RedriveJobsResponse) GetRedriven() int64 {
+	if x != nil {
+		return x.Redriven
+	}
+	return 0
+}
+
+func (x *RedriveJobsResponse) GetSkipped() int64 {
+	if x != nil {
+		return x.Skipped
+	}
+	return 0
+}
+
 var File_tasklane_v1_tasklane_proto protoreflect.FileDescriptor
 
 const file_tasklane_v1_tasklane_proto_rawDesc = "" +
@@ -1608,7 +1927,26 @@ const file_tasklane_v1_tasklane_proto_rawDesc = "" +
 	"\rGetJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\"4\n" +
 	"\x0eGetJobResponse\x12\"\n" +
-	"\x03job\x18\x01 \x01(\v2\x10.tasklane.v1.JobR\x03job*v\n" +
+	"\x03job\x18\x01 \x01(\v2\x10.tasklane.v1.JobR\x03job\"\"\n" +
+	"\x10CancelJobRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\"7\n" +
+	"\x11CancelJobResponse\x12\"\n" +
+	"\x03job\x18\x01 \x01(\v2\x10.tasklane.v1.JobR\x03job\"g\n" +
+	"\x13ListDeadJobsRequest\x12\x14\n" +
+	"\x05queue\x18\x01 \x01(\tR\x05queue\x12\x1b\n" +
+	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x03 \x01(\tR\tpageToken\"d\n" +
+	"\x14ListDeadJobsResponse\x12$\n" +
+	"\x04jobs\x18\x01 \x03(\v2\x10.tasklane.v1.JobR\x04jobs\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"N\n" +
+	"\x12RedriveJobsRequest\x12\x14\n" +
+	"\x05queue\x18\x01 \x01(\tR\x05queue\x12\x10\n" +
+	"\x03ids\x18\x02 \x03(\x03R\x03ids\x12\x10\n" +
+	"\x03all\x18\x03 \x01(\bR\x03all\"K\n" +
+	"\x13RedriveJobsResponse\x12\x1a\n" +
+	"\bredriven\x18\x01 \x01(\x03R\bredriven\x12\x18\n" +
+	"\askipped\x18\x02 \x01(\x03R\askipped*v\n" +
 	"\bPriority\x12\x18\n" +
 	"\x14PRIORITY_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11PRIORITY_CRITICAL\x10\x01\x12\x11\n" +
@@ -1621,7 +1959,8 @@ const file_tasklane_v1_tasklane_proto_rawDesc = "" +
 	"\x10JOB_STATE_LEASED\x10\x02\x12\x17\n" +
 	"\x13JOB_STATE_COMPLETED\x10\x03\x12\x12\n" +
 	"\x0eJOB_STATE_DEAD\x10\x04\x12\x17\n" +
-	"\x13JOB_STATE_CANCELLED\x10\x052\xb0\a\n" +
+	"\x13JOB_STATE_CANCELLED\x10\x052\x91\n" +
+	"\n" +
 	"\x0fTasklaneService\x12k\n" +
 	"\vCreateQueue\x12\x1f.tasklane.v1.CreateQueueRequest\x1a .tasklane.v1.CreateQueueResponse\"\x19\x82\xd3\xe4\x93\x02\x13:\x05queue\"\n" +
 	"/v1/queues\x12b\n" +
@@ -1632,7 +1971,10 @@ const file_tasklane_v1_tasklane_proto_rawDesc = "" +
 	"\x03Ack\x12\x17.tasklane.v1.AckRequest\x1a\x18.tasklane.v1.AckResponse\"\x1c\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/jobs/{id}:ack\x12Z\n" +
 	"\x04Nack\x12\x18.tasklane.v1.NackRequest\x1a\x19.tasklane.v1.NackResponse\"\x1d\x82\xd3\xe4\x93\x02\x17:\x01*\"\x12/v1/jobs/{id}:nack\x12n\n" +
 	"\tHeartbeat\x12\x1d.tasklane.v1.HeartbeatRequest\x1a\x1e.tasklane.v1.HeartbeatResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/jobs/{id}:heartbeat\x12X\n" +
-	"\x06GetJob\x12\x1a.tasklane.v1.GetJobRequest\x1a\x1b.tasklane.v1.GetJobResponse\"\x15\x82\xd3\xe4\x93\x02\x0f\x12\r/v1/jobs/{id}B9Z7github.com/mubtasim/tasklane/gen/tasklane/v1;tasklanev1b\x06proto3"
+	"\x06GetJob\x12\x1a.tasklane.v1.GetJobRequest\x1a\x1b.tasklane.v1.GetJobResponse\"\x15\x82\xd3\xe4\x93\x02\x0f\x12\r/v1/jobs/{id}\x12k\n" +
+	"\tCancelJob\x12\x1d.tasklane.v1.CancelJobRequest\x1a\x1e.tasklane.v1.CancelJobResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/jobs/{id}:cancel\x12t\n" +
+	"\fListDeadJobs\x12 .tasklane.v1.ListDeadJobsRequest\x1a!.tasklane.v1.ListDeadJobsResponse\"\x1f\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/queues/{queue}/dead\x12|\n" +
+	"\vRedriveJobs\x12\x1f.tasklane.v1.RedriveJobsRequest\x1a .tasklane.v1.RedriveJobsResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/queues/{queue}/dead:redriveB9Z7github.com/mubtasim/tasklane/gen/tasklane/v1;tasklanev1b\x06proto3"
 
 var (
 	file_tasklane_v1_tasklane_proto_rawDescOnce sync.Once
@@ -1647,7 +1989,7 @@ func file_tasklane_v1_tasklane_proto_rawDescGZIP() []byte {
 }
 
 var file_tasklane_v1_tasklane_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_tasklane_v1_tasklane_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_tasklane_v1_tasklane_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_tasklane_v1_tasklane_proto_goTypes = []any{
 	(Priority)(0),                 // 0: tasklane.v1.Priority
 	(JobState)(0),                 // 1: tasklane.v1.JobState
@@ -1674,60 +2016,74 @@ var file_tasklane_v1_tasklane_proto_goTypes = []any{
 	(*HeartbeatResponse)(nil),     // 22: tasklane.v1.HeartbeatResponse
 	(*GetJobRequest)(nil),         // 23: tasklane.v1.GetJobRequest
 	(*GetJobResponse)(nil),        // 24: tasklane.v1.GetJobResponse
-	(*durationpb.Duration)(nil),   // 25: google.protobuf.Duration
-	(*structpb.Struct)(nil),       // 26: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil), // 27: google.protobuf.Timestamp
+	(*CancelJobRequest)(nil),      // 25: tasklane.v1.CancelJobRequest
+	(*CancelJobResponse)(nil),     // 26: tasklane.v1.CancelJobResponse
+	(*ListDeadJobsRequest)(nil),   // 27: tasklane.v1.ListDeadJobsRequest
+	(*ListDeadJobsResponse)(nil),  // 28: tasklane.v1.ListDeadJobsResponse
+	(*RedriveJobsRequest)(nil),    // 29: tasklane.v1.RedriveJobsRequest
+	(*RedriveJobsResponse)(nil),   // 30: tasklane.v1.RedriveJobsResponse
+	(*durationpb.Duration)(nil),   // 31: google.protobuf.Duration
+	(*structpb.Struct)(nil),       // 32: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil), // 33: google.protobuf.Timestamp
 }
 var file_tasklane_v1_tasklane_proto_depIdxs = []int32{
-	25, // 0: tasklane.v1.Queue.visibility_timeout:type_name -> google.protobuf.Duration
-	26, // 1: tasklane.v1.JobSpec.payload:type_name -> google.protobuf.Struct
+	31, // 0: tasklane.v1.Queue.visibility_timeout:type_name -> google.protobuf.Duration
+	32, // 1: tasklane.v1.JobSpec.payload:type_name -> google.protobuf.Struct
 	0,  // 2: tasklane.v1.JobSpec.priority:type_name -> tasklane.v1.Priority
-	27, // 3: tasklane.v1.JobSpec.run_at:type_name -> google.protobuf.Timestamp
-	26, // 4: tasklane.v1.Job.payload:type_name -> google.protobuf.Struct
+	33, // 3: tasklane.v1.JobSpec.run_at:type_name -> google.protobuf.Timestamp
+	32, // 4: tasklane.v1.Job.payload:type_name -> google.protobuf.Struct
 	0,  // 5: tasklane.v1.Job.priority:type_name -> tasklane.v1.Priority
 	1,  // 6: tasklane.v1.Job.state:type_name -> tasklane.v1.JobState
-	27, // 7: tasklane.v1.Job.run_at:type_name -> google.protobuf.Timestamp
-	27, // 8: tasklane.v1.Job.lease_expires_at:type_name -> google.protobuf.Timestamp
-	27, // 9: tasklane.v1.Job.created_at:type_name -> google.protobuf.Timestamp
-	27, // 10: tasklane.v1.Job.finished_at:type_name -> google.protobuf.Timestamp
+	33, // 7: tasklane.v1.Job.run_at:type_name -> google.protobuf.Timestamp
+	33, // 8: tasklane.v1.Job.lease_expires_at:type_name -> google.protobuf.Timestamp
+	33, // 9: tasklane.v1.Job.created_at:type_name -> google.protobuf.Timestamp
+	33, // 10: tasklane.v1.Job.finished_at:type_name -> google.protobuf.Timestamp
 	2,  // 11: tasklane.v1.CreateQueueRequest.queue:type_name -> tasklane.v1.Queue
 	2,  // 12: tasklane.v1.CreateQueueResponse.queue:type_name -> tasklane.v1.Queue
 	2,  // 13: tasklane.v1.GetQueueResponse.queue:type_name -> tasklane.v1.Queue
 	10, // 14: tasklane.v1.GetQueueResponse.stats:type_name -> tasklane.v1.QueueStats
-	25, // 15: tasklane.v1.QueueStats.recent_window:type_name -> google.protobuf.Duration
+	31, // 15: tasklane.v1.QueueStats.recent_window:type_name -> google.protobuf.Duration
 	3,  // 16: tasklane.v1.EnqueueRequest.job:type_name -> tasklane.v1.JobSpec
 	3,  // 17: tasklane.v1.EnqueueBatchRequest.jobs:type_name -> tasklane.v1.JobSpec
 	5,  // 18: tasklane.v1.EnqueueBatchResponse.results:type_name -> tasklane.v1.EnqueueResult
-	25, // 19: tasklane.v1.LeaseRequest.wait:type_name -> google.protobuf.Duration
-	25, // 20: tasklane.v1.LeaseRequest.visibility_timeout:type_name -> google.protobuf.Duration
+	31, // 19: tasklane.v1.LeaseRequest.wait:type_name -> google.protobuf.Duration
+	31, // 20: tasklane.v1.LeaseRequest.visibility_timeout:type_name -> google.protobuf.Duration
 	4,  // 21: tasklane.v1.LeaseResponse.jobs:type_name -> tasklane.v1.Job
-	27, // 22: tasklane.v1.NackRequest.retry_at:type_name -> google.protobuf.Timestamp
-	25, // 23: tasklane.v1.HeartbeatRequest.visibility_timeout:type_name -> google.protobuf.Duration
-	27, // 24: tasklane.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
+	33, // 22: tasklane.v1.NackRequest.retry_at:type_name -> google.protobuf.Timestamp
+	31, // 23: tasklane.v1.HeartbeatRequest.visibility_timeout:type_name -> google.protobuf.Duration
+	33, // 24: tasklane.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
 	4,  // 25: tasklane.v1.GetJobResponse.job:type_name -> tasklane.v1.Job
-	6,  // 26: tasklane.v1.TasklaneService.CreateQueue:input_type -> tasklane.v1.CreateQueueRequest
-	8,  // 27: tasklane.v1.TasklaneService.GetQueue:input_type -> tasklane.v1.GetQueueRequest
-	11, // 28: tasklane.v1.TasklaneService.Enqueue:input_type -> tasklane.v1.EnqueueRequest
-	13, // 29: tasklane.v1.TasklaneService.EnqueueBatch:input_type -> tasklane.v1.EnqueueBatchRequest
-	15, // 30: tasklane.v1.TasklaneService.Lease:input_type -> tasklane.v1.LeaseRequest
-	17, // 31: tasklane.v1.TasklaneService.Ack:input_type -> tasklane.v1.AckRequest
-	19, // 32: tasklane.v1.TasklaneService.Nack:input_type -> tasklane.v1.NackRequest
-	21, // 33: tasklane.v1.TasklaneService.Heartbeat:input_type -> tasklane.v1.HeartbeatRequest
-	23, // 34: tasklane.v1.TasklaneService.GetJob:input_type -> tasklane.v1.GetJobRequest
-	7,  // 35: tasklane.v1.TasklaneService.CreateQueue:output_type -> tasklane.v1.CreateQueueResponse
-	9,  // 36: tasklane.v1.TasklaneService.GetQueue:output_type -> tasklane.v1.GetQueueResponse
-	12, // 37: tasklane.v1.TasklaneService.Enqueue:output_type -> tasklane.v1.EnqueueResponse
-	14, // 38: tasklane.v1.TasklaneService.EnqueueBatch:output_type -> tasklane.v1.EnqueueBatchResponse
-	16, // 39: tasklane.v1.TasklaneService.Lease:output_type -> tasklane.v1.LeaseResponse
-	18, // 40: tasklane.v1.TasklaneService.Ack:output_type -> tasklane.v1.AckResponse
-	20, // 41: tasklane.v1.TasklaneService.Nack:output_type -> tasklane.v1.NackResponse
-	22, // 42: tasklane.v1.TasklaneService.Heartbeat:output_type -> tasklane.v1.HeartbeatResponse
-	24, // 43: tasklane.v1.TasklaneService.GetJob:output_type -> tasklane.v1.GetJobResponse
-	35, // [35:44] is the sub-list for method output_type
-	26, // [26:35] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	4,  // 26: tasklane.v1.CancelJobResponse.job:type_name -> tasklane.v1.Job
+	4,  // 27: tasklane.v1.ListDeadJobsResponse.jobs:type_name -> tasklane.v1.Job
+	6,  // 28: tasklane.v1.TasklaneService.CreateQueue:input_type -> tasklane.v1.CreateQueueRequest
+	8,  // 29: tasklane.v1.TasklaneService.GetQueue:input_type -> tasklane.v1.GetQueueRequest
+	11, // 30: tasklane.v1.TasklaneService.Enqueue:input_type -> tasklane.v1.EnqueueRequest
+	13, // 31: tasklane.v1.TasklaneService.EnqueueBatch:input_type -> tasklane.v1.EnqueueBatchRequest
+	15, // 32: tasklane.v1.TasklaneService.Lease:input_type -> tasklane.v1.LeaseRequest
+	17, // 33: tasklane.v1.TasklaneService.Ack:input_type -> tasklane.v1.AckRequest
+	19, // 34: tasklane.v1.TasklaneService.Nack:input_type -> tasklane.v1.NackRequest
+	21, // 35: tasklane.v1.TasklaneService.Heartbeat:input_type -> tasklane.v1.HeartbeatRequest
+	23, // 36: tasklane.v1.TasklaneService.GetJob:input_type -> tasklane.v1.GetJobRequest
+	25, // 37: tasklane.v1.TasklaneService.CancelJob:input_type -> tasklane.v1.CancelJobRequest
+	27, // 38: tasklane.v1.TasklaneService.ListDeadJobs:input_type -> tasklane.v1.ListDeadJobsRequest
+	29, // 39: tasklane.v1.TasklaneService.RedriveJobs:input_type -> tasklane.v1.RedriveJobsRequest
+	7,  // 40: tasklane.v1.TasklaneService.CreateQueue:output_type -> tasklane.v1.CreateQueueResponse
+	9,  // 41: tasklane.v1.TasklaneService.GetQueue:output_type -> tasklane.v1.GetQueueResponse
+	12, // 42: tasklane.v1.TasklaneService.Enqueue:output_type -> tasklane.v1.EnqueueResponse
+	14, // 43: tasklane.v1.TasklaneService.EnqueueBatch:output_type -> tasklane.v1.EnqueueBatchResponse
+	16, // 44: tasklane.v1.TasklaneService.Lease:output_type -> tasklane.v1.LeaseResponse
+	18, // 45: tasklane.v1.TasklaneService.Ack:output_type -> tasklane.v1.AckResponse
+	20, // 46: tasklane.v1.TasklaneService.Nack:output_type -> tasklane.v1.NackResponse
+	22, // 47: tasklane.v1.TasklaneService.Heartbeat:output_type -> tasklane.v1.HeartbeatResponse
+	24, // 48: tasklane.v1.TasklaneService.GetJob:output_type -> tasklane.v1.GetJobResponse
+	26, // 49: tasklane.v1.TasklaneService.CancelJob:output_type -> tasklane.v1.CancelJobResponse
+	28, // 50: tasklane.v1.TasklaneService.ListDeadJobs:output_type -> tasklane.v1.ListDeadJobsResponse
+	30, // 51: tasklane.v1.TasklaneService.RedriveJobs:output_type -> tasklane.v1.RedriveJobsResponse
+	40, // [40:52] is the sub-list for method output_type
+	28, // [28:40] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_tasklane_v1_tasklane_proto_init() }
@@ -1741,7 +2097,7 @@ func file_tasklane_v1_tasklane_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tasklane_v1_tasklane_proto_rawDesc), len(file_tasklane_v1_tasklane_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   23,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

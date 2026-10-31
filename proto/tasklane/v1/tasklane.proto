@@ -79,6 +79,29 @@ service TasklaneService {
   rpc GetJob(GetJobRequest) returns (GetJobResponse) {
     option (google.api.http) = {get: "/v1/jobs/{id}"};
   }
+
+  // CancelJob cancels a job that is still available. Cancelling a cancelled
+  // job succeeds; a leased or finished job is FAILED_PRECONDITION.
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse) {
+    option (google.api.http) = {
+      post: "/v1/jobs/{id}:cancel"
+      body: "*"
+    };
+  }
+
+  // ListDeadJobs returns a queue's dead jobs, newest first, a page at a time.
+  rpc ListDeadJobs(ListDeadJobsRequest) returns (ListDeadJobsResponse) {
+    option (google.api.http) = {get: "/v1/queues/{queue}/dead"};
+  }
+
+  // RedriveJobs makes dead jobs available again with their attempts reset:
+  // the listed ids, or all of the queue's dead jobs in batches of 1000.
+  rpc RedriveJobs(RedriveJobsRequest) returns (RedriveJobsResponse) {
+    option (google.api.http) = {
+      post: "/v1/queues/{queue}/dead:redrive"
+      body: "*"
+    };
+  }
 }
 
 // Priority orders leasing: critical runs first. Unspecified is stored as default.
@@ -256,4 +279,41 @@ message GetJobRequest {
 
 message GetJobResponse {
   Job job = 1;
+}
+
+message CancelJobRequest {
+  int64 id = 1;
+}
+
+message CancelJobResponse {
+  // The job, now cancelled.
+  Job job = 1;
+}
+
+message ListDeadJobsRequest {
+  string queue = 1;
+  // 1 to 100; 0 or out of range means 100.
+  int32 page_size = 2;
+  // From a previous response's next_page_token; empty for the first page.
+  string page_token = 3;
+}
+
+message ListDeadJobsResponse {
+  repeated Job jobs = 1;
+  // Empty on the last page.
+  string next_page_token = 2;
+}
+
+message RedriveJobsRequest {
+  string queue = 1;
+  // At most 1000. Ids that aren't dead jobs of this queue are skipped.
+  repeated int64 ids = 2;
+  // Redrive every dead job of the queue instead of ids.
+  bool all = 3;
+}
+
+message RedriveJobsResponse {
+  int64 redriven = 1;
+  // Ids (after removing duplicates) that weren't dead jobs of this queue.
+  int64 skipped = 2;
 }
