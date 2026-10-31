@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/mubtasim/tasklane/internal/store"
 )
 
@@ -52,9 +53,11 @@ func (s *Store) ListDeadJobs(ctx context.Context, queue string, after *store.Dea
 
 // RedriveDead takes its batch FOR UPDATE SKIP LOCKED, so two operators
 // redriving the same queue at once split the jobs instead of waiting on each
-// other. A nil ids slice is sent as NULL, which the "IS NULL OR" turns into
-// "any dead job of the queue". The NOTIFY is part of the transaction, so
-// waiting leases hear it only once the jobs are visible.
+// other. There are two statements, chosen here, so neither plan depends on a
+// NULL check: "all" walks jobs_dead (queue, finished_at, id) oldest death
+// first, and redriven rows leave that partial index, so every batch starts at
+// the front; "by ids" looks the ids up in the primary key. The NOTIFY is part
+// of the transaction, so waiting leases hear it only once the jobs are visible.
 func (s *Store) RedriveDead(ctx context.Context, queue string, ids []int64, limit int) (int, error) {
 	if limit < 1 {
 		return 0, fmt.Errorf("%w: limit must be positive, got %d", store.ErrInvalid, limit)
@@ -65,17 +68,30 @@ func (s *Store) RedriveDead(ctx context.Context, queue string, ids []int64, limi
 	}
 	defer tx.Rollback(ctx)
 
-	tag, err := tx.Exec(ctx, `
+	const update = `
+		UPDATE jobs j
+		SET state = 'available', attempts = 0, run_at = now(), finished_at = NULL
+		FROM d WHERE j.id = d.id`
+	var tag pgconn.CommandTag
+	if ids == nil {
+		tag, err = tx.Exec(ctx, `
 		WITH d AS (
 			SELECT id FROM jobs
-			WHERE queue = $1 AND state = 'dead' AND ($2::bigint[] IS NULL OR id = ANY($2))
+			WHERE queue = $1 AND state = 'dead'
+			ORDER BY finished_at, id
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)`+update, queue, limit)
+	} else {
+		tag, err = tx.Exec(ctx, `
+		WITH d AS (
+			SELECT id FROM jobs
+			WHERE id = ANY($2) AND queue = $1 AND state = 'dead'
 			ORDER BY id
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED
-		)
-		UPDATE jobs j
-		SET state = 'available', attempts = 0, run_at = now(), finished_at = NULL
-		FROM d WHERE j.id = d.id`, queue, ids, limit)
+		)`+update, queue, ids, limit)
+	}
 	if err != nil {
 		return 0, err
 	}

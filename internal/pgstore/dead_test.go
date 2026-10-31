@@ -198,3 +198,29 @@ func TestRedriveDeadNotifiesOnlyWhenItRedrove(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "emails", n.Payload)
 }
+
+func TestRedriveDeadAllTakesOldestDeathsFirst(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	base := time.Now().Add(-time.Hour).Truncate(time.Microsecond)
+	late := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"})
+	oldest := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"})
+	middle := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"})
+	bury(t, late, base.Add(2*time.Minute))
+	bury(t, oldest, base)
+	bury(t, middle, base.Add(time.Minute))
+
+	n, err := s.RedriveDead(ctx, "emails", nil, 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	got, err := s.GetJob(ctx, oldest)
+	require.NoError(t, err)
+	require.Equal(t, store.StateAvailable, got.State, "the oldest death goes first")
+	for _, id := range []int64{late, middle} {
+		got, err := s.GetJob(ctx, id)
+		require.NoError(t, err)
+		require.Equal(t, store.StateDead, got.State)
+	}
+}

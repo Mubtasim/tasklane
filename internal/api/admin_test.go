@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"math"
 	"net/http"
 	"strconv"
 	"testing"
@@ -118,6 +121,30 @@ func TestPageTokenRoundTrip(t *testing.T) {
 	none, err := decodePageToken("")
 	require.NoError(t, err)
 	require.Nil(t, none)
+}
+
+func TestPageTokenRejectsOutOfRange(t *testing.T) {
+	enc := func(micros, id int64) string {
+		b := make([]byte, 16)
+		binary.BigEndian.PutUint64(b, uint64(micros))
+		binary.BigEndian.PutUint64(b[8:], uint64(id))
+		return base64.RawURLEncoding.EncodeToString(b)
+	}
+	ok := time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC).UnixMicro()
+	for name, tok := range map[string]string{
+		"year 10000":    enc(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro(), 1),
+		"before year 1": enc(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro()-1, 1),
+		"max int64":     enc(math.MaxInt64, 1),
+		"min int64":     enc(math.MinInt64, 1),
+		"zero id":       enc(ok, 0),
+		"negative id":   enc(ok, -5),
+	} {
+		_, err := decodePageToken(tok)
+		require.Error(t, err, name)
+		require.Equal(t, codes.InvalidArgument, status.Code(err), name)
+	}
+	_, err := decodePageToken(enc(ok, 1))
+	require.NoError(t, err)
 }
 
 func TestRedriveJobsByIDs(t *testing.T) {

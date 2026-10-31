@@ -445,7 +445,7 @@ Three new unary RPCs, so the existing unary auth interceptor covers them:
 - **Cancel** works only while the job is `available`. Cancelling an already-cancelled job returns it with success, so a retried cancel is harmless. A leased, completed or dead job is `FAILED_PRECONDITION` (409) with the current state in the message; an unknown job is `NOT_FOUND`.
 - **Redrive** with both `ids` and `all`, or neither, is `INVALID_ARGUMENT`. IDs that are not dead are skipped and counted, not errors, so a retried redrive is harmless.
 - **Page tokens** are opaque to clients: the last row's `(finished_at, id)`, base64-encoded. A token that does not decode is `INVALID_ARGUMENT`.
-- **Enqueue over `max_depth`** (and `EnqueueBatch`, refused whole) is `RESOURCE_EXHAUSTED` (429) with a 1 s retry-after hint, the depth refresh interval (§15.3). This is the only change to an existing RPC.
+- **Enqueue over `max_depth`** (and `EnqueueBatch`, refused whole) is `RESOURCE_EXHAUSTED` (429) with a 1 s retry-after hint, the depth refresh interval (§15.3). This is the only change to an existing RPC. The depth check runs before the store, so while a queue is full an enqueue retry that carries an existing idempotency key also gets 429. A cancelled job keeps its idempotency key until it is pruned (the retention window), so re-enqueueing with that key returns the cancelled job. Any API key may call the admin RPCs (no roles in v1; see §12).
 
 **Go SDK:** `Client.CancelJob`, `Client.ListDeadJobs`, `Client.RedriveJobs` (by IDs) and `Client.RedriveAll`. `Enqueue` and `EnqueueBatch` return `ErrQueueFull` (matched with `errors.Is`, carrying the retry-after) on 429 and do not retry it: a full queue is a signal for the producer's owner, like every other producer error (§14.1).
 
@@ -481,8 +481,8 @@ A migration replaces `jobs_dead (queue, finished_at)` with `jobs_dead (queue, fi
 ```sql
 WITH d AS (
     SELECT id FROM jobs
-    WHERE queue = $1 AND state = 'dead'      -- AND id = ANY($2) when redriving by IDs
-    ORDER BY id
+    WHERE queue = $1 AND state = 'dead'      -- by IDs: WHERE id = ANY($2) AND queue = $1 AND state = 'dead'
+    ORDER BY finished_at, id                 -- by IDs: ORDER BY id
     LIMIT 1000
     FOR UPDATE SKIP LOCKED
 )
@@ -490,6 +490,8 @@ UPDATE jobs j
 SET state = 'available', attempts = 0, run_at = now(), finished_at = NULL
 FROM d WHERE j.id = d.id;
 ```
+
+All-mode orders by `(finished_at, id)` on `jobs_dead`, so every batch starts at the front of the partial index (redriven rows leave it); ids-mode looks up the primary key. They are two statements so neither plan depends on a NULL check.
 
 The same transaction sends `pg_notify('tasklane_jobs', queue)` when it changed at least one row. `all` repeats batches until one updates nothing or the request is cancelled; the response counts every committed batch.
 

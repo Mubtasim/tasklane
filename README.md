@@ -33,6 +33,8 @@ With API keys set, add the header to every `/v1` request:
 curl -H "Authorization: Bearer key1" -d '{"name":"emails"}' localhost:8080/v1/queues
 ```
 
+**Upgrading to M3a.** Migration `0002` rebuilds one partial index (`jobs_dead`) and blocks writes to `jobs` while it builds. The first pruner pass on an existing database deletes the whole completed and cancelled backlog older than the retention (in batches, but expect a WAL and autovacuum burst).
+
 | Variable | Default | |
 |---|---|---|
 | `TASKLANE_DATABASE_URL` | (required) | PostgreSQL connection string |

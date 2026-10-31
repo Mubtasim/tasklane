@@ -109,6 +109,11 @@ func encodePageToken(c store.DeadCursor) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+var (
+	minTokenMicros = time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro()
+	maxTokenMicros = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC).UnixMicro()
+)
+
 func decodePageToken(s string) (*store.DeadCursor, error) {
 	if s == "" {
 		return nil, nil
@@ -117,8 +122,11 @@ func decodePageToken(s string) (*store.DeadCursor, error) {
 	if err != nil || len(b) != 16 {
 		return nil, invalid("page_token is not a token from ListDeadJobs")
 	}
-	return &store.DeadCursor{
-		FinishedAt: time.UnixMicro(int64(binary.BigEndian.Uint64(b))),
-		ID:         int64(binary.BigEndian.Uint64(b[8:])),
-	}, nil
+	micros, id := int64(binary.BigEndian.Uint64(b)), int64(binary.BigEndian.Uint64(b[8:]))
+	// A forged timestamp outside years 1-9999 would fail in the database
+	// driver and surface as INTERNAL, so refuse it here.
+	if micros < minTokenMicros || micros > maxTokenMicros || id < 1 {
+		return nil, invalid("page_token is not a token from ListDeadJobs")
+	}
+	return &store.DeadCursor{FinishedAt: time.UnixMicro(micros), ID: id}, nil
 }
