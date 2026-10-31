@@ -174,6 +174,13 @@ type Store interface {
 	// reached max_attempts moves to StateDead instead of being retried.
 	ReapExpired(ctx context.Context, limit int) (int, error)
 
+	// PruneFinished deletes up to limit completed and cancelled jobs that
+	// finished more than age ago and returns how many it deleted. Like the
+	// reaper, it is safe to run on every server at once.
+	PruneFinished(ctx context.Context, age time.Duration, limit int) (int, error)
+	// PruneDead does the same for dead jobs.
+	PruneDead(ctx context.Context, age time.Duration, limit int) (int, error)
+
 	// GetJob returns ErrNotFound for an unknown job.
 	GetJob(ctx context.Context, id int64) (Job, error)
 

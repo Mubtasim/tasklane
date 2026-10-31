@@ -1,5 +1,5 @@
 // Command tasklane runs the Tasklane server: the gRPC API, the HTTP/JSON
-// gateway with health endpoints, the LISTEN/NOTIFY listener and the reaper.
+// gateway with health endpoints, the LISTEN/NOTIFY listener, the reaper and the pruner.
 package main
 
 import (
@@ -24,6 +24,7 @@ import (
 	"github.com/mubtasim/tasklane/internal/backoff"
 	"github.com/mubtasim/tasklane/internal/notify"
 	"github.com/mubtasim/tasklane/internal/pgstore"
+	"github.com/mubtasim/tasklane/internal/pruner"
 	"github.com/mubtasim/tasklane/internal/reaper"
 )
 
@@ -74,6 +75,9 @@ func run(log *slog.Logger) error {
 	listener := notify.New(cfg.DatabaseURL, log)
 	background.Go(func() { listener.Run(bgCtx) })
 	background.Go(func() { reaper.Run(bgCtx, st, cfg.ReaperInterval, reaper.DefaultBatch, log) })
+	background.Go(func() {
+		pruner.Run(bgCtx, st, pruner.Config{Interval: cfg.PruneInterval, Retention: cfg.Retention, DeadRetention: cfg.DeadRetention}, log)
+	})
 
 	srv := api.NewServer(st, listener, log)
 	grpcServer := api.NewGRPCServer(srv, cfg.APIKeys, log)
