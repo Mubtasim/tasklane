@@ -39,7 +39,10 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	testListener = notify.New(testDB.DSN, discard)
+	testListener, err = notify.New(testDB.DSN, discard)
+	if err != nil {
+		log.Fatal(err)
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

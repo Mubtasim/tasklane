@@ -72,7 +72,10 @@ func run(log *slog.Logger) error {
 		stopBackground()
 		background.Wait()
 	}()
-	listener := notify.New(cfg.DatabaseURL, log)
+	listener, err := notify.New(cfg.DatabaseURL, log)
+	if err != nil {
+		return err
+	}
 	background.Go(func() { _ = listener.Run(bgCtx) }) // always nil once bgCtx is done
 	background.Go(func() { reaper.Run(bgCtx, st, cfg.ReaperInterval, reaper.DefaultBatch, log) })
 	background.Go(func() {

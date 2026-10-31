@@ -7,6 +7,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -22,6 +23,11 @@ import (
 // ApplicationName identifies the listener's connection in pg_stat_activity.
 const ApplicationName = "tasklane-notify"
 
+// ConnectTimeout bounds each connection attempt when the DSN sets no
+// connect_timeout, so a reconnect to an unreachable database fails and backs
+// off instead of hanging.
+const ConnectTimeout = 10 * time.Second
+
 const (
 	// idleCheck bounds each wait for a notification; when it elapses the
 	// connection is pinged, so a half-open connection is noticed.
@@ -31,9 +37,9 @@ const (
 )
 
 type Listener struct {
-	connString string
-	log        *slog.Logger
-	retry      backoff.Policy // delay between reconnect attempts
+	cfg   *pgx.ConnConfig // parsed once in New; each connection uses a copy
+	log   *slog.Logger
+	retry backoff.Policy // delay between reconnect attempts
 
 	listening atomic.Bool
 	pid       atomic.Uint32 // backend PID of the LISTEN connection; 0 when down
@@ -42,13 +48,23 @@ type Listener struct {
 	subs map[string]map[chan struct{}]struct{}
 }
 
-func New(connString string, log *slog.Logger) *Listener {
-	return &Listener{
-		connString: connString,
-		log:        log,
-		retry:      backoff.Policy{Base: 100 * time.Millisecond, Cap: 5 * time.Second, Rand: rand.Float64},
-		subs:       map[string]map[chan struct{}]struct{}{},
+// New parses connString once, so a malformed database URL is reported here
+// rather than on every reconnect attempt.
+func New(connString string, log *slog.Logger) (*Listener, error) {
+	cfg, err := pgx.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("notify: parse database URL: %w", err)
 	}
+	if cfg.ConnectTimeout == 0 {
+		cfg.ConnectTimeout = ConnectTimeout
+	}
+	cfg.RuntimeParams["application_name"] = ApplicationName
+	return &Listener{
+		cfg:   cfg,
+		log:   log,
+		retry: backoff.Policy{Base: 100 * time.Millisecond, Cap: 5 * time.Second, Rand: rand.Float64},
+		subs:  map[string]map[chan struct{}]struct{}{},
+	}, nil
 }
 
 // Subscribe returns a channel that receives a value after jobs are enqueued
@@ -105,12 +121,7 @@ func (l *Listener) Run(ctx context.Context) error {
 // listen runs one connection's lifetime; it returns when the connection fails
 // or ctx is cancelled. connected is called once LISTEN is in effect.
 func (l *Listener) listen(ctx context.Context, connected func()) error {
-	cfg, err := pgx.ParseConfig(l.connString)
-	if err != nil {
-		return err
-	}
-	cfg.RuntimeParams["application_name"] = ApplicationName
-	conn, err := pgx.ConnectConfig(ctx, cfg)
+	conn, err := pgx.ConnectConfig(ctx, l.cfg.Copy())
 	if err != nil {
 		return err
 	}
