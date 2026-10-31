@@ -1,5 +1,7 @@
 # Tasklane
 
+[![CI](https://github.com/Mubtasim/tasklane/actions/workflows/ci.yml/badge.svg)](https://github.com/Mubtasim/tasklane/actions/workflows/ci.yml)
+
 A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
@@ -131,12 +133,12 @@ Requires Go and Docker (integration tests start PostgreSQL in a container).
 
     go test ./...
 
-The API is defined in `proto/tasklane/v1/tasklane.proto`. After changing it, run `buf lint && buf generate` and commit `gen/`. buf and the plugins install with `go install`:
+The API is defined in `proto/tasklane/v1/tasklane.proto`. After changing it, run
 
-    go install github.com/bufbuild/buf/cmd/buf@v1.74.0
-    go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
-    go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.32.0
+    go tool -modfile=tools.mod buf lint
+    go tool -modfile=tools.mod buf generate
+
+and commit `gen/`. buf and the protoc plugins are pinned in `tools.mod`, so there is nothing to install. Lint with [golangci-lint](https://golangci-lint.run) v2 (`golangci-lint run ./...`); CI runs the linters, the tests with `-race`, `buf lint`, `buf breaking` and the image build on every push and pull request.
 
 ## License
 

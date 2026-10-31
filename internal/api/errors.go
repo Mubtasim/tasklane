@@ -50,7 +50,7 @@ func toStatus(log *slog.Logger, method string, err error) error {
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, "deadline exceeded")
 	case errors.Is(err, context.Canceled):
-		return status.Error(codes.Canceled, "request cancelled")
+		return status.Error(codes.Canceled, "request canceled")
 	}
 	log.Error("internal error", "method", method, "err", err)
 	return status.Error(codes.Internal, "internal error")

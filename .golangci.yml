@@ -1,0 +1,36 @@
+version: "2"
+linters:
+  # The standard set (errcheck, govet, ineffassign, staticcheck, unused) plus:
+  enable:
+    - errorlint
+    - misspell
+  settings:
+    misspell:
+      locale: US
+  exclusions:
+    # Unchecked errors from Close, Rollback and similar cleanup calls are
+    # deliberate (std-error-handling).
+    presets:
+      - std-error-handling
+      - common-false-positives
+    paths:
+      - gen/
+    rules:
+      # JOB_STATE_CANCELLED is the wire name of a generated proto enum value;
+      # renaming it would break the API.
+      - linters: [misspell]
+        text: '`CANCELLED` is a misspelling'
+      # "cancelled" is the persisted and wire value of the job state.
+      - linters: [misspell]
+        source: 'JobState = "cancelled"'
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mubtasim/tasklane
+  exclusions:
+    paths:
+      - gen/

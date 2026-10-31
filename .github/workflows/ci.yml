@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # Integration tests start PostgreSQL with testcontainers in the
+      # runner's Docker.
+      - run: go test -race -count=1 ./...
+
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # buf breaking compares against main
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go tool -modfile=tools.mod buf lint
+      - if: github.event_name == 'pull_request'
+        run: go tool -modfile=tools.mod buf breaking --against ".git#branch=origin/${{ github.base_ref }}"
+      - name: Generated code is up to date
+        run: |
+          go tool -modfile=tools.mod buf generate
+          git diff --exit-code gen/
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t tasklane:ci .

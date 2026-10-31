@@ -39,7 +39,7 @@ func TestMain(m *testing.M) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		testListener.Run(ctx)
+		_ = testListener.Run(ctx) // always nil once ctx is done
 	}()
 	for i := 0; !testListener.Listening(); i++ {
 		if i == 500 {
@@ -73,7 +73,7 @@ func newEnv(t *testing.T, keys []string, opts ...Option) *env {
 	gs := NewGRPCServer(srv, keys, slog.New(slog.DiscardHandler))
 
 	lis := bufconn.Listen(1 << 20)
-	go gs.Serve(lis)
+	go func() { _ = gs.Serve(lis) }()
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),

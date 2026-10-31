@@ -16,7 +16,7 @@ type Config struct {
 	HTTPAddr       string        // TASKLANE_HTTP_ADDR, default :8080
 	APIKeys        []string      // TASKLANE_API_KEYS, comma-separated; empty disables auth
 	ReaperInterval time.Duration // TASKLANE_REAPER_INTERVAL, default 5s
-	Retention      time.Duration // TASKLANE_RETENTION, default 24h: completed and cancelled jobs
+	Retention      time.Duration // TASKLANE_RETENTION, default 24h: completed and canceled jobs
 	DeadRetention  time.Duration // TASKLANE_DEAD_RETENTION, default 168h: dead jobs
 	PruneInterval  time.Duration // TASKLANE_PRUNE_INTERVAL, default 1m
 }

@@ -18,7 +18,7 @@ func (s *Store) ReapExpired(ctx context.Context, limit int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	rows, err := tx.Query(ctx,
 		`SELECT id, attempts, max_attempts, coalesce(last_error, '') FROM jobs

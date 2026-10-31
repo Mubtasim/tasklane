@@ -2,6 +2,7 @@ package pgstore_test
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sync"
 	"testing"
@@ -208,7 +209,7 @@ func TestStaleNacksDoNotExhaustPool(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := s.Nack(tctx, j.ID, uuid.New(), "x", nil); err != store.ErrLeaseLost {
+			if err := s.Nack(tctx, j.ID, uuid.New(), "x", nil); !errors.Is(err, store.ErrLeaseLost) {
 				t.Errorf("Nack with stale token = %v, want ErrLeaseLost", err)
 			}
 		}()

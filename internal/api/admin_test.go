@@ -210,7 +210,7 @@ func TestHTTPCancelAndRedrive(t *testing.T) {
 	require.Equal(t, "1", body["redriven"], "int64 is a string in proto3 JSON")
 
 	code, _ = call(t, "POST", base+"/v1/jobs/"+strconv.FormatInt(ids[0], 10)+":cancel", "", `{}`)
-	require.Equal(t, http.StatusOK, code, "the redriven job is available again, so it can be cancelled")
+	require.Equal(t, http.StatusOK, code, "the redriven job is available again, so it can be canceled")
 
 	leased := mustEnqueueAPI(t, e, "emails")
 	_, err := e.client.Lease(context.Background(), &tasklanev1.LeaseRequest{Queue: "emails"})

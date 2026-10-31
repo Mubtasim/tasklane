@@ -48,7 +48,7 @@ func TestToStatusMapsErrors(t *testing.T) {
 		{"invalid", fmt.Errorf("%w: kind is required", store.ErrInvalid), codes.InvalidArgument},
 		{"already exists", store.ErrAlreadyExists, codes.AlreadyExists},
 		{"deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), codes.DeadlineExceeded},
-		{"cancelled", context.Canceled, codes.Canceled},
+		{"canceled", context.Canceled, codes.Canceled},
 		{"connect error", connectErr, codes.Unavailable},
 		{"net error", &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset")}, codes.Unavailable},
 		{"admin shutdown", &pgconn.PgError{Code: "57P01"}, codes.Unavailable},

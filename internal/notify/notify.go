@@ -80,7 +80,7 @@ func (l *Listener) Subscribe(queue string) (<-chan struct{}, func()) {
 // Listening reports whether the LISTEN connection is currently up.
 func (l *Listener) Listening() bool { return l.listening.Load() }
 
-// Run listens until ctx is cancelled, reconnecting with backoff whenever the
+// Run listens until ctx is canceled, reconnecting with backoff whenever the
 // connection fails. It always returns nil once ctx is done.
 func (l *Listener) Run(ctx context.Context) error {
 	attempt := 0
@@ -103,7 +103,7 @@ func (l *Listener) Run(ctx context.Context) error {
 }
 
 // listen runs one connection's lifetime; it returns when the connection fails
-// or ctx is cancelled. connected is called once LISTEN is in effect.
+// or ctx is canceled. connected is called once LISTEN is in effect.
 func (l *Listener) listen(ctx context.Context, connected func()) error {
 	cfg, err := pgx.ParseConfig(l.connString)
 	if err != nil {

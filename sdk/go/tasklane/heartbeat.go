@@ -11,7 +11,7 @@ import (
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 )
 
-// heartbeat extends a's lease every vt/3 until ctx is cancelled, so one lost
+// heartbeat extends a's lease every vt/3 until ctx is canceled, so one lost
 // or late heartbeat doesn't lose the lease. It uses this process's monotonic
 // clock and never compares the server's lease_expires_at with the local
 // clock, so clock skew between the worker and the database can't break it.
@@ -46,7 +46,7 @@ func (w *Worker) heartbeat(ctx context.Context, a *activeJob, vt time.Duration) 
 			// Another worker may hold the job now. Stopping the handler
 			// shortens the time both run it; it can't remove it, which is
 			// why delivery is at-least-once and handlers must be idempotent.
-			w.log.Warn("lease lost; cancelling the handler", "job_id", a.job.ID, "kind", a.job.Kind, "err", err)
+			w.log.Warn("lease lost; canceling the handler", "job_id", a.job.ID, "kind", a.job.Kind, "err", err)
 			a.lost.Store(true)
 			a.cancel()
 			return

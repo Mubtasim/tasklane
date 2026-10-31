@@ -1,5 +1,5 @@
 // Package pruner runs the background loop that deletes old finished jobs:
-// completed and cancelled ones after the retention period, dead ones after
+// completed and canceled ones after the retention period, dead ones after
 // the (longer) dead retention. Every server runs it; the store's SKIP LOCKED
 // makes that safe.
 package pruner
@@ -49,7 +49,7 @@ func (c Config) withDefaults() Config {
 }
 
 // Run prunes once immediately and then every Interval until ctx is
-// cancelled. Errors are logged, never fatal: the next tick tries again.
+// canceled. Errors are logged, never fatal: the next tick tries again.
 func Run(ctx context.Context, s Store, cfg Config, log *slog.Logger) {
 	cfg = cfg.withDefaults()
 	ticker := time.NewTicker(cfg.Interval)
@@ -71,7 +71,7 @@ func Run(ctx context.Context, s Store, cfg Config, log *slog.Logger) {
 // short, so a large backlog clears in one pass without one large
 // transaction.
 func pass(ctx context.Context, s Store, cfg Config, log *slog.Logger) {
-	drain(ctx, "completed and cancelled", s.PruneFinished, cfg.Retention, cfg.Batch, log)
+	drain(ctx, "completed and canceled", s.PruneFinished, cfg.Retention, cfg.Batch, log)
 	drain(ctx, "dead", s.PruneDead, cfg.DeadRetention, cfg.Batch, log)
 }
 

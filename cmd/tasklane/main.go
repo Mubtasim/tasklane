@@ -73,7 +73,7 @@ func run(log *slog.Logger) error {
 		background.Wait()
 	}()
 	listener := notify.New(cfg.DatabaseURL, log)
-	background.Go(func() { listener.Run(bgCtx) })
+	background.Go(func() { _ = listener.Run(bgCtx) }) // always nil once bgCtx is done
 	background.Go(func() { reaper.Run(bgCtx, st, cfg.ReaperInterval, reaper.DefaultBatch, log) })
 	background.Go(func() {
 		pruner.Run(bgCtx, st, pruner.Config{Interval: cfg.PruneInterval, Retention: cfg.Retention, DeadRetention: cfg.DeadRetention}, log)

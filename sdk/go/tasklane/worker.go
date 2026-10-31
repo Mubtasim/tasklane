@@ -35,7 +35,7 @@ type WorkerOptions struct {
 	// VisibilityTimeout is the lease length; zero uses the queue's setting.
 	VisibilityTimeout time.Duration
 	// ShutdownTimeout is how long running jobs may take to finish after
-	// Run's context is cancelled (default 25 s); the Nacks and Acks after it
+	// Run's context is canceled (default 25 s); the Nacks and Acks after it
 	// take up to 2 s more. Give the process at least that long to stop:
 	// Docker's default grace period is only 10 s.
 	ShutdownTimeout time.Duration
@@ -111,7 +111,7 @@ type run struct {
 	active map[*activeJob]struct{}
 }
 
-// Run leases and runs jobs until ctx is cancelled, then shuts down
+// Run leases and runs jobs until ctx is canceled, then shuts down
 // gracefully: it stops leasing, gives running jobs up to ShutdownTimeout to
 // finish, nacks the ones that don't, and returns nil (within about
 // ShutdownTimeout + 2 s). It returns an error only when retrying can't help:
@@ -133,7 +133,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 // visibilityTimeout checks that the queue exists and returns the lease length
 // to use. It retries while the server is unreachable (it may still be
-// starting) and returns 0, nil if ctx is cancelled first.
+// starting) and returns 0, nil if ctx is canceled first.
 func (w *Worker) visibilityTimeout(ctx context.Context) (time.Duration, error) {
 	for attempt := 0; ; attempt++ {
 		info, err := w.client.GetQueue(ctx, w.queue)
@@ -156,7 +156,7 @@ func (w *Worker) visibilityTimeout(ctx context.Context) (time.Duration, error) {
 	}
 }
 
-// leaseLoop leases jobs into free slots until ctx is cancelled. There is one
+// leaseLoop leases jobs into free slots until ctx is canceled. There is one
 // loop, and so one long-poll, per worker whatever its Concurrency: each
 // waiting lease costs the server a query per second, so a long-poll per
 // goroutine would make idle load grow with total worker concurrency.
@@ -245,7 +245,7 @@ func fatal(err error) bool {
 	return false
 }
 
-// sleepCtx waits for d and reports false if ctx was cancelled first.
+// sleepCtx waits for d and reports false if ctx was canceled first.
 func sleepCtx(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
 	defer t.Stop()

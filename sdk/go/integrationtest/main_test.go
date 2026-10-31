@@ -43,7 +43,7 @@ func TestMain(m *testing.M) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		testListener.Run(ctx)
+		_ = testListener.Run(ctx) // always nil once ctx is done
 	}()
 	for i := 0; !testListener.Listening(); i++ {
 		if i == 500 {
@@ -73,7 +73,7 @@ func newEnv(t *testing.T) *env {
 	srv := api.NewServer(st, testListener, discard, api.WithPollInterval(50*time.Millisecond))
 	gs := api.NewGRPCServer(srv, nil, discard)
 	lis := bufconn.Listen(1 << 20)
-	go gs.Serve(lis)
+	go func() { _ = gs.Serve(lis) }()
 	reaperCtx, stopReaper := context.WithCancel(context.Background())
 	reaperDone := make(chan struct{})
 	go func() {

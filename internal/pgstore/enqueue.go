@@ -46,7 +46,7 @@ func (s *Store) Enqueue(ctx context.Context, jobs []store.NewJob) ([]store.Enque
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	results := make([]store.EnqueueResult, len(jobs))
 	for _, i := range insertOrder(jobs) {
