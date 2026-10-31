@@ -390,7 +390,7 @@ Rejected alternative: `Concurrency` goroutines that each lease one job. That hol
 
 1. The lease loop stops; no new jobs are taken.
 2. Running handlers get up to `WorkerOptions.ShutdownTimeout` (default 25 s) to finish and Ack or Nack normally.
-3. At the deadline the runner cancels the remaining `jobCtx`s and Nacks those jobs with `worker shutting down`, each with a 2 s deadline, then returns without waiting for handlers that ignore their context.
+3. At the deadline the runner cancels the remaining `jobCtx`s and Nacks those jobs with `worker shutting down`; these Nacks and any Acks still in flight share one 2 s budget, then returns without waiting for handlers that ignore their context.
 
 If the Nack can't be sent (SIGKILL, network down), the lease simply expires and the reaper retries the job, so the Nack is a best-effort speed-up over a safe fallback. Either way the attempt is already counted, because `attempts` is incremented at lease time.
 
@@ -439,7 +439,7 @@ Three new unary RPCs, so the existing unary auth interceptor covers them:
 | RPC | HTTP | Request → response |
 |---|---|---|
 | `CancelJob` | `POST /v1/jobs/{id}:cancel` | `id` → the job, now `cancelled` |
-| `ListDeadJobs` | `GET /v1/queues/{queue}/dead` | `page_size` (default and max 100), `page_token` → dead jobs, newest first, and `next_page_token` (empty on the last page) |
+| `ListDeadJobs` | `GET /v1/queues/{queue}/dead` | `page_size` (default and max 100), `page_token` → dead jobs, newest first, and `next_page_token` (empty on the last page) (the server reads one job more than the page, so a last page never carries a token) |
 | `RedriveJobs` | `POST /v1/queues/{queue}/dead:redrive` | `ids` (at most 1,000) or `all = true` → `redriven`, and `skipped` (IDs that were not dead jobs of this queue) |
 
 - **Cancel** works only while the job is `available`. Cancelling an already-cancelled job returns it with success, so a retried cancel is harmless. A leased, completed or dead job is `FAILED_PRECONDITION` (409) with the current state in the message; an unknown job is `NOT_FOUND`.
@@ -447,7 +447,7 @@ Three new unary RPCs, so the existing unary auth interceptor covers them:
 - **Page tokens** are opaque to clients: the last row's `(finished_at, id)`, base64-encoded. A token that does not decode is `INVALID_ARGUMENT`.
 - **Enqueue over `max_depth`** (and `EnqueueBatch`, refused whole) is `RESOURCE_EXHAUSTED` (429) with a 1 s retry-after hint, the depth refresh interval (§15.3). This is the only change to an existing RPC.
 
-**Go SDK:** `Client.CancelJob`, `Client.ListDeadJobs` and `Client.RedriveJobs`. `Enqueue` and `EnqueueBatch` return `ErrQueueFull` (matched with `errors.Is`, carrying the retry-after) on 429 and do not retry it: a full queue is a signal for the producer's owner, like every other producer error (§14.1).
+**Go SDK:** `Client.CancelJob`, `Client.ListDeadJobs`, `Client.RedriveJobs` (by IDs) and `Client.RedriveAll`. `Enqueue` and `EnqueueBatch` return `ErrQueueFull` (matched with `errors.Is`, carrying the retry-after) on 429 and do not retry it: a full queue is a signal for the producer's owner, like every other producer error (§14.1).
 
 ### 15.2 Storage
 
@@ -510,13 +510,16 @@ DELETE FROM jobs WHERE id IN (
 
 The first uses `jobs_finished`. The second has no queue to fix the `jobs_dead` prefix, so it scans that index across queues; dead jobs are few and this runs once a minute.
 
-**Queue depth** for backpressure is one statement for all queues:
+**Queue depth** for backpressure is one statement for all queues, with each queue's `max_depth`:
 
 ```sql
-SELECT queue, count(*) FROM jobs WHERE state IN ('available', 'leased') GROUP BY queue;
+SELECT q.name, q.max_depth,
+    (SELECT count(*) FROM jobs j WHERE j.queue = q.name AND j.state = 'available') +
+    (SELECT count(*) FROM jobs j WHERE j.queue = q.name AND j.state = 'leased')
+FROM queues q;
 ```
 
-Delayed jobs and jobs waiting to retry count: they are stored work. The M5 load test EXPLAINs this query; if it shows up, the fix is a per-queue estimate.
+The available count is an index-only range on `jobs_available`, which starts with `queue`; leased jobs are bounded by the workers' slots. A queue with no jobs gets depth 0.
 
 **Reaper message.** When an expired lease follows an earlier failure, the reaper writes `lease expired (previous: <last_error>)`, truncated to 4 KiB at a UTF-8 boundary, instead of overwriting the real error with `lease expired`.
 
@@ -549,7 +552,6 @@ Dead jobs expire like messages in an SQS dead-letter queue. The docs say so; M4'
 
 ### 15.6 Carried over
 
-- §14.2 step 3: shutdown Nacks and in-flight Acks share one 2 s budget; fix the wording.
 - Interview notes Q16 onward at the M3a checkpoint.
 
 Out of scope: `LeaseStream` (M3b), a CLI, rate limits, a delete-dead-jobs RPC.

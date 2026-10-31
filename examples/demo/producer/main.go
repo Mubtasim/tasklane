@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"os"
@@ -61,7 +62,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := demo.EnsureQueue(ctx, client, cfg.Queue, log); err != nil {
+	if err := demo.EnsureQueue(ctx, client, cfg, log); err != nil {
 		if ctx.Err() == nil {
 			log.Error("create queue", "err", err)
 			os.Exit(1)
@@ -82,6 +83,17 @@ func main() {
 		}
 		kind := pick(kinds, rand.IntN(total))
 		if _, err := client.Enqueue(ctx, cfg.Queue, tasklane.Job{Kind: kind, Payload: map[string]int{"seq": seq}}); err != nil {
+			var full *tasklane.QueueFullError
+			if errors.As(err, &full) {
+				// Backpressure: the workers are behind. Wait as the server
+				// asks instead of hammering it.
+				log.Warn("queue full, retry after", "retry_after", full.RetryAfter)
+				select {
+				case <-ctx.Done():
+				case <-time.After(full.RetryAfter):
+				}
+				continue
+			}
 			log.Warn("enqueue failed", "kind", kind, "err", err)
 			continue
 		}

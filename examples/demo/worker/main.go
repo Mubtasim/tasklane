@@ -34,7 +34,7 @@ func main() {
 	defer stop()
 	// Create the queue too, so the worker doesn't depend on the producer
 	// starting first.
-	if err := demo.EnsureQueue(ctx, client, cfg.Queue, log); err != nil {
+	if err := demo.EnsureQueue(ctx, client, cfg, log); err != nil {
 		if ctx.Err() == nil {
 			log.Error("create queue", "err", err)
 			os.Exit(1)
