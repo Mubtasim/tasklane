@@ -31,7 +31,7 @@ var jobStateFromProto = map[tasklanev1.JobState]JobState{
 }
 
 // JobInfo is a stored job as the server reports it. Zero times mean unset
-// (FinishedAt stays zero until the job is completed, dead or canceled).
+// (FinishedAt stays zero until the job is completed, dead or cancelled).
 type JobInfo struct {
 	ID          int64
 	Queue       string
@@ -61,7 +61,7 @@ type RedriveResult struct {
 }
 
 // CancelJob cancels a job that is still available and returns it.
-// Canceling a canceled job succeeds. A leased or finished job is a
+// Cancelling a cancelled job succeeds. A leased or finished job is a
 // codes.FailedPrecondition error.
 func (c *Client) CancelJob(ctx context.Context, id int64) (JobInfo, error) {
 	res, err := c.api.CancelJob(ctx, &tasklanev1.CancelJobRequest{Id: id})

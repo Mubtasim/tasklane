@@ -16,7 +16,7 @@ import (
 // currently holds the job can change it (fencing).
 
 // Ack keeps the token on the completed row, so a retried Ack (the first
-// response was lost) can be recognized and answered with success.
+// response was lost) can be recognised and answered with success.
 func (s *Store) Ack(ctx context.Context, id int64, token uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE jobs SET state = 'completed', finished_at = now(), lease_expires_at = NULL

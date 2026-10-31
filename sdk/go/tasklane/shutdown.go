@@ -12,8 +12,8 @@ import (
 // shutdown deadline.
 const shutdownNackError = "worker shutting down"
 
-// drain waits for running jobs after Run's context is canceled. Jobs still
-// running after ShutdownTimeout are canceled and nacked, so the server
+// drain waits for running jobs after Run's context is cancelled. Jobs still
+// running after ShutdownTimeout are cancelled and nacked, so the server
 // retries them within seconds instead of after their lease expires. If a
 // Nack can't be sent (the network is down), the lease simply expires and the
 // reaper retries the job: the Nack only makes recovery faster. drain doesn't

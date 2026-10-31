@@ -18,7 +18,7 @@ type Store interface {
 	ReapExpired(ctx context.Context, limit int) (int, error)
 }
 
-// Run reaps once immediately and then every interval until ctx is canceled.
+// Run reaps once immediately and then every interval until ctx is cancelled.
 // While a call returns a full batch, it calls again at once instead of waiting
 // for the next tick, so a backlog drains quickly. Errors are logged, never
 // fatal: the next tick tries again. A non-positive interval or batch uses

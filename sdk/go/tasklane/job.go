@@ -24,7 +24,7 @@ const defaultFinishTimeout = 2 * time.Second
 
 // HandlerFunc runs one job. Returning nil acks the job; returning an error
 // nacks it, and the server retries it after a backoff delay (or moves it to
-// the dead-letter queue after its last attempt). ctx is canceled when the
+// the dead-letter queue after its last attempt). ctx is cancelled when the
 // lease is lost or the worker's shutdown deadline passes: return soon after.
 type HandlerFunc func(ctx context.Context, job *LeasedJob) error
 
@@ -217,7 +217,7 @@ func (w *Worker) send(a *activeJob, what string, call func(context.Context) erro
 			return
 		case status.Code(err) == codes.Canceled:
 			// The Client was closed: no retry can get through.
-			w.log.Warn(what+" canceled: the client is closed (the job will be retried)", "job_id", a.job.ID, "err", err)
+			w.log.Warn(what+" cancelled: the client is closed (the job will be retried)", "job_id", a.job.ID, "err", err)
 			return
 		case fatal(err):
 			w.log.Error(what+" failed", "job_id", a.job.ID, "err", err)

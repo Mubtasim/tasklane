@@ -46,7 +46,7 @@ var (
 	// ErrAlreadyExists means the resource, such as a queue, already exists.
 	ErrAlreadyExists = errors.New("tasklane: already exists")
 	// ErrWrongState means the job exists but its state doesn't allow the
-	// operation, such as canceling a job that is already leased.
+	// operation, such as cancelling a job that is already leased.
 	ErrWrongState = errors.New("tasklane: wrong job state")
 )
 
@@ -133,7 +133,7 @@ type Job struct {
 	IdempotencyKey string
 	TraceContext   string
 	CreatedAt      time.Time
-	FinishedAt     time.Time // zero until completed, dead or canceled
+	FinishedAt     time.Time // zero until completed, dead or cancelled
 }
 
 type Store interface {
@@ -186,7 +186,7 @@ type Store interface {
 	// reached max_attempts moves to StateDead instead of being retried.
 	ReapExpired(ctx context.Context, limit int) (int, error)
 
-	// PruneFinished deletes up to limit completed and canceled jobs that
+	// PruneFinished deletes up to limit completed and cancelled jobs that
 	// finished more than age ago and returns how many it deleted. Like the
 	// reaper, it is safe to run on every server at once.
 	PruneFinished(ctx context.Context, age time.Duration, limit int) (int, error)
@@ -197,9 +197,9 @@ type Store interface {
 	GetJob(ctx context.Context, id int64) (Job, error)
 
 	// CancelJob moves an available job to StateCancelled and returns it.
-	// Canceling a canceled job returns it unchanged, so a retry is
+	// Cancelling a cancelled job returns it unchanged, so a retry is
 	// harmless. A job in any other state returns ErrWrongState; an unknown
-	// job, ErrNotFound. Canceling never makes a job runnable, so it wakes
+	// job, ErrNotFound. Cancelling never makes a job runnable, so it wakes
 	// no leases.
 	CancelJob(ctx context.Context, id int64) (Job, error)
 

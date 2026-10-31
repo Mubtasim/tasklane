@@ -30,5 +30,5 @@ func (s *Store) CancelJob(ctx context.Context, id int64) (store.Job, error) {
 	if j.State == store.StateCancelled {
 		return j, nil
 	}
-	return store.Job{}, fmt.Errorf("%w: job %d is %s; only available jobs can be canceled", store.ErrWrongState, id, j.State)
+	return store.Job{}, fmt.Errorf("%w: job %d is %s; only available jobs can be cancelled", store.ErrWrongState, id, j.State)
 }

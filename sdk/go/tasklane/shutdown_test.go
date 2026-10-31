@@ -137,11 +137,11 @@ func TestShutdownDoesNotNackAJobWhoseLeaseWasLost(t *testing.T) {
 	started := make(chan struct{})
 	release, gate := releaseOnCleanup(t)
 	w := testWorker(c, WorkerOptions{ShutdownTimeout: 50 * time.Millisecond, VisibilityTimeout: 30 * time.Millisecond})
-	canceled := make(chan struct{})
+	cancelled := make(chan struct{})
 	w.Handle("slow", func(ctx context.Context, _ *LeasedJob) error {
 		close(started)
 		<-ctx.Done() // the heartbeat cancels it after setting lost
-		close(canceled)
+		close(cancelled)
 		<-gate // then ignores the cancellation
 		return nil
 	})
@@ -152,7 +152,7 @@ func TestShutdownDoesNotNackAJobWhoseLeaseWasLost(t *testing.T) {
 
 	f.push(fakeJob(1, "slow"))
 	awaitClosed(t, started)
-	awaitClosed(t, canceled)
+	awaitClosed(t, cancelled)
 	stopWithin(t, stop, time.Second)
 	release()
 	require.Never(t, func() bool {
@@ -214,7 +214,7 @@ func TestShutdownWaitsOneGracePeriodForSlowNacksAndAcks(t *testing.T) {
 	})
 	w.Handle("overrun", func(ctx context.Context, _ *LeasedJob) error {
 		started.Done()
-		<-ctx.Done() // canceled at the deadline; its shutdown Nack hangs
+		<-ctx.Done() // cancelled at the deadline; its shutdown Nack hangs
 		return ctx.Err()
 	})
 	stop := startWorker(t, w)

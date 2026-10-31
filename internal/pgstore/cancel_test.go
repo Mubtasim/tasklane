@@ -24,7 +24,7 @@ func TestCancelAvailableJob(t *testing.T) {
 
 	jobs, err := s.Lease(ctx, "emails", 1, time.Minute)
 	require.NoError(t, err)
-	require.Empty(t, jobs, "a canceled job is never leased")
+	require.Empty(t, jobs, "a cancelled job is never leased")
 }
 
 func TestCancelTwiceSucceeds(t *testing.T) {

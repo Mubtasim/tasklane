@@ -46,6 +46,7 @@ jobs:
       - name: Generated code is up to date
         run: |
           go tool -modfile=tools.mod buf generate
+          git add -N gen/ # so untracked generated files also show up in the diff
           git diff --exit-code gen/
 
   docker:

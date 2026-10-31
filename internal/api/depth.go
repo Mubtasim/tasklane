@@ -77,13 +77,13 @@ func queueFullError(queue string) error {
 	st := status.Newf(codes.ResourceExhausted, "queue %q is full (max_depth reached); retry later", queue)
 	withInfo, err := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(depthRefreshInterval)})
 	if err != nil {
-		return st.Err() // only fails if the detail can't be marshaled
+		return st.Err() // only fails if the detail can't be marshalled
 	}
 	return withInfo.Err()
 }
 
 // RunDepthRefresh recounts queue depths every second until ctx is
-// canceled. Until it has run once, Enqueue refuses nothing.
+// cancelled. Until it has run once, Enqueue refuses nothing.
 func (s *Server) RunDepthRefresh(ctx context.Context) {
 	ticker := time.NewTicker(depthRefreshInterval)
 	defer ticker.Stop()

@@ -37,15 +37,15 @@ func TestALostLeaseCancelsTheHandlerAndSkipsAckAndNack(t *testing.T) {
 	f.set(func(f *fakeServer) {
 		f.heartbeatFn = func(*tasklanev1.HeartbeatRequest) error { return status.Error(codes.FailedPrecondition, "lease lost") }
 	})
-	canceled := make(chan error, 1)
+	cancelled := make(chan error, 1)
 	w := testWorker(c, WorkerOptions{VisibilityTimeout: 60 * time.Millisecond})
 	w.Handle("long", func(ctx context.Context, _ *LeasedJob) error {
 		select {
 		case <-ctx.Done():
-			canceled <- ctx.Err()
+			cancelled <- ctx.Err()
 			return ctx.Err()
 		case <-time.After(5 * time.Second):
-			canceled <- nil
+			cancelled <- nil
 			return nil
 		}
 	})
@@ -53,10 +53,10 @@ func TestALostLeaseCancelsTheHandlerAndSkipsAckAndNack(t *testing.T) {
 
 	f.push(fakeJob(1, "long"))
 	select {
-	case err := <-canceled:
+	case err := <-cancelled:
 		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(2 * time.Second):
-		t.Fatal("the handler was not canceled")
+		t.Fatal("the handler was not cancelled")
 	}
 	require.Never(t, func() bool {
 		calls := f.calls()
