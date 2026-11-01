@@ -23,7 +23,26 @@ const (
 	// DefaultPollInterval is how often a waiting Lease re-checks without a
 	// notification: delayed jobs and retries become due silently.
 	DefaultPollInterval = time.Second
+	// storeWriteTimeout bounds a store write that runs detached from its
+	// client (see detach). A write takes milliseconds when the database is
+	// healthy, so this only matters when it is stuck. It is kept under the
+	// server's 10 s graceful-stop budget, so a detached write never holds a
+	// drain past it, and well under the 30 s default visibility timeout, so
+	// a lease taken by a slow write is still worth handing over.
+	storeWriteTimeout = 5 * time.Second
 )
+
+// detach returns a context for one store write that ignores the client's
+// cancellation but is bounded by storeWriteTimeout. Postgres can commit a
+// write and pgx still return "context canceled" when the client goes away
+// mid-call; the handler would then report a committed write as failed and
+// skip its metrics, and the counters would drift from the database. On a
+// detached context, a write that starts also finishes, and its bookkeeping
+// runs, whatever the client does. Values (such as the request's metadata)
+// are kept.
+func detach(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), storeWriteTimeout)
+}
 
 // Notifier wakes waiting leases when a queue gets new jobs; *notify.Listener
 // implements it.
@@ -83,7 +102,9 @@ func (s *Server) CreateQueue(ctx context.Context, req *tasklanev1.CreateQueueReq
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.CreateQueue(ctx, q); err != nil {
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	if err := s.store.CreateQueue(wctx, q); err != nil {
 		return nil, toStatus(s.log, "CreateQueue", err)
 	}
 	// Answer with the queue as stored, so CreateQueue and GetQueue agree: the
@@ -114,7 +135,9 @@ func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*
 		s.metrics.EnqueueRefused(req.GetQueue())
 		return nil, queueFullError(req.GetQueue())
 	}
-	res, err := s.store.Enqueue(ctx, []store.NewJob{job})
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	res, err := s.store.Enqueue(wctx, []store.NewJob{job})
 	if err != nil {
 		return nil, toStatus(s.log, "Enqueue", err)
 	}
@@ -140,7 +163,9 @@ func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchR
 		}
 		jobs = append(jobs, j)
 	}
-	res, err := s.store.Enqueue(ctx, jobs) // the store rejects 0 or > 1000 jobs
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	res, err := s.store.Enqueue(wctx, jobs) // the store rejects 0 or > 1000 jobs
 	if err != nil {
 		return nil, toStatus(s.log, "EnqueueBatch", err)
 	}
@@ -194,7 +219,7 @@ func (s *Server) Lease(ctx context.Context, req *tasklanev1.LeaseRequest) (*task
 	defer poll.Stop()
 
 	for {
-		jobs, err := s.store.Lease(ctx, req.GetQueue(), n, ttl)
+		jobs, err := s.lease(ctx, req.GetQueue(), n, ttl)
 		if err != nil {
 			return nil, toStatus(s.log, "Lease", err)
 		}
@@ -213,7 +238,23 @@ func (s *Server) Lease(ctx context.Context, req *tasklanev1.LeaseRequest) (*task
 		case <-wake:
 		case <-poll.C:
 		}
+		// select picks at random among ready cases, so a wake-up can win
+		// over a cancel that came at the same time. A gone client must not
+		// be handed jobs it will never run: they would sit leased until
+		// their visibility timeout.
+		if err := ctx.Err(); err != nil {
+			return nil, toStatus(s.log, "Lease", err)
+		}
 	}
+}
+
+// lease is one lease attempt, detached from the client (see detach): once
+// the transaction starts, the jobs it leases are counted and returned. Only
+// Lease's wait between attempts follows the client.
+func (s *Server) lease(ctx context.Context, queue string, n int, ttl time.Duration) ([]store.Job, error) {
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	return s.store.Lease(wctx, queue, n, ttl)
 }
 
 func leaseResponse(jobs []store.Job) (*tasklanev1.LeaseResponse, error) {
@@ -233,7 +274,9 @@ func (s *Server) Ack(ctx context.Context, req *tasklanev1.AckRequest) (*tasklane
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.store.Ack(ctx, req.GetId(), token)
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	res, err := s.store.Ack(wctx, req.GetId(), token)
 	if err != nil {
 		return nil, toStatus(s.log, "Ack", err)
 	}
@@ -259,7 +302,9 @@ func (s *Server) Nack(ctx context.Context, req *tasklanev1.NackRequest) (*taskla
 	// A long error (a stack trace, say) is truncated rather than rejected:
 	// failing the Nack would only leave the job to the reaper.
 	errMsg := store.TruncateUTF8(req.GetError(), store.MaxErrorBytes)
-	res, err := s.store.Nack(ctx, req.GetId(), token, errMsg, retryAt)
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	res, err := s.store.Nack(wctx, req.GetId(), token, errMsg, retryAt)
 	if err != nil {
 		return nil, toStatus(s.log, "Nack", err)
 	}
@@ -276,7 +321,9 @@ func (s *Server) Heartbeat(ctx context.Context, req *tasklanev1.HeartbeatRequest
 	if err != nil {
 		return nil, err
 	}
-	expires, err := s.store.Heartbeat(ctx, req.GetId(), token, ttl)
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	expires, err := s.store.Heartbeat(wctx, req.GetId(), token, ttl)
 	if err != nil {
 		return nil, toStatus(s.log, "Heartbeat", err)
 	}

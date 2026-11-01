@@ -23,7 +23,9 @@ const (
 )
 
 func (s *Server) CancelJob(ctx context.Context, req *tasklanev1.CancelJobRequest) (*tasklanev1.CancelJobResponse, error) {
-	j, cancelled, err := s.store.CancelJob(ctx, req.GetId())
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	j, cancelled, err := s.store.CancelJob(wctx, req.GetId())
 	if err != nil {
 		return nil, toStatus(s.log, "CancelJob", err)
 	}
@@ -83,7 +85,7 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 	}
 	if !req.GetAll() {
 		ids = slices.Compact(slices.Sorted(slices.Values(ids)))
-		n, err := s.store.RedriveDead(ctx, req.GetQueue(), ids, len(ids))
+		n, err := s.redrive(ctx, req.GetQueue(), ids, len(ids))
 		if err != nil {
 			return nil, toStatus(s.log, "RedriveJobs", err)
 		}
@@ -92,7 +94,7 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 	}
 	var total int64
 	for {
-		n, err := s.store.RedriveDead(ctx, req.GetQueue(), nil, redriveBatch)
+		n, err := s.redrive(ctx, req.GetQueue(), nil, redriveBatch)
 		if err != nil {
 			return nil, toStatus(s.log, "RedriveJobs", err)
 		}
@@ -101,7 +103,20 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 		if n < redriveBatch {
 			return &tasklanev1.RedriveJobsResponse{Redriven: total}, nil
 		}
+		// Each batch finishes once started, but a gone client starts no
+		// more: what is done stays done, and a new call finishes the rest.
+		if err := ctx.Err(); err != nil {
+			return nil, toStatus(s.log, "RedriveJobs", err)
+		}
 	}
+}
+
+// redrive is one RedriveDead transaction, detached from the client (see
+// detach) so a committed batch is always counted.
+func (s *Server) redrive(ctx context.Context, queue string, ids []int64, limit int) (int, error) {
+	wctx, cancel := detach(ctx)
+	defer cancel()
+	return s.store.RedriveDead(wctx, queue, ids, limit)
 }
 
 // Page tokens are the last job's (finished_at in microseconds, id) as 16
