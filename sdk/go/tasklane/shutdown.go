@@ -2,8 +2,12 @@ package tasklane
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 )
@@ -54,7 +58,9 @@ func (w *Worker) drain(r *run) {
 			// its final call. A lost lease can only be reported before
 			// the heartbeat exits, so check it after the join.
 			<-a.hbDone
+			shutdownErr := errors.New(shutdownNackError)
 			if a.lost.Load() {
+				w.report(a, OutcomeLeaseLost, shutdownErr)
 				return
 			}
 			ctx, cancel := context.WithDeadline(context.Background(), graceEnd)
@@ -62,8 +68,14 @@ func (w *Worker) drain(r *run) {
 			_, err := w.client.api.Nack(ctx, &tasklanev1.NackRequest{Id: a.job.ID, LeaseToken: a.job.token, Error: shutdownNackError})
 			if err != nil {
 				w.log.Warn("shutdown nack failed; the job is retried when its lease expires", "job_id", a.job.ID, "err", err)
+				if c := status.Code(err); c == codes.FailedPrecondition || c == codes.NotFound {
+					w.report(a, OutcomeLeaseLost, shutdownErr)
+				} else {
+					w.report(a, OutcomeGaveUp, shutdownErr)
+				}
 				return
 			}
+			w.report(a, OutcomeNacked, shutdownErr)
 			w.log.Info("nacked an unfinished job at shutdown", "job_id", a.job.ID, "kind", a.job.Kind)
 		})
 	}

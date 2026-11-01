@@ -5,16 +5,21 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/mubtasim/tasklane/examples/demo/internal/demo"
+	"github.com/mubtasim/tasklane/internal/ledger"
 	"github.com/mubtasim/tasklane/sdk/go/tasklane"
 )
 
@@ -45,6 +50,22 @@ func pick(ws []weighted, roll int) string {
 	return ws[len(ws)-1].kind
 }
 
+// retryDelay is how long ledger mode waits before retrying a failed enqueue.
+const retryDelay = 200 * time.Millisecond
+
+// enqueueTimeout caps a single Enqueue attempt.
+const enqueueTimeout = 5 * time.Second
+
+// sleep waits d and reports false if ctx ended first.
+func sleep(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil)).With("app", "producer")
 	cfg := demo.LoadConfig()
@@ -71,6 +92,20 @@ func main() {
 	}
 	log.Info("producing", "queue", cfg.Queue, "jobs_per_second", rate)
 
+	var led *ledger.Writer
+	runID := ""
+	if cfg.LedgerDir != "" {
+		if led, err = ledger.Open(filepath.Join(cfg.LedgerDir, "producer.enqueued.jsonl")); err != nil {
+			log.Error("open ledger", "err", err)
+			os.Exit(1)
+		}
+		defer led.Close()
+		// A restarted producer gets a new run ID, so it never reuses a key.
+		var b [4]byte
+		_, _ = crand.Read(b[:])
+		runID = hex.EncodeToString(b[:])
+	}
+
 	tick := time.NewTicker(time.Duration(float64(time.Second) / rate))
 	defer tick.Stop()
 	total := totalWeight(kinds)
@@ -82,20 +117,47 @@ func main() {
 		case <-tick.C:
 		}
 		kind := pick(kinds, rand.IntN(total))
-		if _, err := client.Enqueue(ctx, cfg.Queue, tasklane.Job{Kind: kind, Payload: map[string]int{"seq": seq}}); err != nil {
+		job := tasklane.Job{Kind: kind, Payload: map[string]int{"seq": seq}}
+		if led != nil {
+			job.IdempotencyKey = fmt.Sprintf("%s-%d", runID, seq)
+		}
+		for {
+			// Bound each attempt so a paused server cannot stall the producer;
+			// the retry reuses the same key, so a timed-out call that did
+			// land is not enqueued twice.
+			actx, cancel := context.WithTimeout(ctx, enqueueTimeout)
+			res, err := client.Enqueue(actx, cfg.Queue, job)
+			cancel()
+			if err == nil {
+				if led != nil {
+					if err := led.Append(ledger.Enqueued{Key: job.IdempotencyKey, JobID: res.JobID}); err != nil {
+						log.Error("ledger", "err", err)
+					}
+				}
+				break
+			}
 			var full *tasklane.QueueFullError
+			wait := retryDelay
 			if errors.As(err, &full) {
 				// Backpressure: the workers are behind. Wait as the server
 				// asks instead of hammering it.
 				log.Warn("queue full, retry after", "retry_after", full.RetryAfter)
-				select {
-				case <-ctx.Done():
-				case <-time.After(full.RetryAfter):
-				}
-				continue
+				wait = full.RetryAfter
+			} else {
+				log.Warn("enqueue failed", "kind", kind, "err", err)
 			}
-			log.Warn("enqueue failed", "kind", kind, "err", err)
-			continue
+			if led == nil {
+				// Without a ledger a failed job is skipped; only a full queue waits.
+				if full != nil {
+					sleep(ctx, wait)
+				}
+				break
+			}
+			// With a ledger the job must not be lost: retry it with the same
+			// key, so a request that actually landed is not enqueued twice.
+			if !sleep(ctx, wait) {
+				break
+			}
 		}
 		if seq%100 == 0 {
 			log.Info("enqueued", "total", seq)

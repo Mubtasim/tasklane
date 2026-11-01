@@ -3,6 +3,7 @@ package pgstore_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -142,4 +143,50 @@ func TestReapExpiredReportsQueueAndDead(t *testing.T) {
 	reaped, err := s.ReapExpired(ctx, 10)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []store.ReapedJob{{Queue: "a", Dead: true}, {Queue: "b", Dead: false}}, reaped)
+}
+
+func TestConcurrentReapersReapEachJobOnce(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	for range 20 {
+		mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	}
+	jobs, err := s.Lease(ctx, "emails", 20, 50*time.Millisecond)
+	require.NoError(t, err)
+	require.Len(t, jobs, 20)
+	time.Sleep(100 * time.Millisecond)
+
+	start := make(chan struct{})
+	counts := make([]int, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Go(func() {
+			<-start
+			// A small limit makes each reaper take several batches, so the two overlap.
+			for {
+				reaped, err := s.ReapExpired(ctx, 5)
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				if len(reaped) == 0 {
+					return
+				}
+				counts[i] += len(reaped)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	require.Equal(t, 20, counts[0]+counts[1], "SKIP LOCKED splits the work; no job is reaped twice")
+	for _, j := range jobs {
+		got, err := s.GetJob(ctx, j.ID)
+		require.NoError(t, err)
+		require.Equal(t, store.StateAvailable, got.State)
+		require.Equal(t, 1, got.Attempts)
+	}
 }

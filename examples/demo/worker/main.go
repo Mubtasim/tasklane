@@ -7,16 +7,19 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 
 	"github.com/mubtasim/tasklane/examples/demo/internal/demo"
+	"github.com/mubtasim/tasklane/internal/ledger"
 	"github.com/mubtasim/tasklane/sdk/go/tasklane"
 )
 
 func main() {
 	host, _ := os.Hostname()
-	log := slog.New(slog.NewTextHandler(os.Stdout, nil)).With("worker", demo.Env("WORKER_NAME", host))
+	name := demo.Env("WORKER_NAME", host)
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil)).With("worker", name)
 	cfg := demo.LoadConfig()
 	concurrency, err := strconv.Atoi(demo.Env("DEMO_CONCURRENCY", "5"))
 	if err != nil || concurrency <= 0 {
@@ -42,7 +45,26 @@ func main() {
 		return
 	}
 
-	w := client.NewWorker(cfg.Queue, tasklane.WorkerOptions{Concurrency: concurrency, Logger: log})
+	opts := tasklane.WorkerOptions{Concurrency: concurrency, Logger: log}
+	if cfg.LedgerDir != "" {
+		// The file is named after the worker, so a worker restarted after a
+		// kill continues the same ledger.
+		led, err := ledger.Open(filepath.Join(cfg.LedgerDir, name+".runs.jsonl"))
+		if err != nil {
+			log.Error("open ledger", "err", err)
+			os.Exit(1)
+		}
+		// The ledger file is deliberately never closed: OnResult can fire
+		// after Run returns, for a job whose Ack was still in flight, and a
+		// late Append to a closed file would fail loudly. Each record is
+		// written whole, and the OS closes the file when the process exits.
+		opts.OnResult = func(r tasklane.Result) {
+			if err := led.Append(ledger.RunFromResult(name, r)); err != nil {
+				log.Error("ledger", "err", err)
+			}
+		}
+	}
+	w := client.NewWorker(cfg.Queue, opts)
 	w.Handle("normal", normal(log))
 	w.Handle("flaky", flaky(log, 0.3, rand.Float64))
 	w.Handle("poison", poison(log))

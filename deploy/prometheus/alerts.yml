@@ -42,3 +42,9 @@ groups:
         for: 5m
         annotations:
           summary: "Over 5% of RPCs fail with Internal or Unavailable."
+
+      - alert: TasklaneStatsStale
+        expr: tasklane_queue_stats_age_seconds > 30
+        for: 1m
+        annotations:
+          summary: "{{ $labels.instance }} hasn't refreshed queue depths for over 30 s: the depth gauges and backpressure use old numbers (is the database reachable?)."

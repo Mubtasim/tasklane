@@ -66,4 +66,34 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | Producer | 10 jobs/s: 85% normal (0.2–2 s), 12% flaky (fails 30%), 3% poison |
 | Workers | 3 × 5 slots = 15 slots, ~15 jobs/s capacity |
 | One worker | ~4–5 jobs/s, so the backlog grows ~6/s (Little's law: throughput = slots ÷ average job time) |
-| Stack RAM | ~250 MB |
+| Stack RAM | ~700 MB idle (measured ~690 MiB: Grafana 484, Prometheus 98, Postgres 50, Envoy 17, each server ~11) |
+| Servers | 2 behind Envoy; killing one: acked rate held at ~9.3–9.7 jobs/s, `tasklane-2` went from ~16 to ~33 requests/s |
+
+## Envoy (two servers)
+
+| What | Value | Why |
+|---|---|---|
+| Route timeout | 35 s | Longer than the server's `MaxWait` (30 s) and the SDK's 20 s long-poll. Envoy's 15 s default would cut every idle Lease. |
+| Balancing | `least_request`, per request | Long-polls hold a request for up to 30 s; an L4 balancer would pin each client's one HTTP/2 connection to one server. |
+| Health check | `GET /readyz` every 2 s, unhealthy after 2 failures, healthy after 1 | `/readyz` also fails when the database is unreachable. Two failed checks take ~4 s, but the measured failover was longer (below). |
+| Outlier ejection | 3 consecutive gateway errors → ejected for 10 s | Reacts to real traffic before the health check does. |
+| Connect timeout | 1 s (default 5 s) | A killed container's IP never answers. |
+| Proxy retries | 2, only `connect-failure`, `refused-stream`, `reset-before-request` | A Lease that reached a server may have leased jobs, so it is never retried by the proxy. |
+| DNS re-resolution | every 5 s (`STRICT_DNS` default) | |
+| Failover after `kill tasklane-1` | ~14–18 s of fast `Unavailable` errors on new calls, then none | Most likely health checks (2 × 2 s) plus DNS re-resolution (5 s); not proven. The SDK retries, so throughput held. |
+
+## Correctness tests
+
+| What | Value | Why |
+|---|---|---|
+| Invariant test VT / max attempts | 2 s / 3 | Short, so zombies and reaps happen within seconds. Reaper every 200 ms, retry backoff 100 ms–1 s. |
+| Invariant test sizes | 10 workers × 1,000 jobs (~8 s; default, every PR) / 50 × 10,000 (`-invariant.full`, ~1m17s, ~380 MB) | 5 slots per worker. |
+| Invariant job mix | 85% normal (5–25 ms), 12% flaky (1–2 failures), 3% poison | Plus 2 zombies (ack after VT + 500 ms) and 2 workers cut off at 30% and 60%. |
+| Rule 4 tolerance | 500 ms (in-process), 1 s (chaos, through Envoy) | The recorded start trails the server's lease time. |
+| Chaos VT | 10 s | Reaps happen within the 3-minute run; a 15 s pause outlasts it. |
+| Chaos faults | one every ~15 s for 3 min: kill worker (back after 10 s), kill server (back after 15 s), pause worker 15 s, restart Postgres | One fault at a time, never both servers down. |
+| Chaos producer | 10 jobs/s, 5 s per enqueue attempt, retry after 200 ms with the same key | Records a key only after the server confirms it. |
+| Chaos drain | ≤ 2 min | Then rules 1–4. |
+| Chaos runs | seed 1: 1,889 enqueued, 1,827 completed, 62 dead, 16 lease_lost, 3m42s; seed 1793568724465150275 (4 server kills): 1,654 / 1,610 / 44, 5 lease_lost, 4 gave_up, 3m52s | Both PASS. |
+| The counter bug | ~1 run in 60 failed rule 5; 0 in 180 after the fix | A cancelled client could make a committed write look failed. |
+| `storeWriteTimeout` | 5 s | Store writes run detached from the client; below the 10 s graceful-stop budget. |

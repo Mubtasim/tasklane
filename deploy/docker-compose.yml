@@ -1,11 +1,11 @@
-# Tasklane demo: PostgreSQL, one server, a producer, three workers, Prometheus
-# and Grafana. From the repo root:
+# Tasklane demo: PostgreSQL, two servers behind Envoy, a producer, three
+# workers, Prometheus and Grafana. From the repo root:
 #   docker compose -f deploy/docker-compose.yml up --build
 # then open http://localhost:3000 for the dashboard.
 name: tasklane-demo
 
 x-demo-env: &demo-env
-  TASKLANE_ADDR: tasklane:7070
+  TASKLANE_ADDR: envoy:7070
   TASKLANE_API_KEY: ${TASKLANE_API_KEY:-demo-key}
   DEMO_QUEUE: demo
 
@@ -16,7 +16,19 @@ x-worker: &worker
   # Longer than the worker's 25 s ShutdownTimeout: Docker's default is 10 s,
   # after which it sends SIGKILL.
   stop_grace_period: 30s
-  depends_on: [tasklane]
+  depends_on: [envoy]
+
+x-server: &server
+  image: tasklane:dev
+  environment:
+    TASKLANE_DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
+    TASKLANE_API_KEYS: ${TASKLANE_API_KEY:-demo-key}
+    TASKLANE_REAPER_INTERVAL: 2s
+  # Both servers migrate at startup; the advisory lock in pgstore.Migrate
+  # makes that safe.
+  depends_on:
+    postgres:
+      condition: service_healthy
 
 services:
   postgres:
@@ -32,21 +44,27 @@ services:
       timeout: 3s
       retries: 30
 
-  tasklane:
+  tasklane-1:
+    <<: *server
     build:
       context: ..
       dockerfile: Dockerfile
-    image: tasklane:dev
-    environment:
-      TASKLANE_DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
-      TASKLANE_API_KEYS: ${TASKLANE_API_KEY:-demo-key}
-      TASKLANE_REAPER_INTERVAL: 2s
+
+  tasklane-2:
+    <<: *server
+    pull_policy: never
+
+  # Owns the host ports 7070 (gRPC) and 8080 (HTTP). The admin interface is
+  # not configured, so nothing else is exposed.
+  envoy:
+    image: envoyproxy/envoy:v1.36.2
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+    volumes:
+      - ./envoy:/etc/envoy:ro
     ports:
       - "127.0.0.1:7070:7070"
       - "127.0.0.1:8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
+    depends_on: [tasklane-1, tasklane-2]
 
   producer:
     image: tasklane:dev
@@ -55,7 +73,7 @@ services:
     environment:
       <<: *demo-env
       DEMO_RATE: "10"
-    depends_on: [tasklane]
+    depends_on: [envoy]
 
   worker-1:
     <<: *worker
@@ -84,7 +102,7 @@ services:
       - ./prometheus:/etc/prometheus:ro
     ports:
       - "127.0.0.1:9090:9090"
-    depends_on: [tasklane]
+    depends_on: [tasklane-1, tasklane-2]
 
   grafana:
     image: grafana/grafana:13.3.0

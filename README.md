@@ -6,7 +6,7 @@ A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
 
-**Status:** early development (milestone M3a: cancel, dead-letter operations, pruning, backpressure). Not ready for production use.
+**Status:** early development (milestone M4b: invariant and chaos tests, two servers behind Envoy). Not ready for production use.
 
 - Design: [docs/design.md](docs/design.md)
 
@@ -74,9 +74,18 @@ err = w.Run(ctx)
 
 Delivery is at-least-once: a job can run twice (for example after a worker crashes before acking), so handlers should be idempotent.
 
+To see how each run ended (whether the server accepted the Ack or Nack), set `OnResult`. It is called once per run, from the job's goroutine, so it must be safe for concurrent use:
+
+```go
+w := client.NewWorker("emails", tasklane.WorkerOptions{Concurrency: 5, OnResult: func(r tasklane.Result) {
+    // r.Outcome: OutcomeAcked, OutcomeNacked, OutcomeLeaseLost or OutcomeGaveUp
+    log.Printf("job %d attempt %d: %s in %v", r.Job.ID, r.Job.Attempt, r.Outcome, r.End.Sub(r.Start))
+}})
+```
+
 ## Demo
 
-One command starts PostgreSQL, the server, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus and Grafana. It needs Docker and about 600 MB of RAM.
+One command starts PostgreSQL, two servers behind Envoy, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus and Grafana. It needs Docker and about 700 MB of RAM. Envoy owns the host ports 7070 and 8080 and balances each request across the two servers, so every client sees one address.
 
 The main way to watch is the Grafana dashboard at http://localhost:3000 (see [Monitoring](#monitoring)). `tasklane-watch` is a lighter alternative in the terminal.
 
@@ -140,11 +149,47 @@ The screenshot shows "Dead (last hour)" in red because the demo produces poison 
 - **Top row:** throughput, available and leased jobs, jobs that died in the last hour, the oldest ready job's wait, and refused enqueues.
 - **Jobs per second by outcome** and **queue depth by state:** the flow through the queue.
 - **Queue wait** (ready to leased, p50/p99), **RPC latency** and **RPC errors by code.**
-- **DB pool, goroutines and memory** for the server itself.
+- **DB pool, goroutines and memory** for the servers.
+- **Servers up** (red below 2) and **Requests per server:** whether both servers are alive and how Envoy splits the traffic.
 
 Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill worker-1`. The acked rate holds at about 9.7 jobs/s, because the two other workers have spare capacity. Available jobs climb to about 30 and queue wait p99 to about 5 s while they catch up. Once the demo's 15 s visibility timeout passes, about 4 jobs (the killed worker's leases) are reaped and returned to the queue. `docker compose -f deploy/docker-compose.yml start worker-1` brings everything back to normal. Throughput only drops when the remaining workers can't keep up. Run `docker compose -f deploy/docker-compose.yml stop worker-2 worker-3`: one worker (5 slots) handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until you `start` them again.
 
-Example alert rules are in `deploy/prometheus/alerts.yml` (server down, jobs stuck, dead jobs, high reap rate, queue full, RPC errors); see them at http://localhost:9090/alerts. The demo's poison jobs keep `TasklaneDeadJobs` firing, as they should. With several server copies, aggregate the queue gauges with `max by (queue)` (every server reports the same database-wide numbers) and counters with `sum`. All metrics are listed in [design §16.2](docs/design.md#162-metrics).
+Try killing a server: `docker compose -f deploy/docker-compose.yml kill tasklane-1`. "Servers up" drops to 1 and "Requests per server" moves to `tasklane-2`, which went from about 16 to about 33 requests/s. After a hard kill, new calls fail fast for about 14-18 s, most likely until Envoy's health checks (2 s, 2 failures) and DNS re-resolution (5 s) drop the dead server (upstream keepalive and a retry rule that avoids the previous host didn't shorten it): in the run I measured, the producer and workers logged 25 failed calls (mostly Unavailable) between 0.2 s and 18 s after the kill, none after that. They retry, so throughput held. The acked rate was about 9.3 jobs/s with one server (9.6 before). `docker compose -f deploy/docker-compose.yml start tasklane-1` and the traffic splits again, about 16 and 17 requests/s, with the acked rate back at about 9.5 jobs/s.
+
+Example alert rules are in `deploy/prometheus/alerts.yml` (server down, jobs stuck, dead jobs, high reap rate, queue full, RPC errors, stale queue stats); see them at http://localhost:9090/alerts. The demo's poison jobs keep `TasklaneDeadJobs` firing, as they should. `TasklaneStatsStale` fires when a server's cached queue depths are over 30 s old, which usually means it can't reach the database. With several server copies, aggregate the queue gauges with `max by (queue)` (every server reports the same database-wide numbers) and counters with `sum`. All metrics are listed in [design §16.2](docs/design.md#162-metrics).
+
+## Correctness
+
+Two tests run jobs through two servers while things break, then check five rules against what the workers and the producer recorded (their ledgers) and the final `jobs` table:
+
+1. **Nothing lost or stuck:** every confirmed enqueue has a job, and every job ends `completed` or `dead`.
+2. **No duplicate jobs:** one job per idempotency key, even when an enqueue was retried after its server died.
+3. **Fencing works:** two runs never hold the same attempt, an accepted Ack is always from the job's last attempt, a completed job has at most one accepted Ack and a dead job none.
+4. **Repeat runs are justified:** a job runs again only after a Nack, a failed handler, or a gap of at least one visibility timeout (its lease could have expired).
+5. **Counters match the database** (in-process test only): the acked and dead counters equal the completed and dead counts.
+
+The details, including what each rule tolerates, are in [design §17](docs/design.md#17-m4b-invariant-and-chaos-tests-two-servers-behind-envoy).
+
+**Invariant test** (in-process, part of `go test ./...`): one Postgres, two servers with their own reapers, SDK workers with flaky and poison jobs, two zombie workers that ack after their lease expired, and two workers whose connection is cut mid-run.
+
+```bash
+go test -count=1 ./test/invariant/                      # 10 workers × 1,000 jobs, about 8 s (12 s for the package)
+go test -count=1 ./test/invariant/ -invariant.full      # 50 workers × 10,000 jobs, about 1m17s, ~380 MB
+go test -count=1 ./test/invariant/ -invariant.seed=42   # replay a seed (the job mix and stops, not the timing)
+```
+
+It found a real bug: when a client disconnected during an Ack, Postgres could commit while the server saw `context canceled` and skipped its metrics, so the counters drifted from the database (about 1 run in 60). Store writes now run detached from the client.
+
+**Chaos test** (Docker, about 3m45s once the image is built, the demo stack's ~700 MB; stop the demo first, since it uses the same ports):
+
+```bash
+go test -tags chaos -count=1 -v -timeout 15m ./test/chaos/
+go test -tags chaos -count=1 -v -timeout 15m ./test/chaos/ -chaos.seed=1   # replay a fault sequence
+```
+
+For 3 minutes it injects one fault about every 15 s: kill a worker (back after 10 s), kill a server (back after 15 s), pause a worker for 15 s (longer than the 10 s visibility timeout, so it comes back as a zombie whose late Acks must be rejected), or restart Postgres. Then it heals everything, waits for the queue to drain and checks rules 1–4. On failure the ledgers and compose logs are copied to `test/chaos/out/`.
+
+CI runs the default invariant test on every pull request (inside `go test -race ./...`) and the chaos test nightly; the chaos workflow can also be started by hand with a seed.
 
 ## Development
 

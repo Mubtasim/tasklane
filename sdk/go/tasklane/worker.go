@@ -41,6 +41,12 @@ type WorkerOptions struct {
 	ShutdownTimeout time.Duration
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
+	// OnResult, if set, is called once per leased job after the worker is
+	// done with it, with the run's outcome. It runs on the job's goroutine,
+	// so it must be safe for concurrent use and return quickly. It may be
+	// called after Run returns, for jobs whose final call was still in
+	// flight; don't close resources it uses until those finish.
+	OnResult func(Result)
 }
 
 // Worker leases jobs from one queue and runs the handler registered for each

@@ -110,3 +110,50 @@ func TestHandlerServesTextFormat(t *testing.T) {
 	require.True(t, strings.Contains(string(body), `tasklane_jobs_acked_total{queue="q"} 1`))
 	require.True(t, strings.Contains(string(body), "go_goroutines"))
 }
+
+// A scrape must see one refresh's gauges or the next one's, never a mix or
+// an empty set (Reset followed by Set used to leave that window).
+func TestQueueStatsScrapeIsAtomic(t *testing.T) {
+	m := New()
+	a := []store.QueueDepth{{Queue: "a", Available: 1}, {Queue: "b", Available: 2}}
+	b := []store.QueueDepth{{Queue: "c", Available: 3}, {Queue: "d", Available: 4}}
+	m.SetQueueStats(a)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				m.SetQueueStats(b)
+			} else {
+				m.SetQueueStats(a)
+			}
+		}
+	}()
+	for range 2000 {
+		families, err := m.reg.Gather()
+		require.NoError(t, err)
+		queues := map[string]bool{}
+		for _, f := range families {
+			if f.GetName() != "tasklane_queue_depth" {
+				continue
+			}
+			for _, s := range f.GetMetric() {
+				for _, l := range s.GetLabel() {
+					if l.GetName() == "queue" {
+						queues[l.GetValue()] = true
+					}
+				}
+			}
+		}
+		ok := (queues["a"] && queues["b"] && len(queues) == 2) || (queues["c"] && queues["d"] && len(queues) == 2)
+		require.True(t, ok, "mixed or empty scrape: %v", queues)
+	}
+	close(stop)
+	<-done
+}

@@ -1,4 +1,8 @@
 version: "2"
+run:
+  # Lint the chaos test too; it builds only with this tag.
+  build-tags:
+    - chaos
 linters:
   # The standard set (errcheck, govet, ineffassign, staticcheck, unused) plus:
   enable:

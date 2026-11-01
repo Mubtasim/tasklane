@@ -15,12 +15,16 @@ import (
 	"github.com/mubtasim/tasklane/sdk/go/tasklane"
 )
 
-// Config comes from TASKLANE_ADDR, TASKLANE_API_KEY, DEMO_QUEUE and DEMO_MAX_DEPTH (0: the server default).
+// Config comes from TASKLANE_ADDR, TASKLANE_API_KEY, DEMO_QUEUE,
+// DEMO_MAX_DEPTH (0: the server default), DEMO_VISIBILITY_TIMEOUT (a Go
+// duration, default 15s) and DEMO_LEDGER_DIR (unset: no ledger).
 type Config struct {
-	Addr     string
-	APIKey   string
-	Queue    string
-	MaxDepth int64
+	Addr              string
+	APIKey            string
+	Queue             string
+	MaxDepth          int64
+	VisibilityTimeout time.Duration
+	LedgerDir         string
 }
 
 func LoadConfig() Config {
@@ -28,6 +32,13 @@ func LoadConfig() Config {
 		Addr:   Env("TASKLANE_ADDR", "localhost:7070"),
 		APIKey: os.Getenv("TASKLANE_API_KEY"),
 		Queue:  Env("DEMO_QUEUE", "demo"),
+
+		VisibilityTimeout: 15 * time.Second,
+		LedgerDir:         os.Getenv("DEMO_LEDGER_DIR"),
+	}
+	// A malformed or non-positive DEMO_VISIBILITY_TIMEOUT keeps the default.
+	if d, err := time.ParseDuration(os.Getenv("DEMO_VISIBILITY_TIMEOUT")); err == nil && d > 0 {
+		cfg.VisibilityTimeout = d
 	}
 	// A malformed DEMO_MAX_DEPTH keeps the server default.
 	cfg.MaxDepth, _ = strconv.ParseInt(os.Getenv("DEMO_MAX_DEPTH"), 10, 64)
@@ -50,14 +61,14 @@ func Dial(cfg Config) (*tasklane.Client, error) {
 	return tasklane.Dial(cfg.Addr, opts...)
 }
 
-// EnsureQueue creates the demo queue: a 15 s visibility timeout, so a killed
-// worker's jobs come back within about 20 s, and 5 attempts, so poison jobs
+// EnsureQueue creates the demo queue: a 15 s visibility timeout by default
+// (DEMO_VISIBILITY_TIMEOUT), so a killed worker's jobs come back within about 20 s, and 5 attempts, so poison jobs
 // reach the dead-letter queue quickly. A queue that already exists is fine,
 // and while the server is starting it waits and tries again.
 // An existing queue keeps its settings, so DEMO_MAX_DEPTH only applies to a new queue.
 func EnsureQueue(ctx context.Context, c *tasklane.Client, cfg Config, log *slog.Logger) error {
 	for {
-		_, err := c.CreateQueue(ctx, tasklane.QueueConfig{Name: cfg.Queue, MaxDepth: cfg.MaxDepth, VisibilityTimeout: 15 * time.Second, MaxAttempts: 5})
+		_, err := c.CreateQueue(ctx, tasklane.QueueConfig{Name: cfg.Queue, MaxDepth: cfg.MaxDepth, VisibilityTimeout: cfg.VisibilityTimeout, MaxAttempts: 5})
 		switch {
 		case err == nil || status.Code(err) == codes.AlreadyExists:
 			return nil
