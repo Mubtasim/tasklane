@@ -1,0 +1,24 @@
+# Chaos-test settings on top of the demo stack (design §17.5): a 10 s
+# visibility timeout so reaps happen within the run, run ledgers written to
+# a host directory, and Postgres published so the checker can read the jobs.
+x-ledger: &ledger
+  DEMO_LEDGER_DIR: /ledger
+  DEMO_VISIBILITY_TIMEOUT: 10s
+  DEMO_QUEUE: chaos
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5433:5432"
+  producer:
+    environment: { <<: *ledger, DEMO_RATE: "10" }
+    volumes: ["${CHAOS_LEDGER_DIR:?set CHAOS_LEDGER_DIR}:/ledger"]
+  worker-1:
+    environment: { <<: *ledger, WORKER_NAME: worker-1 }
+    volumes: ["${CHAOS_LEDGER_DIR}:/ledger"]
+  worker-2:
+    environment: { <<: *ledger, WORKER_NAME: worker-2 }
+    volumes: ["${CHAOS_LEDGER_DIR}:/ledger"]
+  worker-3:
+    environment: { <<: *ledger, WORKER_NAME: worker-3 }
+    volumes: ["${CHAOS_LEDGER_DIR}:/ledger"]
