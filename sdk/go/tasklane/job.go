@@ -64,7 +64,7 @@ func (e *retryAtError) Unwrap() error { return e.err }
 // activeJob is a job this worker is running.
 type activeJob struct {
 	job           *LeasedJob
-	start         time.Time          // when the handler started
+	start         time.Time          // set before the job is shared (drain reads it); the handler starts right after
 	cancel        context.CancelFunc // cancels the handler's context
 	stopHeartbeat context.CancelFunc
 	lost          atomic.Bool   // the server reported the lease gone
@@ -140,7 +140,6 @@ func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 			defer close(a.hbDone)
 			w.heartbeat(hbCtx, a, r.vt)
 		}()
-		a.start = time.Now()
 		err = w.call(ctx, job)
 	}
 	// Claim the final call as soon as the handler returns, so a shutdown

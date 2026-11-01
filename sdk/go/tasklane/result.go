@@ -43,7 +43,7 @@ func (o Outcome) String() string {
 type Result struct {
 	Job     *LeasedJob
 	Outcome Outcome
-	Start   time.Time // the handler started
+	Start   time.Time // the job was picked up, just before the handler started
 	End     time.Time // the outcome was known
 	Err     error     // the handler's error, if any
 }
