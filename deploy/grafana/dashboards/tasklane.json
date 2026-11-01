@@ -703,7 +703,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "count(up{job=\"tasklane\"} == 1)"
+          "expr": "count(up{job=\"tasklane\"} == 1) or vector(0)"
         }
       ],
       "fieldConfig": {

@@ -60,6 +60,9 @@ static_resources:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
   clusters:
     - name: tasklane_grpc
+      # A killed container's IP never answers, so the 5 s default only delays
+      # failover; the servers share one Docker network, so 1 s is plenty.
+      connect_timeout: 1s
       type: STRICT_DNS
       lb_policy: LEAST_REQUEST
       typed_extension_protocol_options:
@@ -83,6 +86,9 @@ static_resources:
         enforcing_consecutive_gateway_failure: 100
         base_ejection_time: 10s
     - name: tasklane_http
+      # A killed container's IP never answers, so the 5 s default only delays
+      # failover; the servers share one Docker network, so 1 s is plenty.
+      connect_timeout: 1s
       type: STRICT_DNS
       lb_policy: LEAST_REQUEST
       load_assignment:
