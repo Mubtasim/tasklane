@@ -64,6 +64,7 @@ func (e *retryAtError) Unwrap() error { return e.err }
 // activeJob is a job this worker is running.
 type activeJob struct {
 	job           *LeasedJob
+	start         time.Time          // when the handler started
 	cancel        context.CancelFunc // cancels the handler's context
 	stopHeartbeat context.CancelFunc
 	lost          atomic.Bool   // the server reported the lease gone
@@ -127,7 +128,7 @@ func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 	defer cancel()
 	hbCtx, stopHeartbeat := context.WithCancel(context.Background())
 	defer stopHeartbeat()
-	a := &activeJob{job: job, cancel: cancel, stopHeartbeat: stopHeartbeat, deadline: leasedAt.Add(r.vt),
+	a := &activeJob{job: job, start: time.Now(), cancel: cancel, stopHeartbeat: stopHeartbeat, deadline: leasedAt.Add(r.vt),
 		hbDone: make(chan struct{}), sent: make(chan struct{})}
 	if err != nil {
 		close(a.hbDone) // no heartbeat runs for a job that can't be decoded
@@ -139,6 +140,7 @@ func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 			defer close(a.hbDone)
 			w.heartbeat(hbCtx, a, r.vt)
 		}()
+		a.start = time.Now()
 		err = w.call(ctx, job)
 	}
 	// Claim the final call as soon as the handler returns, so a shutdown
@@ -156,9 +158,10 @@ func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 	stopHeartbeat()
 	<-a.hbDone
 	if a.lost.Load() {
+		w.report(a, OutcomeLeaseLost, err)
 		return
 	}
-	w.finish(a, err)
+	w.report(a, w.finish(a, err), err)
 }
 
 // call runs the handler for the job's kind. A missing handler or a panic
@@ -178,14 +181,13 @@ func (w *Worker) call(ctx context.Context, job *LeasedJob) (err error) {
 }
 
 // finish acks the job when err is nil and nacks it with err's message
-// otherwise.
-func (w *Worker) finish(a *activeJob, err error) {
+// otherwise. It returns how the call ended.
+func (w *Worker) finish(a *activeJob, err error) Outcome {
 	if err == nil {
-		w.send(a, "ack", func(ctx context.Context) error {
+		return w.send(a, "ack", OutcomeAcked, func(ctx context.Context) error {
 			_, err := w.client.api.Ack(ctx, &tasklanev1.AckRequest{Id: a.job.ID, LeaseToken: a.job.token})
 			return err
 		})
-		return
 	}
 	w.log.Warn("job failed", "job_id", a.job.ID, "kind", a.job.Kind, "attempt", a.job.Attempt, "err", err)
 	req := &tasklanev1.NackRequest{Id: a.job.ID, LeaseToken: a.job.token, Error: err.Error()}
@@ -193,7 +195,7 @@ func (w *Worker) finish(a *activeJob, err error) {
 	if errors.As(err, &ra) {
 		req.RetryAt = timestamppb.New(ra.at)
 	}
-	w.send(a, "nack", func(ctx context.Context) error {
+	return w.send(a, "nack", OutcomeNacked, func(ctx context.Context) error {
 		_, err := w.client.api.Nack(ctx, req)
 		return err
 	})
@@ -203,7 +205,8 @@ func (w *Worker) finish(a *activeJob, err error) {
 // the server is unreachable: a retried Ack is idempotent, and a repeated Nack
 // gets a harmless FAILED_PRECONDITION. It gives up once the lease would have
 // expired, because the token is useless then and the reaper retries the job.
-func (w *Worker) send(a *activeJob, what string, call func(context.Context) error) {
+// It returns ok when the server accepted the call.
+func (w *Worker) send(a *activeJob, what string, ok Outcome, call func(context.Context) error) Outcome {
 	for attempt := 0; ; attempt++ {
 		deadline := a.leaseDeadline()
 		ctx, cancel := context.WithTimeout(context.Background(), max(time.Until(deadline), w.finishTimeout))
@@ -211,22 +214,22 @@ func (w *Worker) send(a *activeJob, what string, call func(context.Context) erro
 		cancel()
 		switch {
 		case err == nil:
-			return
-		case status.Code(err) == codes.FailedPrecondition:
+			return ok
+		case status.Code(err) == codes.FailedPrecondition || status.Code(err) == codes.NotFound:
 			w.log.Info(what+" rejected: the lease is no longer ours", "job_id", a.job.ID, "err", err)
-			return
+			return OutcomeLeaseLost
 		case status.Code(err) == codes.Canceled:
 			// The Client was closed: no retry can get through.
 			w.log.Warn(what+" cancelled: the client is closed (the job will be retried)", "job_id", a.job.ID, "err", err)
-			return
+			return OutcomeGaveUp
 		case fatal(err):
 			w.log.Error(what+" failed", "job_id", a.job.ID, "err", err)
-			return
+			return OutcomeGaveUp
 		}
 		delay := w.retry.Delay(attempt)
 		if time.Now().Add(delay).After(deadline) {
 			w.log.Warn(what+" failed; giving up because the lease expires (the job will be retried)", "job_id", a.job.ID, "err", err)
-			return
+			return OutcomeGaveUp
 		}
 		time.Sleep(delay)
 	}

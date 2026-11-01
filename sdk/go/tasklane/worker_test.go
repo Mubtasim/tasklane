@@ -462,7 +462,7 @@ func TestSendStopsWhenTheClientIsClosed(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		w.send(a, "ack", func(context.Context) error {
+		_ = w.send(a, "ack", OutcomeAcked, func(context.Context) error {
 			calls.Add(1)
 			return status.Error(codes.Canceled, "grpc: the client connection is closing")
 		})
