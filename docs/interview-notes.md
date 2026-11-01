@@ -2,6 +2,8 @@
 
 Questions about Tasklane's design, with model answers. Grows with every milestone.
 
+From Q16 on, every answer uses the shape practiced for interviews: say how many parts the question has, then **What** (one line), **How** (numbered steps), **Numbers**, **Fails halfway** (what happens if it breaks in the middle) and **Trade-off**. Numbers come from this repo; where the repo has no measurement, the answer says so.
+
 ## Q1. A worker leases a job with a 30 s visibility timeout, and the job takes 45 s. Nothing crashes. What happens?
 
 At 30 s the lease expires. The server can't tell a slow worker from a dead one, so the reaper makes the job available again and a second worker leases it: the job now runs twice.
@@ -146,3 +148,336 @@ The loop takes every free slot (k), leases `max_jobs = k` and gets m ≤ k jobs.
 - **What it looks like:** the process is alive, logs no errors, passes health checks and makes no lease calls. Every worker has the same bug, so the fleet stops. `available` grows without bound; the jobs are never leased, so attempts never increase and **nothing reaches the DLQ**. No retry or alert path fires on its own.
 - **How you'd notice:** queue depth (`available`) rising while `leased` ≈ 0 and worker CPU is idle. That's distinctive: a real capacity problem shows `leased` at the maximum. Also, per worker, the lease call rate drops to zero and in-flight jobs sit below concurrency while work is waiting. Alert on "oldest available job age" (or depth growing with low `leased`).
 - **The test:** `TestSlotsComeBackAfterEmptyLeases` (sdk/go/tasklane/worker_test.go). With concurrency 2 against an empty fake server it waits for 3 lease calls (two empty polls), then pushes a job and expects it acked and the next lease to ask for `max_jobs = 2`. Without the give-back the loop blocks after the first empty poll, so the third lease call never happens and the test times out. A unit test with a fake server is enough; no real server is needed.
+
+
+## Q16. A worker leases a job at the same moment an operator cancels it. What happens, step by step, and why can't both win?
+
+Three parts: the two statements, the interleavings, and why exactly one wins.
+
+**What:** both are single SQL statements that need the row lock, and both re-check `state = 'available'` after getting it, so whoever locks first wins and the other sees the new state.
+
+**How:**
+1. `CancelJob` is one conditional update: `UPDATE jobs SET state = 'cancelled', finished_at = now() WHERE id = $1 AND state = 'available' RETURNING …` (`internal/pgstore/cancel.go`).
+2. `Lease` is one statement too: a CTE selects the next available rows `FOR UPDATE OF j SKIP LOCKED`, then updates them to `leased` with a new `lease_token` and `attempts + 1` (`internal/pgstore/lease.go`).
+3. **Lease locks first.** Cancel's `UPDATE` finds the row and waits for the lock. When Lease commits, Postgres re-evaluates Cancel's `WHERE` on the newest row version (EvalPlanQual under READ COMMITTED), sees `leased`, and updates nothing.
+4. Cancel matched zero rows, so it re-reads the job to say why: `leased` → `store.ErrWrongState` → `FAILED_PRECONDITION` (HTTP 409) with "job N is leased; only available jobs can be cancelled". A missing job is `NOT_FOUND`; an already `cancelled` job returns success, so a retried cancel is harmless.
+5. **Cancel locks first.** Lease's `SKIP LOCKED` skips the row and takes the next one. If Cancel has already committed, Lease's re-check sees `cancelled` and the row no longer qualifies.
+6. Either way the row changes state once. Cancel sends no `NOTIFY`: it never makes a job runnable.
+
+**Numbers:** `TestCancelRacesLease` (`internal/pgstore/cancel_test.go`) runs 50 rounds of Lease and Cancel released at the same instant on one job and asserts exactly one winner each round: either the job is leased and Cancel got `ErrWrongState`, or it is cancelled and Lease got nothing. Each statement is autocommit, so the lock is held only for one statement.
+
+**Fails halfway:**
+- Cancel commits and its reply is lost: the retry finds `cancelled` and succeeds.
+- Lease commits and its reply is lost: the job is leased to nobody. A cancel now gets 409; after the visibility timeout the reaper makes it available again, and a cancel can win then.
+- A worker dies holding the lease: same as above, the job comes back after the visibility timeout.
+
+**Trade-off:** cancel only removes work that hasn't started. Stopping a running job would need a signal to the worker (for example in the heartbeat response) and cooperative handlers; v1 doesn't do it. The gain is that cancel needs no coordination with workers at all, just the row lock.
+
+## Q17. Why does the dead-letter list page with a keyset instead of `OFFSET`?
+
+Two parts: cost per page, and correctness while the list changes.
+
+**What:** a keyset page starts right after the last row the client saw, `(finished_at, id) < (last_finished_at, last_id)`, so every page is one short index range scan.
+
+**How:**
+1. The query is `WHERE queue = $1 AND state = 'dead' AND (finished_at, id) < ($2, $3) ORDER BY finished_at DESC, id DESC LIMIT n` (newest first; the condition is left out on the first page).
+2. Migration `0002` rebuilt the partial index as `jobs_dead (queue, finished_at, id) WHERE state = 'dead'`, so the sort order, the tiebreak and the cursor condition all come from the index.
+3. The server reads one row more than the page. If it gets it, the page carries a `next_page_token`; otherwise the last page has none.
+4. The token is the last row's `(finished_at, id)`, base64-encoded and opaque to clients. A token that doesn't decode is `INVALID_ARGUMENT`.
+5. `id` is the tiebreak: many jobs can die in the same microsecond, and without it rows with equal `finished_at` could repeat or vanish between pages.
+
+**Numbers:** `page_size` defaults to 100, which is also the maximum, so a page reads at most 101 index entries wherever it is. With `OFFSET 100000` Postgres would read and throw away 100,000 entries before returning 100: the cost grows with the page number.
+
+**Fails halfway:** the list changes between requests (jobs die, are redriven or pruned).
+- Keyset: the next page still starts after the last row seen. A job that died meanwhile is newer than the cursor, so it isn't in this walk (a fresh listing shows it), but nothing repeats or is skipped.
+- `OFFSET`: a new death pushes every row down one place, so the next page repeats a row; a pruned row pulls them up, so one is skipped.
+
+**Trade-off:** no "jump to page 50" and no total count, and the cursor only works for one sort order. For an operator scrolling dead jobs, newest first, that is fine.
+
+## Q18. Redrive-all was quadratic until a review caught it. What was wrong, and how did `EXPLAIN` show it?
+
+Three parts: the bad query, why it was quadratic, and how the plan proved the fix.
+
+**What:** the redrive query ordered by `id` and folded both modes into one statement with `$2 IS NULL OR id = ANY($2)`, so neither mode could use the index it needed.
+
+**How:**
+1. Redrive runs in batches of 1,000, one transaction each: a CTE picks dead jobs `FOR UPDATE SKIP LOCKED`, the `UPDATE` makes them available with `attempts = 0`, and the same transaction sends `pg_notify`.
+2. The first version used one statement for both modes: `WHERE queue = $1 AND state = 'dead' AND ($2::bigint[] IS NULL OR id = ANY($2)) ORDER BY id LIMIT $3`.
+3. **All mode:** `jobs_dead` is ordered by `(queue, finished_at, id)`, not by `id`. To find the 1,000 lowest ids, Postgres had to read every remaining dead job of the queue and sort it, in every batch.
+4. **Ids mode:** pgx reuses prepared statements, and after a few runs Postgres can switch to a generic plan that doesn't know whether `$2` is NULL. Such a plan can't use `id = ANY($2)` on the primary key, so it scans the queue's dead jobs too.
+5. The fix (commit `090745b`) uses two statements. All mode orders by `finished_at, id`, so it reads `jobs_dead` from the front; redriven rows leave the partial index, so every batch starts at the front again. Ids mode is `WHERE id = ANY($2) AND queue = $1 AND state = 'dead'` and looks the ids up in the primary key.
+6. `EXPLAIN` on 200,000 dead jobs showed the fix: all mode as an index scan on `jobs_dead` with `Index Cond` on `queue` under the `Limit`, no sort of the whole set; ids mode as `jobs_pkey` with `Index Cond: id = ANY(...)`, also with `plan_cache_mode = force_generic_plan`. The thing to look for in the bad plan is a `Sort` over every dead row of the queue below the `Limit`.
+
+**Numbers:** 200,000 dead jobs is 200 batches. Before the fix each batch read all remaining dead jobs, about 200,000 + 199,000 + … ≈ 20 million rows in total (n²/2,000); after it each batch reads about 1,000 index entries, about 200,000 in total. The `EXPLAIN` output and the before-fix timings are in the review notes, not in the repo.
+
+**Fails halfway:** each batch commits on its own. If the server stops in the middle, the committed batches stay redriven and calling redrive-all again finishes the rest; a gone client starts no new batch.
+
+**Trade-off:** two statements instead of one is a little more code; the alternative was a plan that depends on a NULL check. Still open, parked for the M5 load test: at 200,000 rows the outer `UPDATE` joined the CTE with a Hash Join and a Seq Scan on `jobs` (the planner's cost choice), which would be a table scan per batch on a large table.
+
+## Q19. Tasklane's queue limit is "soft". What does that mean, why not a hard limit, and why does it stop refusing after 10 s of stale data?
+
+Three parts: soft vs hard, how the soft one works, and fail-open.
+
+**What:** each server checks a cached depth that is refreshed once a second, not a count taken inside the enqueue transaction, so the limit can be overshot by about one second of traffic.
+
+**How:**
+1. A goroutine on each server runs one query for all queues every second: available plus leased jobs per queue, with each queue's `max_depth`.
+2. `Enqueue` (and `EnqueueBatch`, refused whole) checks the cached value before touching the store. At or above `max_depth` it returns `RESOURCE_EXHAUSTED` (HTTP 429) with a 1 s retry hint (`Retry-After`, gRPC `RetryInfo`). The Go SDK returns `ErrQueueFull` and doesn't retry it: a full queue is a signal for the producer's owner.
+3. **A hard limit** would count inside each enqueue's transaction and need a lock (or a counter row) to stop two enqueues from both seeing room. Every enqueue on the queue would then serialize on that lock: a hot row on the hot path, the same problem as the counters table in Q14.
+4. **Fail-open:** if refreshes fail, the last good values are used for up to 10 s; after that the cache says "not full" for every queue. Refusing all enqueues on unknown data would turn a short database blip into a producer outage, and while the database is really down `Enqueue` fails with `UNAVAILABLE` anyway.
+
+**Numbers:** demo producer at 10 jobs/s against a queue with `max_depth = 50` and no workers: refusals start after about 50 jobs (README). Overshoot is at most about 1 s of traffic, about 10 jobs here. Default `max_depth` is 100,000. `TasklaneStatsStale` fires when the cached depths are over 30 s old.
+
+**Fails halfway:**
+- The refresh fails for 10 s: the server keeps refusing or admitting on 10 s old numbers; after 10 s it admits everything until a refresh works.
+- Two servers each have their own cache, refreshed at different moments, so for up to a second one may refuse while the other admits.
+- An enqueue retried with an existing idempotency key also gets 429 while the queue is full, because the check runs before the store.
+
+**Trade-off:** soft and cheap (one query per server per second, no lock on the enqueue path) against exact. For backpressure, being 1 s late is fine; the point is to stop unbounded growth, not to hit a precise number.
+
+## Q20. Why do dead jobs expire after 7 days instead of staying until someone looks?
+
+Two parts: why expire at all, and why that is safe.
+
+**What:** the pruner deletes dead jobs older than `TASKLANE_DEAD_RETENTION` (default `168h`), like messages in an SQS dead-letter queue.
+
+**How:**
+1. Every server runs the pruner every minute (`TASKLANE_PRUNE_INTERVAL`). Each pass deletes in batches of 1,000 with `FOR UPDATE SKIP LOCKED` until a batch is short, so servers don't collide and no transaction is large.
+2. Completed and cancelled jobs go after 24 h (`TASKLANE_RETENTION`, also the idempotency-key window); dead jobs after 7 days.
+3. Age is measured from `finished_at`. A redrive sets `finished_at = NULL`, so a job that dies again starts a fresh 7 days.
+4. Failures are seen long before they expire: `TasklaneDeadJobs` (`increase(tasklane_jobs_dead_total[10m]) > 0`) fires within a scrape or two of a job dying and stays firing for 10 minutes, and the dashboard shows dead jobs in the last hour.
+
+**Numbers:** 7 days of dead jobs, 1,000 rows per delete batch, one pass a minute. Payloads can be up to 256 KiB each, so a forgotten DLQ is not small.
+
+**Fails halfway:** each batch commits on its own; if a server dies mid-pass, the next pass (on any server) continues. The dead-job delete has no queue to fix the `jobs_dead` prefix, so it scans that index across queues; dead jobs are few and it runs once a minute.
+
+**Trade-off:** without expiry the table, its indexes and vacuum work grow forever with jobs nobody will redrive. With it, the evidence is gone after a week. An operator who needs longer raises the retention; exporting dead jobs before they expire is not built.
+
+## Q21. Why do you graph counters with `rate()` instead of their raw value?
+
+Two parts: what a counter's value means, and what `rate()` does with it.
+
+**What:** a counter's raw value is "events since this process started", which depends on uptime; `rate()` turns it into events per second, which is what you want to see.
+
+**How:**
+1. Counters only go up while the process runs (`tasklane_jobs_acked_total` is incremented after each committed Ack) and start again at 0 when the process restarts.
+2. `rate(x[1m])` takes the samples in the last minute and divides the increase by the time span. If a sample is lower than the one before, it assumes a restart and counts from 0, so a restart doesn't show up as a huge negative rate.
+3. The dashboard sums the per-server rates: `sum(rate(tasklane_jobs_acked_total{queue=~"$queue"}[1m]))`. `increase()` is the same idea as a total over a window: "dead in the last hour" is `sum(increase(tasklane_jobs_dead_total[1h]))`.
+
+**Numbers:** Prometheus scrapes every 5 s in the demo, so a 1 m window holds about 12 samples. `rate()` needs at least two samples in the window; a window of a few scrape intervals smooths out a missed scrape.
+
+**Fails halfway:** a server restarts mid-window: `rate()` handles the reset, but the increments between the last scrape and the crash are lost (at most 5 s of them). That's why the chaos test can't check counters against the database (rule 5): restarted servers start at 0.
+
+**Trade-off:** `rate()` averages over its window, so a 1 m window hides a 5-second spike and reacts a bit late. A shorter window is noisier.
+
+## Q22. Why is `job_id` never a metric label?
+
+Two parts: what a label costs, and where per-job data goes instead.
+
+**What:** every distinct label combination is its own time series, and `job_id` is unbounded, so it would create a new series for every job.
+
+**How:**
+1. Prometheus keeps every active series in memory and indexes it. The cost grows with the number of series, not the number of samples.
+2. `queue` is a label because operators choose queues: a handful of values. `kind` (free text from producers), `job_id` and `priority` are never labels (design §16.2).
+3. Histograms multiply it: `tasklane_queue_wait_seconds` has 16 buckets plus `+Inf`, `_sum` and `_count`, so 19 series per queue per server.
+4. Per-job questions ("what happened to job 42") go to logs, which carry `job_id`, and to traces (M4c). Metrics answer "how many, how fast".
+
+**Numbers:** at the demo's 10 jobs/s, a `job_id` label on queue wait would add 19 series per job: 864,000 jobs a day, about 16 million new series a day, each used once. With `queue` only it is 19 per queue per server.
+
+**Fails halfway:** this is a slow failure, not a crash on day one: Prometheus memory grows with each new series, queries slow down, and eventually it runs out of memory and dashboards and alerts for everything go dark with it.
+
+**Trade-off:** metrics can't tell you about one job; you pay for that with a log search. That's the right split: metrics are cheap aggregates, logs and traces hold the detail.
+
+## Q23. With two servers, why does the dashboard use `max by (queue)` for queue depth but `sum` for throughput?
+
+Two parts: what each kind of metric measures, and the right aggregation for each.
+
+**What:** depth gauges are the same database-wide number reported by every server, so you take one copy; counters count what each server did, so you add them.
+
+**How:**
+1. Each server's depth refresh queries the whole database and sets `tasklane_queue_depth{queue,state}` and `tasklane_oldest_ready_job_age_seconds`. Two servers report the same value twice.
+2. `sum` over those would double the depth with two servers and triple it with three. `max by (queue)` keeps one copy per queue; the dashboard then sums across queues: `sum(max by (queue) (tasklane_queue_depth{state="available"}))`.
+3. Counters such as `tasklane_jobs_acked_total` count the Acks that server handled. The total is `sum(rate(...))` over both servers.
+4. The alert rules follow the same rule: `max by (queue)` for `TasklaneJobsStuck`, `sum by (queue)` for the counter alerts.
+
+**Numbers:** in the two-server smoke test a plain `sum` of available showed about 13 (7 + 6: the two servers reporting the same queue a moment apart), against about 7 real jobs. "Requests per server" uses `sum by (instance)`, which is correct because it is a per-server counter.
+
+**Fails halfway:** if one server can't reach the database, its gauges keep their last values, so `max` can show a stale higher number. `tasklane_queue_stats_age_seconds` grows on that server and `TasklaneStatsStale` fires after 30 s.
+
+**Trade-off:** every server repeats the same query (one per second each) so that any one of them can be scraped alone. One exporter or one leader reporting the gauges would remove the duplicates, at the cost of one more thing to keep running.
+
+## Q24. Prometheus pulls metrics from Tasklane. Why pull instead of push?
+
+Two parts: what pull gives you, and when push is the better choice.
+
+**What:** Prometheus scrapes each server's `/metrics` on a schedule; the servers only keep current values in memory.
+
+**How:**
+1. Each server serves `/metrics` on `:9464` (`TASKLANE_METRICS_ADDR`), a port separate from the API, without an API key, so operators can keep it internal.
+2. Prometheus has the target list (`tasklane-1:9464`, `tasklane-2:9464`) and scrapes every 5 s in the demo.
+3. Because Prometheus knows which targets should exist, a failed scrape becomes `up == 0`: `TasklaneDown` and the "Servers up" panel come for free. With push, a dead server just goes quiet.
+4. A slow or down Prometheus can't slow the server: there is no send path, no buffer, no retry.
+5. Push fits short-lived jobs that may exit before a scrape (a batch job pushes to a Pushgateway), or targets Prometheus can't reach.
+
+**Numbers:** scrape interval 5 s (15 s is the usual default), retention 1 day in the demo. A missed scrape loses resolution, not data: counters are cumulative, so the next scrape has the total.
+
+**Fails halfway:** a server crashes between scrapes: the increments since the last scrape (≤ 5 s) are lost and its counters restart at 0, which `rate()` handles. A network split between Prometheus and a server shows as `up == 0` even if the server is fine.
+
+**Trade-off:** pull needs Prometheus to know and reach every target (service discovery, network access); push needs the app to handle a slow or missing collector and loses the free liveness signal.
+
+## Q25. Why does Tasklane create every queue's counters at 0 instead of when the first event happens?
+
+Two parts: what goes wrong with a series that is born at 1, and how the zero is created.
+
+**What:** a series that first appears with value 1 has no earlier sample, so `increase()` sees no increase and an alert on the first dead job never fires.
+
+**How:**
+1. A Prometheus client creates a labeled series the first time it is touched. Without help, a queue's `tasklane_jobs_dead_total{reason="nacked"}` would first appear when its first job dies, already at 1.
+2. `increase()` and `rate()` compute from differences between samples. One sample at 1 has nothing to compare against, so `increase(tasklane_jobs_dead_total[10m]) > 0` (`TasklaneDeadJobs`) stays silent for that first dead job.
+3. Each depth refresh (every second) calls `SetQueueStats`, which touches every counter for every known queue (`WithLabelValues` without `Inc`), including both `dead` reasons. The series exist at 0 before anything happens.
+4. Graphs then show 0 instead of "no data", which is also easier to read.
+
+**Numbers:** 8 per-queue counters plus 2 `dead` reasons: 10 series per queue per server, created within a second of the queue existing.
+
+**Fails halfway:** a queue created and used within the same second, before a refresh, can still have a series born at 1. A server that restarts recreates the zeros at its first refresh.
+
+**Trade-off:** a few idle series per queue (cheap, since queues are few) for alerts that see the first event.
+
+## Q26. How do you prove a job queue never loses or double-completes a job?
+
+Three parts: what is recorded, the five rules, and why one rule is only a lower bound.
+
+**What:** run real jobs through two servers while things break, record what every producer and worker saw (a ledger), then check five rules against the ledger and the final `jobs` table (`test/invariants`).
+
+**How:**
+1. **Record.** The producer records each idempotency key with the job ID only after the server confirms the enqueue. Each worker records every run through `WorkerOptions.OnResult`: job, attempt, start, end, outcome (`acked`, `nacked`, `lease_lost`, `gave_up`) and the handler error.
+2. **Rule 1, nothing lost or stuck:** every confirmed job still exists and every job ends `completed` or `dead`.
+3. **Rule 2, no duplicate jobs:** one job per idempotency key, even when an enqueue was retried after a server died.
+4. **Rule 3, fencing works:** two runs never hold the same (job, attempt); an accepted Ack is always from the last attempt; a completed job has at most one accepted Ack; a dead job has none.
+5. **Rule 4, repeats are justified:** attempt k+1 starts no earlier than attempt k's start plus the visibility timeout, minus a tolerance, unless attempt k nacked or its handler failed.
+6. **Rule 5, counters match the database** (in-process test only): summed over both servers, acked equals completed and dead equals dead.
+7. **Why rule 4 is a lower bound:** the worker doesn't know when its lease really ends. It lasts at least one visibility timeout from the lease time, and heartbeats can extend it. So the check only catches a repeat that started before even the shortest possible lease could end; it can't prove a repeat was justified. It errs on the side of no false alarms.
+
+**Numbers:** the in-process test runs 10 workers × 1,000 jobs on every PR (about 8 s) and 50 × 10,000 with `-invariant.full` (about 1m17s, 380 MB); visibility timeout 2 s, tolerance 500 ms. The chaos test ran 1,889 and 1,654 jobs through 12 faults each (tolerance 1 s). Rule 5 caught a real bug (Q32).
+
+**Fails halfway:** the ledger itself must survive crashes. Each record is one `write` on an `O_APPEND` file, so a SIGKILL loses at most the line being written; a restarted worker closes a torn last line first, and the reader drops cut-off lines. The rules are written to tolerate what a crash can legitimately cause: a completed job may have no `acked` run (the worker died after the server committed), and `gave_up` runs are never checked.
+
+**Trade-off:** the ledger and the database each show half the story. The table alone can't show two accepted Acks (the job just says `completed`); the ledger alone can't show a lost job. Checking both catches both, but the rules need careful exemptions, and every exemption (like the freeze window in Q27) is a place a real bug could hide.
+
+## Q27. What is a zombie worker, and how does Tasklane stop it from corrupting a job?
+
+Three parts: what a zombie is, how the lease and token fence it off, and what fencing can't undo.
+
+**What:** a worker that stalls past its lease (a long pause, GC, a network split), comes back and acts as if it still owns the job.
+
+**How:**
+1. A lease lasts the visibility timeout; SDK workers heartbeat every VT/3 to extend it. A frozen process sends no heartbeats.
+2. The reaper (every 5 s; 2 s in the demo) finds `state = 'leased' AND lease_expires_at < now()` with `SKIP LOCKED` and makes the job available again after a backoff, or `dead` if that was the last attempt.
+3. The next Lease gives it a new random `lease_token` and `attempts + 1`.
+4. The zombie wakes and Acks with its old token. The Ack is `UPDATE … WHERE id = $1 AND state = 'leased' AND lease_token = $2`, which matches nothing, so the server returns `FAILED_PRECONDITION` (409). The SDK records `lease_lost` and doesn't retry.
+5. Only the new holder's Ack counts. If nobody re-leased the job yet, the zombie's token is still current and its Ack succeeds, which is correct: it did the work (Q9).
+6. What fencing can't undo: the zombie's handler already ran. If it sent an email or charged a card, that happened. Handlers must be idempotent, or pass the lease token downstream as a fencing token so other storage can reject a stale holder too.
+
+**Numbers:** the in-process test runs two raw-API zombies (SDK workers can't be zombies: heartbeats keep slow handlers' leases), each leasing one job, sleeping VT + 500 ms = 2.5 s with no heartbeats, then acking; a default run records 5–6 `lease_lost`, the full run 52. The chaos test pauses a worker for 15 s against a 10 s visibility timeout: 16 `lease_lost` in the seed-1 run.
+
+**Fails halfway:**
+- The zombie's Ack is rejected but its side effect is done: the job runs twice; that's at-least-once.
+- A frozen worker stamps its run's start after the unpause, so the checker can't tell when its lease began. The first chaos run flagged three correct jobs that way; rule 4 now skips runs started in a freeze window (a known weakness: a real violation there would be missed).
+
+**Trade-off:** a shorter visibility timeout finds zombies sooner but costs more heartbeat writes and risks expiring slow but healthy jobs whose heartbeats are delayed.
+
+## Q28. Why does gRPC need an L7 load balancer? And why a proxy rather than client-side balancing?
+
+Three parts: why L4 fails for gRPC, what Envoy does, and proxy vs client-side.
+
+**What:** gRPC sends all of a client's calls over one long-lived HTTP/2 connection, so balancing connections (L4) pins each client to one server; balancing requests (L7) spreads them.
+
+**How:**
+1. An L4 balancer picks a server per TCP connection. Each worker opens one connection and multiplexes every Lease, Ack and Heartbeat on it, so with 3 workers and 2 servers one server gets two workers' traffic, and a restarted server gets nothing until clients reconnect.
+2. Envoy terminates HTTP/2 and picks a server per request with `least_request`. Long-poll Leases hold a request for up to 30 s, so counting open requests matters more than taking turns.
+3. Envoy health-checks `/readyz` every 2 s (out after 2 failures), ejects a server after 3 gateway errors in a row for 10 s, and retries only requests that never reached a server.
+4. **Client-side balancing** (gRPC's `round_robin` over DNS) has no extra hop, but every SDK would need it (Go now, TS and C# planned), each with its own health checking, and HTTP/JSON clients like `curl` get nothing.
+5. **A proxy** gives every client, in any language, the same behavior from one config file, and owns the host ports, so clients see one address.
+
+**Numbers:** with both servers up, about 16 and 17 requests/s each; after `docker compose kill tasklane-1`, `tasklane-2` took about 33 requests/s and the acked rate held at about 9.3–9.7 jobs/s. Envoy uses about 17 MiB.
+
+**Fails halfway:** a server is killed mid-request. New calls failed fast with `Unavailable` for about 14–18 s, most likely until two failed health checks and the 5 s DNS re-resolution dropped the dead host (not proven; keepalive and a `previous_hosts` retry rule didn't shorten it). The SDK retries. A Lease that reached the dead server isn't retried by the proxy, because it may have leased jobs; those wait out their visibility timeout.
+
+**Trade-off:** the proxy is one more hop and one more component that must stay up (in production you'd run several). Client-side balancing removes the hop but multiplies the work by the number of SDKs. A look-aside balancer (xDS) is the middle ground; not needed here.
+
+## Q29. Your proxy has a 15 s timeout and your long-poll waits 30 s. What happens?
+
+Three parts: what breaks, what it costs, and the rule that prevents it.
+
+**What:** the proxy cuts every idle long-poll at 15 s and returns an error, so an idle system produces a steady stream of failed Leases.
+
+**How:**
+1. The SDK sends Lease with a 20 s wait; the server allows up to 30 s (`MaxWait`). Envoy's default route timeout is 15 s.
+2. On an empty queue, at 15 s Envoy gives up, answers the client with a timeout (its 504, which Envoy turns into gRPC `Unavailable`) and resets the stream to the server. Tasklane never ran with the 15 s default, so this is from Envoy's documented behavior, not a measurement.
+3. The server sees the request context cancelled and ends the wait. It checks the context after every wake-up, so a cancelled Lease isn't handed jobs.
+4. The SDK treats `Unavailable` as transient: it backs off (full jitter, 1 s base) and long-polls again. A job that arrives meanwhile waits for the backoff.
+5. The race: a job arrives at about 15 s, the server leases it (the store write runs to completion even if the client goes away, Q32) just as Envoy cuts the stream. The response is dropped, and the job sits leased to nobody until its visibility timeout (30 s default) expires, with one attempt burned.
+6. Envoy doesn't retry a timeout here (only `connect-failure`, `refused-stream`, `reset-before-request`), which is right: a retried Lease could lease a second batch.
+
+**Numbers:** Tasklane sets the route timeout to 35 s: above `MaxWait` (30 s), which is above the SDK's 20 s wait (whose own call deadline is 30 s). With 15 s, every idle worker would log one failed Lease every ~15 s, and `Unavailable` counts toward `TasklaneErrors` (over 5% of RPCs for 5 minutes).
+
+**Fails halfway:** that is the race in step 5: the commit succeeded, the delivery didn't, the same shape as the stranded-lease bug in Q10. Recovery is the visibility timeout.
+
+**Trade-off:** the rule is that each layer's timeout must be longer than the one inside it (client deadline > proxy timeout > server's maximum wait). The cost of a long proxy timeout is that a really stuck request holds a proxy slot for 35 s; the server's own 30 s cap bounds that.
+
+## Q30. Why doesn't a third or fifth server copy add throughput?
+
+Three parts: where the work really happens, what each copy adds, and what would scale.
+
+**What:** every server is a thin layer over one shared Postgres; the work per job (enqueue, lease, ack: three write transactions) lands on the same database whichever server handles it.
+
+**How:**
+1. Servers are almost free (about 11 MiB each). The bottleneck is the database: each job is a few writes, each with WAL and index updates, on one primary.
+2. Each copy adds background work: a reaper (every 5 s), a pruner (every minute) and a depth refresh (every second), all repeating the same queries. Two depth refreshes are two queries a second; five are five.
+3. Each copy adds connections: its own pool (pgx's default, the larger of 4 and the CPU count) plus one LISTEN connection. Postgres connections are processes, and `max_connections` defaults to 100.
+4. Each `NOTIFY` goes to every server's listener, and each wakes its waiting Leases, so one enqueue on an idle queue costs one query per waiting Lease on every server.
+5. Fixes, in order: batching (`EnqueueBatch` exists, a Lease already takes k jobs in one transaction; Ack batching doesn't); one leader for the background loops (for example a Postgres advisory lock); PgBouncer to cap connections (the LISTEN connection needs a session, so it would bypass transaction pooling); then splitting queues across databases, or the Raft store planned for Phase 2.
+
+**Numbers:** no measurement with more than two servers yet: the M5 load test compares two against one. One relevant number: the depth refresh's available count ran as a Seq Scan taking 443 ms on a fresh, unanalyzed 12,000-job table (parked for M5); repeated by five servers every second, that would be over 2 s of database time per second.
+
+**Fails halfway:** adding copies during an overload makes it worse: more connections and more repeated loops on the database that is already the bottleneck.
+
+**Trade-off:** more copies still buy availability (one can die, as the demo shows) and rolling deploys; they just don't buy throughput. Scaling the database means giving up a single source of truth or adding a consensus layer.
+
+## Q31. A backlog of 2,000 jobs, arrivals at 10 jobs/s, capacity 14.7 jobs/s. How long until the backlog is gone?
+
+Two parts: the arithmetic, and what makes it slower in practice.
+
+**What:** only the spare capacity drains the backlog: 14.7 − 10 = 4.7 jobs/s, so 2,000 ÷ 4.7 ≈ 425 s, about 7 minutes.
+
+**How:**
+1. New arrivals take 10 jobs/s of the capacity just to stand still.
+2. The remaining 4.7 jobs/s eats into the backlog: 2,000 ÷ 4.7 ≈ 425 s.
+3. A job arriving at the start waits behind the whole backlog. By Little's law (wait = jobs ahead ÷ throughput) that is 2,000 ÷ 14.7 ≈ 136 s at first, falling to near zero as the backlog drains.
+4. Doubling the workers would help a lot here: spare capacity is what matters, not total capacity.
+
+**Numbers:** the demo runs 3 workers × 5 slots, about 15 jobs/s of capacity (cheatsheet), against 10 jobs/s arriving. The numbers in the question come from a demo run on 2026-11-01 that isn't recorded in the repo. Retries add work: the chaos run had 2,244 runs for 1,889 jobs, about 1.19 runs per job, so if capacity is measured in runs, arrivals are closer to 11.9 runs/s and the spare is about 2.8/s: about 12 minutes, not 7.
+
+**Fails halfway:** if a worker dies during the drain, capacity drops to about 10 jobs/s and the backlog stops shrinking; at 4–5 jobs/s (one worker) it grows by about 6 jobs/s. If the backlog reaches `max_depth`, enqueues are refused (Q19).
+
+**Trade-off:** keeping spare capacity costs idle workers most of the time; without it, any burst turns into a long tail. The usual target is enough headroom to drain a typical burst within the latency the producers can accept.
+
+## Q32. Your invariant test failed once in 60 runs: the counters didn't match the database. What was wrong, and how did you fix it?
+
+Three parts: the symptom, the cause, and the fix with its edges.
+
+**What:** when a client disconnected during an Ack, Postgres committed the Ack, but the server saw `context canceled`, skipped its metrics and returned an error, so `tasklane_jobs_acked_total` ended one below the completed count.
+
+**How:**
+1. Rule 5 failed about once in 60 default runs: 966 accepted Acks plus 1 `gave_up` run against 967 completed jobs, and the acked counter one short.
+2. The test cuts some workers' connections mid-run. gRPC then cancels the request context of their in-flight calls.
+3. The Ack is one autocommit `UPDATE`. Postgres can commit it while pgx, seeing the context cancelled, stops waiting for the reply and returns `context canceled`. The handler took that as a failure: no `metrics.Acked`, an error to a client that was gone anyway, and the row `completed`.
+4. A throwaway test proved it: cancelling `pgstore.Ack`'s context 0–400 µs in left the row completed with `context canceled` returned in 1,669 of 2,000 tries. Nack to `dead` had the same exposure.
+5. The fix, `detach` (`internal/api/server.go`): every store write reached from an RPC runs on `context.WithoutCancel(ctx)` with a 5 s `storeWriteTimeout`. A write that starts also finishes, and its bookkeeping runs, whatever the client does.
+6. The Lease long-poll wait stays cancellable; only each lease attempt is detached. After every wake-up the server checks the client's context again, because `select` picks at random when a wake-up and a cancel are ready together, and a gone client must not be handed jobs.
+
+**Numbers:** 5 s is far above a healthy write (milliseconds) and below the 10 s graceful-stop budget, so a detached write can't hold a drain past it. Verified with handler tests that call every write with an already-cancelled context (all failed before the fix), then 180 clean invariant runs (30 with `-race`, 150 without). The old code would pass 180 in a row only about 5% of the time.
+
+**Fails halfway:** remaining edges. A write that commits exactly at the 5 s timeout can still be reported as `DeadlineExceeded`. A Lease whose client is gone before its first attempt still leases; the jobs are counted but wait out their visibility timeout. A client deadline shorter than the write no longer cuts the write short.
+
+**Trade-off:** the server now finishes work for clients that left, up to 5 s per call, in exchange for counters and responses that always match what was committed. The general lesson: a cancelled context means "the caller stopped waiting", not "the database did nothing". Any write whose outcome you record must outlive the request that started it, or check the database afterwards.
