@@ -159,17 +159,29 @@ func TestConcurrentReapersReapEachJobOnce(t *testing.T) {
 
 	start := make(chan struct{})
 	counts := make([]int, 2)
+	errs := make([]error, 2)
 	var wg sync.WaitGroup
 	for i := range 2 {
 		wg.Go(func() {
 			<-start
-			reaped, err := s.ReapExpired(ctx, 100)
-			require.NoError(t, err)
-			counts[i] = len(reaped)
+			// A small limit makes each reaper take several batches, so the two overlap.
+			for {
+				reaped, err := s.ReapExpired(ctx, 5)
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				if len(reaped) == 0 {
+					return
+				}
+				counts[i] += len(reaped)
+			}
 		})
 	}
 	close(start)
 	wg.Wait()
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
 	require.Equal(t, 20, counts[0]+counts[1], "SKIP LOCKED splits the work; no job is reaped twice")
 	for _, j := range jobs {
 		got, err := s.GetJob(ctx, j.ID)
