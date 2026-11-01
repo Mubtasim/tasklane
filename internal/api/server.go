@@ -25,10 +25,13 @@ const (
 	DefaultPollInterval = time.Second
 	// storeWriteTimeout bounds a store write that runs detached from its
 	// client (see detach). A write takes milliseconds when the database is
-	// healthy, so this only matters when it is stuck. It is kept under the
-	// server's 10 s graceful-stop budget, so a detached write never holds a
-	// drain past it, and well under the 30 s default visibility timeout, so
-	// a lease taken by a slow write is still worth handing over.
+	// healthy, so this only matters when it is stuck. A write in flight when
+	// the drain starts finishes inside the server's 10 s graceful-stop
+	// budget; one started in its last seconds can delay exit by at most 5 s,
+	// because Stop at the end of the budget doesn't wait for handlers and
+	// the deferred pool.Close does. It still completes and is counted. The
+	// timeout is well under the 30 s default visibility timeout, so a lease
+	// taken by a slow write is still worth handing over.
 	storeWriteTimeout = 5 * time.Second
 )
 
@@ -39,7 +42,9 @@ const (
 // skip its metrics, and the counters would drift from the database. On a
 // detached context, a write that starts also finishes, and its bookkeeping
 // runs, whatever the client does. Values (such as the request's metadata)
-// are kept.
+// are kept. A commit landing exactly at the timeout can still be reported as
+// DeadlineExceeded; that is accepted, since it only happens when the
+// database is stuck.
 func detach(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), storeWriteTimeout)
 }

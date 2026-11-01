@@ -45,7 +45,7 @@ type Result struct {
 	Outcome Outcome
 	Start   time.Time // the job was picked up, just before the handler started
 	End     time.Time // the outcome was known
-	Err     error     // the handler's error, if any
+	Err     error     // the handler's error, or the shutdown reason when the worker cancelled and nacked a still-running job at shutdown
 }
 
 // report calls OnResult, recovering a panic so a faulty observer can't stop

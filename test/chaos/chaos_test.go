@@ -131,7 +131,8 @@ func TestChaos(t *testing.T) {
 	waitDrained(t, ctx, pool, seed, 2*time.Minute)
 
 	// A worker writes a run when its Result is final; stopping the workers
-	// cleanly makes sure every run is in the ledger before it is read.
+	// cleanly records nearly all runs before the ledger is read. A missing
+	// record is harmless to the checker: it only weakens a check.
 	if err := s.stop("worker-1", "worker-2", "worker-3"); err != nil {
 		t.Fatal(err)
 	}

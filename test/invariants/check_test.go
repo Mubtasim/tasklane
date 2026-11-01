@@ -1,6 +1,7 @@
 package invariants
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -211,4 +212,12 @@ func TestReportListsTheJobsRuns(t *testing.T) {
 	require.Contains(t, out, "rule 3")
 	require.Contains(t, out, "job 1")
 	require.Contains(t, out, "attempt 1")
+}
+
+func TestReportListsRunsInAttemptOrder(t *testing.T) {
+	// the ledger order is by worker file, so attempt 2 can come first.
+	runs := []ledger.Run{run(1, 2, 10*time.Second, "acked"), run(1, 1, 0, "lease_lost")}
+	out := Report([]Violation{{Rule: 3, JobID: 1, Msg: "x"}}, runs, 10)
+	require.Less(t, strings.Index(out, "attempt 1"), strings.Index(out, "attempt 2"))
+	require.Equal(t, 2, runs[0].Attempt, "the caller's slice must not be reordered")
 }

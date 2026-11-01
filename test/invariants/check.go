@@ -190,6 +190,24 @@ func Check(cfg Config, enqueued []ledger.Enqueued, runs []ledger.Run, jobs []Job
 	return vs
 }
 
+// jobRuns returns a copy of the job's runs in attempt order (ties by start),
+// leaving the caller's slice as it was.
+func jobRuns(runs []ledger.Run, id int64) []ledger.Run {
+	var out []ledger.Run
+	for _, r := range runs {
+		if r.JobID == id {
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].Attempt != out[b].Attempt {
+			return out[a].Attempt < out[b].Attempt
+		}
+		return out[a].Start.Before(out[b].Start)
+	})
+	return out
+}
+
 // Report formats up to max violations with every run of each job involved.
 func Report(vs []Violation, runs []ledger.Run, max int) string {
 	var b strings.Builder
@@ -200,11 +218,9 @@ func Report(vs []Violation, runs []ledger.Run, max int) string {
 			break
 		}
 		fmt.Fprintf(&b, "%s\n", v)
-		for _, r := range runs {
-			if r.JobID == v.JobID {
-				fmt.Fprintf(&b, "    attempt %d by %s: %s, %s → %s %s\n", r.Attempt, r.Worker, r.Outcome,
-					r.Start.Format("15:04:05.000"), r.End.Format("15:04:05.000"), r.Err)
-			}
+		for _, r := range jobRuns(runs, v.JobID) {
+			fmt.Fprintf(&b, "    attempt %d by %s: %s, %s → %s %s\n", r.Attempt, r.Worker, r.Outcome,
+				r.Start.Format("15:04:05.000"), r.End.Format("15:04:05.000"), r.Err)
 		}
 	}
 	return b.String()

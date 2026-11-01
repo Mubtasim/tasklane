@@ -54,7 +54,10 @@ func main() {
 			log.Error("open ledger", "err", err)
 			os.Exit(1)
 		}
-		defer led.Close()
+		// The ledger file is deliberately never closed: OnResult can fire
+		// after Run returns, for a job whose Ack was still in flight, and a
+		// late Append to a closed file would fail loudly. Each record is
+		// written whole, and the OS closes the file when the process exits.
 		opts.OnResult = func(r tasklane.Result) {
 			if err := led.Append(ledger.RunFromResult(name, r)); err != nil {
 				log.Error("ledger", "err", err)
