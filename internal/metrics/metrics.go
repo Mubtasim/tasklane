@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"path"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -37,7 +38,7 @@ type Metrics struct {
 	enqueued, leased, acked, nacked, cancelled, redriven, reaped, refused *prometheus.CounterVec
 	dead, pruned                                                          *prometheus.CounterVec
 	rpc, wait                                                             *prometheus.HistogramVec
-	depth, oldest                                                         *prometheus.GaugeVec
+	stats                                                                 *queueStats
 
 	start   time.Time
 	statsAt atomic.Int64 // UnixNano of the last SetQueueStats; 0 before the first
@@ -69,13 +70,8 @@ func New() *Metrics {
 	m.wait = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "tasklane_queue_wait_seconds", Help: "Time from a job becoming ready (run_at) to its lease.", Buckets: waitBuckets,
 	}, []string{"queue"})
-	m.depth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "tasklane_queue_depth", Help: "Jobs per queue and state; available includes delayed jobs.",
-	}, []string{"queue", "state"})
-	m.oldest = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "tasklane_oldest_ready_job_age_seconds", Help: "How long the oldest ready job has waited; 0 if none or paused.",
-	}, []string{"queue"})
-	m.reg.MustRegister(m.rpc, m.wait, m.depth, m.oldest,
+	m.stats = newQueueStats()
+	m.reg.MustRegister(m.rpc, m.wait, m.stats,
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Name: "tasklane_queue_stats_age_seconds", Help: "Seconds since the queue gauges were last refreshed.",
 		}, m.statsAge),
@@ -187,20 +183,18 @@ func (m *Metrics) EnqueueRefused(queue string) {
 	}
 }
 
-// SetQueueStats replaces the queue gauges with one refresh's counts, so a
-// deleted queue's series disappear, and creates every known queue's counter
+// SetQueueStats replaces the queue gauges with one refresh's counts in a
+// single swap, so a deleted queue's series disappear and a scrape never sees
+// a mix, and creates every known queue's counter
 // series at 0: graphs then show 0 instead of no data, and increase() sees a
 // queue's first event (a series born at 1 has no increase).
 func (m *Metrics) SetQueueStats(depths []store.QueueDepth) {
 	if m == nil {
 		return
 	}
-	m.depth.Reset()
-	m.oldest.Reset()
+	snap := slices.Clone(depths)
+	m.stats.snap.Store(&snap)
 	for _, d := range depths {
-		m.depth.WithLabelValues(d.Queue, string(store.StateAvailable)).Set(float64(d.Available))
-		m.depth.WithLabelValues(d.Queue, string(store.StateLeased)).Set(float64(d.Leased))
-		m.oldest.WithLabelValues(d.Queue).Set(d.OldestReady.Seconds())
 		for _, c := range []*prometheus.CounterVec{m.enqueued, m.leased, m.acked, m.nacked, m.reaped, m.cancelled, m.redriven, m.refused} {
 			c.WithLabelValues(d.Queue)
 		}

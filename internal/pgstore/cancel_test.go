@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mubtasim/tasklane/internal/backoff"
 	"github.com/mubtasim/tasklane/internal/store"
 )
 
@@ -136,4 +137,19 @@ func TestCancelRacesLease(t *testing.T) {
 			require.Equal(t, store.StateCancelled, got.State, "round %d", round)
 		}
 	}
+}
+
+func TestCancelDuringRetryBackoff(t *testing.T) {
+	// A one-hour backoff keeps the nacked job waiting (available, run_at in the future).
+	s := newStoreWithBackoff(t, backoff.Policy{Base: time.Hour, Cap: time.Hour, Rand: func() float64 { return 1 }})
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	job := mustLeaseOne(t, s, "emails", time.Minute)
+	require.NoError(t, nackErr(s, ctx, id, job.LeaseToken, "boom", nil))
+
+	got, cancelled, err := s.CancelJob(ctx, id)
+	require.NoError(t, err)
+	require.True(t, cancelled)
+	require.Equal(t, store.StateCancelled, got.State)
 }

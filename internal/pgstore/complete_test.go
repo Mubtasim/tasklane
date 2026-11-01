@@ -261,3 +261,16 @@ func TestNackReportsDead(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrLeaseLost)
 	require.Equal(t, store.NackResult{}, res, "an error returns the zero result")
 }
+
+func TestHeartbeatWithZeroTTLUsesTheQueueTimeout(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails", VisibilityTimeout: time.Minute})
+	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	job := mustLeaseOne(t, s, "emails", 50*time.Millisecond)
+
+	before := time.Now()
+	expires, err := s.Heartbeat(ctx, id, job.LeaseToken, 0)
+	require.NoError(t, err)
+	require.WithinDuration(t, before.Add(time.Minute), expires, 5*time.Second)
+}
