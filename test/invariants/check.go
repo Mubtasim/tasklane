@@ -39,15 +39,15 @@ type Freeze struct {
 	From, To time.Time
 }
 
-// freezeSlack is how long after a freeze ends a worker can still be
-// catching up on Lease responses that arrived before or during it.
-const freezeSlack = 2 * time.Second
-
 // stampedAfterFreeze reports whether r's start may have been stamped late
-// because its worker was frozen between the lease and the stamp.
+// because its worker was frozen between the lease and the stamp. After the
+// unfreeze the worker can take a while to reach a buffered Lease response
+// (its slots may be busy), so any start up to one visibility timeout after
+// the freeze ends counts: a lease taken before the freeze has expired by
+// then, and a later start can only come from a lease taken after it.
 func (c Config) stampedAfterFreeze(r ledger.Run) bool {
 	for _, f := range c.Frozen {
-		if f.Worker == r.Worker && !r.Start.Before(f.From) && !r.Start.After(f.To.Add(freezeSlack)) {
+		if f.Worker == r.Worker && !r.Start.Before(f.From) && !r.Start.After(f.To.Add(c.VisibilityTimeout)) {
 			return true
 		}
 	}

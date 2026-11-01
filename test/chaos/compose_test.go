@@ -7,22 +7,19 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"testing"
 )
 
 // stack drives the demo stack with the chaos override through docker
 // compose. Every command is scoped to one project name, so the test never
 // touches other containers on the machine.
 type stack struct {
-	t       *testing.T
 	project string
 	files   []string
 	env     []string
 }
 
-func newStack(t *testing.T, ledgerDir string) *stack {
+func newStack(ledgerDir string) *stack {
 	return &stack{
-		t:       t,
 		project: "tasklane-chaos",
 		files:   []string{"../../deploy/docker-compose.yml", "../../deploy/chaos.override.yml"},
 		env:     append(os.Environ(), "CHAOS_LEDGER_DIR="+ledgerDir),

@@ -181,6 +181,23 @@ func TestRule4SkipsAStartStampedLateByAFreeze(t *testing.T) {
 	onlyViolation(t, Check(frozen, enq, runs, jobs), 4, "before its lease could expire")
 }
 
+func TestRule4FreezeExemptionLastsOneVisibilityTimeout(t *testing.T) {
+	// With a 10 s visibility timeout, a start stamped up to 10 s after the
+	// unfreeze may still come from a lease taken before the freeze; one
+	// stamped later cannot, so it is checked.
+	cfg := Config{VisibilityTimeout: 10 * time.Second, Tolerance: 500 * time.Millisecond,
+		Frozen: []Freeze{{Worker: "frozen", From: t0, To: t0.Add(15 * time.Second)}}}
+	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
+	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 2}}
+	pair := func(firstStart time.Duration) []ledger.Run {
+		first := run(1, 1, firstStart, "lease_lost")
+		first.Worker = "frozen"
+		return []ledger.Run{first, run(1, 2, firstStart+time.Second, "acked")}
+	}
+	require.Empty(t, Check(cfg, enq, pair(20*time.Second), jobs))                                     // To + 5 s
+	onlyViolation(t, Check(cfg, enq, pair(26*time.Second), jobs), 4, "before its lease could expire") // To + VT + 1 s
+}
+
 func TestRule4SkipsMissingAttempts(t *testing.T) {
 	// attempt 1's worker was killed: no record. Nothing to compare.
 	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}

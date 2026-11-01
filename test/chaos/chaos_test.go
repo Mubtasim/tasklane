@@ -59,11 +59,22 @@ func TestChaos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Registered first so it runs last, after the output is saved; it also
+	// covers a failure before the stack starts.
+	keepDir := *keep
+	t.Cleanup(func() {
+		if keepDir {
+			return
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			t.Logf("removing %s: %v", dir, err)
+		}
+	})
 	// The containers run as uid 65532 and write their ledgers here.
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	s := newStack(t, dir)
+	s := newStack(dir)
 
 	// A stack left behind by an interrupted run would hold the ports; this
 	// only removes containers of the tasklane-chaos project.
@@ -85,7 +96,11 @@ func TestChaos(t *testing.T) {
 			t.Errorf("down: %v", err)
 		}
 	})
-	t.Cleanup(func() { saveOutput(t, s, dir, seed) })
+	t.Cleanup(func() {
+		if saveOutput(t, s, dir, seed) {
+			keepDir = true
+		}
+	})
 
 	t.Log("building and starting the stack")
 	if err := s.up(); err != nil {
@@ -140,10 +155,9 @@ func TestChaos(t *testing.T) {
 	// the server's lease time a little; the clocks themselves are the host's.
 	// The pause windows tell rule 4 which recorded starts may be late.
 	cfg := invariants.Config{VisibilityTimeout: vt, Tolerance: time.Second, Frozen: frozen}
-	if vs := invariants.Check(cfg, enqueued, runs, jobs); len(vs) > 0 {
-		t.Fatalf("seed %d\n%s", seed, invariants.Report(vs, runs, 20))
-	}
+	vs := invariants.Check(cfg, enqueued, runs, jobs)
 
+	// The summary comes first, so a failed run shows what it went through.
 	outcomes := map[string]int{}
 	for _, r := range runs {
 		outcomes[r.Outcome]++
@@ -155,6 +169,9 @@ func TestChaos(t *testing.T) {
 	t.Logf("summary: seed %d, faults (%s), %d enqueued, %d jobs, %d completed, %d dead, %d runs (%s), %d lease_lost, %v",
 		seed, formatCounts(faults), len(enqueued), len(jobs), states["completed"], states["dead"],
 		len(runs), formatCounts(outcomes), outcomes["lease_lost"], time.Since(began).Round(time.Second))
+	if len(vs) > 0 {
+		t.Fatalf("seed %d\n%s", seed, invariants.Report(vs, runs, 20))
+	}
 	if faults["pauseWorker"] > 0 && outcomes["lease_lost"] == 0 {
 		// The reaper and the unpause race: the frozen worker's jobs may have
 		// been reaped and finished elsewhere, or its leases may have just
@@ -272,8 +289,9 @@ func waitDrained(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seed int
 
 // saveOutput keeps what is needed to investigate a failure: the compose
 // logs next to the ledgers, either in the temp directory (-chaos.keep) or
-// copied to test/chaos/out/, which CI uploads.
-func saveOutput(t *testing.T, s *stack, dir string, seed int64) {
+// copied to test/chaos/out/, which CI uploads. It reports whether dir must
+// be kept: with -chaos.keep, or when the copy failed.
+func saveOutput(t *testing.T, s *stack, dir string, seed int64) bool {
 	if t.Failed() {
 		logPath := filepath.Join(dir, "compose.log")
 		if err := s.logs(logPath); err != nil {
@@ -282,19 +300,17 @@ func saveOutput(t *testing.T, s *stack, dir string, seed int64) {
 	}
 	if *keep {
 		t.Logf("ledgers and logs kept in %s", dir)
-		return
+		return true
 	}
 	if t.Failed() {
 		out := filepath.Join("out", fmt.Sprintf("%s-seed-%d", time.Now().Format("20060102-150405"), seed))
 		if err := copyDir(dir, out); err != nil {
 			t.Logf("copying the output: %v (left in %s)", err, dir)
-			return
+			return true
 		}
 		t.Logf("ledgers and logs saved in test/chaos/%s", out)
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		t.Logf("removing %s: %v", dir, err)
-	}
+	return false
 }
 
 func copyDir(src, dst string) error {
