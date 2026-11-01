@@ -76,7 +76,7 @@ Delivery is at-least-once: a job can run twice (for example after a worker crash
 
 ## Demo
 
-One command starts PostgreSQL, the server, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus and Grafana. It needs Docker and about 600 MB of RAM.
+One command starts PostgreSQL, two servers behind Envoy, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus and Grafana. It needs Docker and about 700 MB of RAM. Envoy owns the host ports 7070 and 8080 and balances each request across the two servers, so every client sees one address.
 
 The main way to watch is the Grafana dashboard at http://localhost:3000 (see [Monitoring](#monitoring)). `tasklane-watch` is a lighter alternative in the terminal.
 
@@ -140,11 +140,14 @@ The screenshot shows "Dead (last hour)" in red because the demo produces poison 
 - **Top row:** throughput, available and leased jobs, jobs that died in the last hour, the oldest ready job's wait, and refused enqueues.
 - **Jobs per second by outcome** and **queue depth by state:** the flow through the queue.
 - **Queue wait** (ready to leased, p50/p99), **RPC latency** and **RPC errors by code.**
-- **DB pool, goroutines and memory** for the server itself.
+- **DB pool, goroutines and memory** for the servers.
+- **Servers up** (red below 2) and **Requests per server:** whether both servers are alive and how Envoy splits the traffic.
 
 Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill worker-1`. The acked rate holds at about 9.7 jobs/s, because the two other workers have spare capacity. Available jobs climb to about 30 and queue wait p99 to about 5 s while they catch up. Once the demo's 15 s visibility timeout passes, about 4 jobs (the killed worker's leases) are reaped and returned to the queue. `docker compose -f deploy/docker-compose.yml start worker-1` brings everything back to normal. Throughput only drops when the remaining workers can't keep up. Run `docker compose -f deploy/docker-compose.yml stop worker-2 worker-3`: one worker (5 slots) handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until you `start` them again.
 
-Example alert rules are in `deploy/prometheus/alerts.yml` (server down, jobs stuck, dead jobs, high reap rate, queue full, RPC errors); see them at http://localhost:9090/alerts. The demo's poison jobs keep `TasklaneDeadJobs` firing, as they should. With several server copies, aggregate the queue gauges with `max by (queue)` (every server reports the same database-wide numbers) and counters with `sum`. All metrics are listed in [design §16.2](docs/design.md#162-metrics).
+Try killing a server: `docker compose -f deploy/docker-compose.yml kill tasklane-1`. "Servers up" drops to 1 and "Requests per server" moves to `tasklane-2`, which went from about 11 to about 16 requests/s while `tasklane-1` fell away. Envoy needs a few seconds to notice: the workers and the producer logged 9 failed calls (Unavailable or DeadlineExceeded) in the 15 s after the kill, none after that. The acked rate was back at about 10 jobs/s within a minute. `docker compose -f deploy/docker-compose.yml start tasklane-1` and the traffic splits again (about 16 requests/s each in the run I measured, since the restarted server had caught up).
+
+Example alert rules are in `deploy/prometheus/alerts.yml` (server down, jobs stuck, dead jobs, high reap rate, queue full, RPC errors, stale queue stats); see them at http://localhost:9090/alerts. The demo's poison jobs keep `TasklaneDeadJobs` firing, as they should. `TasklaneStatsStale` fires when a server's cached queue depths are over 30 s old, which usually means it can't reach the database. With several server copies, aggregate the queue gauges with `max by (queue)` (every server reports the same database-wide numbers) and counters with `sum`. All metrics are listed in [design §16.2](docs/design.md#162-metrics).
 
 ## Development
 

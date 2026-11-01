@@ -1,4 +1,4 @@
-# Prometheus for the demo: scrapes the Tasklane server every 5 s (15 s is the
+# Prometheus for the demo: scrapes both Tasklane servers every 5 s (15 s is the
 # usual default; 5 s keeps short demo runs readable) and evaluates the
 # example alerts.
 global:
@@ -11,4 +11,4 @@ rule_files:
 scrape_configs:
   - job_name: tasklane
     static_configs:
-      - targets: ["tasklane:9464"]
+      - targets: ["tasklane-1:9464", "tasklane-2:9464"]
