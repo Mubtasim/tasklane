@@ -144,7 +144,12 @@ func Check(cfg Config, enqueued []ledger.Enqueued, runs []ledger.Run, jobs []Job
 		}
 		for i := 1; i < len(rs); i++ {
 			prev, next := rs[i-1], rs[i]
-			if next.Attempt != prev.Attempt+1 || prev.Outcome == "nacked" {
+			// A handler that failed ends in a Nack, which makes the retry due
+			// after the backoff, well before the lease expires. The Nack may
+			// still be recorded as lease_lost or gave_up (the server was
+			// killed after committing it, or its retries ran out), so a run
+			// with an error is skipped too.
+			if next.Attempt != prev.Attempt+1 || prev.Outcome == "nacked" || prev.Err != "" {
 				continue
 			}
 			earliest := prev.Start.Add(cfg.VisibilityTimeout - cfg.Tolerance)

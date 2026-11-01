@@ -49,3 +49,29 @@ func TestReadEnqueued(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []Enqueued{{Key: "k1", JobID: 1}}, got)
 }
+
+func TestOpenEndsATornLineBeforeAppending(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "w.runs.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(`{"worker":"w","job_id":1,"attempt":1,"outcome":"acked"}`+"\n"+`{"worker":"w","jo`), 0o644))
+	w, err := Open(path)
+	require.NoError(t, err)
+	require.NoError(t, w.Append(Run{Worker: "w", JobID: 2, Attempt: 1, Outcome: "nacked"}))
+	require.NoError(t, w.Close())
+
+	runs, err := ReadRuns(dir)
+	require.NoError(t, err)
+	require.Len(t, runs, 2)
+	require.Equal(t, int64(1), runs[0].JobID)
+	require.Equal(t, int64(2), runs[1].JobID)
+}
+
+func TestReadSkipsEmptyLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "w.runs.jsonl")
+	line := `{"worker":"w","job_id":1,"attempt":1,"outcome":"acked"}`
+	require.NoError(t, os.WriteFile(path, []byte("\n"+line+"\n\n"+line+"\n\n"), 0o644))
+	runs, err := ReadRuns(dir)
+	require.NoError(t, err)
+	require.Len(t, runs, 2)
+}

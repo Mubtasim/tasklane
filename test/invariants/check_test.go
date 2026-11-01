@@ -47,38 +47,81 @@ func TestRule1StuckJob(t *testing.T) {
 	require.Equal(t, []int{1}, rules(Check(cfg, enq, nil, jobs)))
 }
 
-func TestRule2DuplicateKey(t *testing.T) {
-	enq := []ledger.Enqueued{{Key: "a", JobID: 1}, {Key: "a", JobID: 2}}
+// onlyViolation asserts that exactly one violation fired, of the given rule,
+// and that its message names the check, so a test fails if that check is
+// removed even when another check would still fire.
+func onlyViolation(t *testing.T, vs []Violation, rule int, msg string) {
+	t.Helper()
+	require.Len(t, vs, 1, "%v", vs)
+	require.Equal(t, rule, vs[0].Rule)
+	require.Contains(t, vs[0].Msg, msg)
+}
+
+func TestRule1RunForAnUnknownJob(t *testing.T) {
+	onlyViolation(t, Check(cfg, nil, []ledger.Run{run(9, 1, 0, "acked")}, nil), 1, "job is gone")
+}
+
+func TestRule2DuplicateKeyInTheDatabase(t *testing.T) {
+	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
 	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 1}, {ID: 2, Key: "a", State: "completed", Attempts: 1}}
 	runs := []ledger.Run{run(1, 1, 0, "acked"), run(2, 1, 0, "acked")}
-	require.Contains(t, rules(Check(cfg, enq, runs, jobs)), 2)
+	onlyViolation(t, Check(cfg, enq, runs, jobs), 2, "share idempotency key")
+}
+
+func TestRule2KeyConfirmedAsTwoJobs(t *testing.T) {
+	enq := []ledger.Enqueued{{Key: "a", JobID: 1}, {Key: "a", JobID: 2}}
+	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 1}, {ID: 2, Key: "b", State: "completed", Attempts: 1}}
+	runs := []ledger.Run{run(1, 1, 0, "acked"), run(2, 1, 0, "acked")}
+	onlyViolation(t, Check(cfg, enq, runs, jobs), 2, "was confirmed as job")
+}
+
+func TestRule2KeyConfirmedAsTwoJobsWithOneInTheDatabase(t *testing.T) {
+	enq := []ledger.Enqueued{{Key: "a", JobID: 1}, {Key: "a", JobID: 2}}
+	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 1}}
+	vs := Check(cfg, enq, []ledger.Run{run(1, 1, 0, "acked")}, jobs)
+	require.Equal(t, []int{1, 2}, rules(vs)) // job 2 is also gone
+	require.Contains(t, vs[0].Msg, "is gone")
+	require.Contains(t, vs[1].Msg, "was confirmed as job")
 }
 
 func TestRule3TwoAcceptedAcks(t *testing.T) {
+	// Both Acks are on the last attempt, so the only way to hold two is two
+	// runs of the same attempt: that check fires as well, so assert both.
 	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
-	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 2}}
-	runs := []ledger.Run{run(1, 1, 0, "acked"), run(1, 2, 3*time.Second, "acked")}
-	require.Contains(t, rules(Check(cfg, enq, runs, jobs)), 3)
+	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 1}}
+	runs := []ledger.Run{run(1, 1, 0, "acked"), run(1, 1, 0, "acked")}
+	vs := Check(cfg, enq, runs, jobs)
+	require.Equal(t, []int{3, 3}, rules(vs))
+	require.Contains(t, vs[0].Msg, "same lease")
+	require.Contains(t, vs[1].Msg, "accepted Acks")
 }
 
 func TestRule3AckFromAnOldAttempt(t *testing.T) {
+	// Attempt 2's worker left no record, so only the stale Ack is visible.
 	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
 	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 2}}
-	runs := []ledger.Run{run(1, 1, 0, "acked"), run(1, 2, 3*time.Second, "lease_lost")}
-	require.Contains(t, rules(Check(cfg, enq, runs, jobs)), 3)
+	onlyViolation(t, Check(cfg, enq, []ledger.Run{run(1, 1, 0, "acked")}, jobs), 3, "last attempt is 2")
 }
 
 func TestRule3DeadJobWithAnAck(t *testing.T) {
 	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
 	jobs := []Job{{ID: 1, Key: "a", State: "dead", Attempts: 1}}
-	require.Contains(t, rules(Check(cfg, enq, []ledger.Run{run(1, 1, 0, "acked")}, jobs)), 3)
+	onlyViolation(t, Check(cfg, enq, []ledger.Run{run(1, 1, 0, "acked")}, jobs), 3, "job is dead")
 }
 
 func TestRule3SameAttemptTwice(t *testing.T) {
+	// lease_lost on the last attempt of a dead job is allowed, so only the
+	// duplicate attempt number is left.
+	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
+	jobs := []Job{{ID: 1, Key: "a", State: "dead", Attempts: 1}}
+	runs := []ledger.Run{run(1, 1, 0, "lease_lost"), run(1, 1, 0, "lease_lost")}
+	onlyViolation(t, Check(cfg, enq, runs, jobs), 3, "same lease")
+}
+
+func TestRule3LeaseLostOnTheLastAttemptOfACompletedJob(t *testing.T) {
 	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
 	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 1}}
-	runs := []ledger.Run{run(1, 1, 0, "acked"), run(1, 1, 0, "lease_lost")}
-	require.Contains(t, rules(Check(cfg, enq, runs, jobs)), 3)
+	onlyViolation(t, Check(cfg, enq, []ledger.Run{run(1, 1, 0, "lease_lost")}, jobs), 3, "lost its lease")
 }
 
 func TestRule3LeaseLostOnLastAttemptOfADeadJobIsFine(t *testing.T) {
@@ -98,7 +141,17 @@ func TestRule4RepeatTooSoon(t *testing.T) {
 	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 2}}
 	// attempt 1 was not nacked, so attempt 2 may start only after ~2 s.
 	runs := []ledger.Run{run(1, 1, 0, "lease_lost"), run(1, 2, time.Second, "acked")}
-	require.Equal(t, []int{4}, rules(Check(cfg, enq, runs, jobs)))
+	onlyViolation(t, Check(cfg, enq, runs, jobs), 4, "before its lease could expire")
+}
+
+func TestRule4SkipsAFailedHandlerWhoseNackWasNotRecorded(t *testing.T) {
+	// The Nack committed but the reply was lost, so the run says lease_lost;
+	// the retry is due after the Nack backoff, before the lease would expire.
+	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
+	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 2}}
+	first := run(1, 1, 0, "lease_lost")
+	first.Err = "boom"
+	require.Empty(t, Check(cfg, enq, []ledger.Run{first, run(1, 2, 300*time.Millisecond, "acked")}, jobs))
 }
 
 func TestRule4RepeatAfterTheLeaseExpiredIsFine(t *testing.T) {
