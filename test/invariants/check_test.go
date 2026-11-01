@@ -161,6 +161,26 @@ func TestRule4RepeatAfterTheLeaseExpiredIsFine(t *testing.T) {
 	require.Empty(t, Check(cfg, enq, runs, jobs))
 }
 
+func TestRule4SkipsAStartStampedLateByAFreeze(t *testing.T) {
+	// Attempt 1 was leased just before its worker was paused, reaped, and
+	// leased again as attempt 2; the paused worker stamped its start only
+	// after the unpause, later than attempt 2's.
+	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}
+	jobs := []Job{{ID: 1, Key: "a", State: "completed", Attempts: 2}}
+	first := run(1, 1, 4*time.Second, "lease_lost")
+	first.Worker = "frozen"
+	runs := []ledger.Run{first, run(1, 2, 3*time.Second, "acked")}
+	onlyViolation(t, Check(cfg, enq, runs, jobs), 4, "before its lease could expire")
+
+	frozen := cfg
+	frozen.Frozen = []Freeze{{Worker: "frozen", From: t0, To: t0.Add(3500 * time.Millisecond)}}
+	require.Empty(t, Check(frozen, enq, runs, jobs))
+
+	// A freeze of another worker, or one that ended long before, excuses nothing.
+	frozen.Frozen = []Freeze{{Worker: "w", From: t0, To: t0.Add(3500 * time.Millisecond)}, {Worker: "frozen", From: t0.Add(-time.Minute), To: t0.Add(-50 * time.Second)}}
+	onlyViolation(t, Check(frozen, enq, runs, jobs), 4, "before its lease could expire")
+}
+
 func TestRule4SkipsMissingAttempts(t *testing.T) {
 	// attempt 1's worker was killed: no record. Nothing to compare.
 	enq := []ledger.Enqueued{{Key: "a", JobID: 1}}

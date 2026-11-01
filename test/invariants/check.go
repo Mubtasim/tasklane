@@ -26,6 +26,32 @@ type Job struct {
 type Config struct {
 	VisibilityTimeout time.Duration
 	Tolerance         time.Duration
+	// Frozen lists the times a worker process was suspended (docker pause).
+	Frozen []Freeze
+}
+
+// Freeze is a window in which a worker process was suspended. A worker
+// stamps a run's start when its goroutine handles the Lease response, so a
+// job leased just before the freeze gets a start stamped just after it: the
+// recorded start can be later than the lease by the whole freeze.
+type Freeze struct {
+	Worker   string
+	From, To time.Time
+}
+
+// freezeSlack is how long after a freeze ends a worker can still be
+// catching up on Lease responses that arrived before or during it.
+const freezeSlack = 2 * time.Second
+
+// stampedAfterFreeze reports whether r's start may have been stamped late
+// because its worker was frozen between the lease and the stamp.
+func (c Config) stampedAfterFreeze(r ledger.Run) bool {
+	for _, f := range c.Frozen {
+		if f.Worker == r.Worker && !r.Start.Before(f.From) && !r.Start.After(f.To.Add(freezeSlack)) {
+			return true
+		}
+	}
+	return false
 }
 
 type Violation struct {
@@ -149,7 +175,9 @@ func Check(cfg Config, enqueued []ledger.Enqueued, runs []ledger.Run, jobs []Job
 			// still be recorded as lease_lost or gave_up (the server was
 			// killed after committing it, or its retries ran out), so a run
 			// with an error is skipped too.
-			if next.Attempt != prev.Attempt+1 || prev.Outcome == "nacked" || prev.Err != "" {
+			// When attempt k's start was stamped late by a freeze, the lease
+			// it measures from is unknown, so the pair can't be checked.
+			if next.Attempt != prev.Attempt+1 || prev.Outcome == "nacked" || prev.Err != "" || cfg.stampedAfterFreeze(prev) {
 				continue
 			}
 			earliest := prev.Start.Add(cfg.VisibilityTimeout - cfg.Tolerance)
