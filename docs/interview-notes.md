@@ -79,7 +79,7 @@ Networks lose responses, not just requests. If an ack succeeds but the response 
 It is safe because success requires the exact token that completed the job:
 - Tokens are random UUIDs, issued per lease and only in that lease's response (never by `GetJob`), so holding one is proof of being the lease holder.
 - If the lease expired and the job was re-leased, it got a new token. A stale worker's retry no longer matches, so it gets 409, and the completed row holds the new worker's token.
-- If the lease expired but nobody re-leased the job, the stale worker's token is still current, and its ack succeeds. That is correct: it really did the work.
+- If the lease expired but the reaper hasn't reclaimed the job yet, the stale worker's token is still current, and its ack succeeds (Ack checks the token, not the expiry time). That is correct: it really did the work. Once the reaper has run, the token is cleared (`lease_token = NULL`), so the late ack gets 409 even if nobody has leased the job again.
 
 Nack is different: a repeated nack is rejected harmlessly, because the job is already scheduled for retry.
 
@@ -375,7 +375,7 @@ Three parts: what a zombie is, how the lease and token fence it off, and what fe
 2. The reaper (every 5 s; 2 s in the demo) finds `state = 'leased' AND lease_expires_at < now()` with `SKIP LOCKED` and makes the job available again after a backoff, or `dead` if that was the last attempt.
 3. The next Lease gives it a new random `lease_token` and `attempts + 1`.
 4. The zombie wakes and Acks with its old token. The Ack is `UPDATE … WHERE id = $1 AND state = 'leased' AND lease_token = $2`, which matches nothing, so the server returns `FAILED_PRECONDITION` (409). The SDK records `lease_lost` and doesn't retry.
-5. Only the new holder's Ack counts. If nobody re-leased the job yet, the zombie's token is still current and its Ack succeeds, which is correct: it did the work (Q9).
+5. Only the current holder's Ack counts. The reaper clears the token when it reclaims the job (`lease_token = NULL` in `retryOrBury`, `internal/pgstore/complete.go`), so after a reap the zombie's Ack fails even if nobody has leased the job again. If the lease expired but the reaper hasn't run yet, the token is still current and the Ack succeeds (Ack's `WHERE` has no expiry check), which is correct: it did the work (Q9).
 6. What fencing can't undo: the zombie's handler already ran. If it sent an email or charged a card, that happened. Handlers must be idempotent, or pass the lease token downstream as a fencing token so other storage can reject a stale holder too.
 
 **Numbers:** the in-process test runs two raw-API zombies (SDK workers can't be zombies: heartbeats keep slow handlers' leases), each leasing one job, sleeping VT + 500 ms = 2.5 s with no heartbeats, then acking; a default run records 5–6 `lease_lost`, the full run 52. The chaos test pauses a worker for 15 s against a 10 s visibility timeout: 16 `lease_lost` in the seed-1 run.
@@ -419,7 +419,7 @@ Three parts: what breaks, what it costs, and the rule that prevents it.
 5. The race: a job arrives at about 15 s, the server leases it (the store write runs to completion even if the client goes away, Q32) just as Envoy cuts the stream. The response is dropped, and the job sits leased to nobody until its visibility timeout (30 s default) expires, with one attempt burned.
 6. Envoy doesn't retry a timeout here (only `connect-failure`, `refused-stream`, `reset-before-request`), which is right: a retried Lease could lease a second batch.
 
-**Numbers:** Tasklane sets the route timeout to 35 s: above `MaxWait` (30 s), which is above the SDK's 20 s wait (whose own call deadline is 30 s). With 15 s, every idle worker would log one failed Lease every ~15 s, and `Unavailable` counts toward `TasklaneErrors` (over 5% of RPCs for 5 minutes).
+**Numbers:** Tasklane sets the route timeout to 35 s: above `MaxWait` (30 s), which is above the SDK's 20 s wait (whose own call deadline is 30 s). With 15 s, every idle worker would log one failed Lease every ~15 s. `TasklaneErrors` would **not** fire: it reads the server's `tasklane_rpc_duration_seconds_count{code}`, and when Envoy cuts the stream the server records `Canceled`, not `Unavailable` (only clients see `Unavailable`). So the dashboard looks healthy; the symptom shows only in client errors and logs and in Envoy's own stats, which makes it easy to miss.
 
 **Fails halfway:** that is the race in step 5: the commit succeeded, the delivery didn't, the same shape as the stranded-lease bug in Q10. Recovery is the visibility timeout.
 
@@ -438,7 +438,7 @@ Three parts: where the work really happens, what each copy adds, and what would 
 4. Each `NOTIFY` goes to every server's listener, and each wakes its waiting Leases, so one enqueue on an idle queue costs one query per waiting Lease on every server.
 5. Fixes, in order: batching (`EnqueueBatch` exists, a Lease already takes k jobs in one transaction; Ack batching doesn't); one leader for the background loops (for example a Postgres advisory lock); PgBouncer to cap connections (the LISTEN connection needs a session, so it would bypass transaction pooling); then splitting queues across databases, or the Raft store planned for Phase 2.
 
-**Numbers:** no measurement with more than two servers yet: the M5 load test compares two against one. One relevant number: the depth refresh's available count ran as a Seq Scan taking 443 ms on a fresh, unanalyzed 12,000-job table (parked for M5); repeated by five servers every second, that would be over 2 s of database time per second.
+**Numbers:** no measurement with more than two servers yet: the M5 load test compares two against one. One relevant number: the depth refresh's available count ran as a Seq Scan taking 443 ms on a fresh, never-analyzed 12,000-job table (parked for M5). Repeated by five servers every second, that would be over 2 s of database time per second, but only until autovacuum's ANALYZE gives the planner statistics and it switches to the index; it is not the steady state. The point is that every per-server query is multiplied by the number of copies.
 
 **Fails halfway:** adding copies during an overload makes it worse: more connections and more repeated loops on the database that is already the bottleneck.
 
@@ -446,19 +446,24 @@ Three parts: where the work really happens, what each copy adds, and what would 
 
 ## Q31. A backlog of 2,000 jobs, arrivals at 10 jobs/s, capacity 14.7 jobs/s. How long until the backlog is gone?
 
-Two parts: the arithmetic, and what makes it slower in practice.
+Two parts: the arithmetic, and what the demo measured.
 
 **What:** only the spare capacity drains the backlog: 14.7 − 10 = 4.7 jobs/s, so 2,000 ÷ 4.7 ≈ 425 s, about 7 minutes.
 
 **How:**
 1. New arrivals take 10 jobs/s of the capacity just to stand still.
 2. The remaining 4.7 jobs/s eats into the backlog: 2,000 ÷ 4.7 ≈ 425 s.
-3. A job arriving at the start waits behind the whole backlog. By Little's law (wait = jobs ahead ÷ throughput) that is 2,000 ÷ 14.7 ≈ 136 s at first, falling to near zero as the backlog drains.
-4. Doubling the workers would help a lot here: spare capacity is what matters, not total capacity.
+3. A job arriving at the start waits behind the whole backlog: 2,000 ÷ 14.7 ≈ 136 s at first (Little's law: wait = jobs ahead ÷ throughput), falling to near zero as the backlog drains.
+4. Spare capacity is what matters, not total capacity: going from 10 to 15 slots took the drain rate from negative to about 5 jobs/s.
 
-**Numbers:** the demo runs 3 workers × 5 slots, about 15 jobs/s of capacity (cheatsheet), against 10 jobs/s arriving. The numbers in the question come from a demo run on 2026-11-01 that isn't recorded in the repo. Retries add work: the chaos run had 2,244 runs for 1,889 jobs, about 1.19 runs per job, so if capacity is measured in runs, arrivals are closer to 11.9 runs/s and the spare is about 2.8/s: about 12 minutes, not 7.
+**Numbers** (the 2026-11-01 demo lab, 10 jobs/s arriving, 5 slots per worker):
+- 1 worker (5 slots): about 4 jobs/s; the backlog grew about 6/s.
+- 2 workers (10 slots): 9.32–9.44 jobs/s; the backlog still grew about 0.6/s.
+- 3 workers (15 slots): 14.68–14.8 jobs/s; the backlog went from 2,110 to 2,033 in 15 s, about 5 jobs/s net, so about 7 minutes for ~2,000.
 
-**Fails halfway:** if a worker dies during the drain, capacity drops to about 10 jobs/s and the backlog stops shrinking; at 4–5 jobs/s (one worker) it grows by about 6 jobs/s. If the backlog reaches `max_depth`, enqueues are refused (Q19).
+Caveat on measuring capacity: count it as completed jobs per second, as above. That already absorbs retries (flaky and poison jobs take extra runs; the chaos run had about 1.19 runs per job). Capacity estimated from slots ÷ average handler time would overstate it.
+
+**Fails halfway:** if a worker dies during the drain, capacity drops to about 9.3–9.4 jobs/s (two workers) and the backlog grows again by about 0.6/s instead of shrinking. If the backlog reaches `max_depth`, enqueues are refused (Q19).
 
 **Trade-off:** keeping spare capacity costs idle workers most of the time; without it, any burst turns into a long tail. The usual target is enough headroom to drain a typical burst within the latency the producers can accept.
 
