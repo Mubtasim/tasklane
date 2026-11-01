@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/mubtasim/tasklane/internal/metrics"
+	"github.com/mubtasim/tasklane/internal/store"
 )
 
 // fakeStore returns scripted results, then 0, and records every call.
@@ -31,7 +34,7 @@ func newFakeStore(results ...result) *fakeStore {
 	return &fakeStore{results: results, called: make(chan struct{}, 100)}
 }
 
-func (f *fakeStore) ReapExpired(ctx context.Context, limit int) (int, error) {
+func (f *fakeStore) ReapExpired(ctx context.Context, limit int) ([]store.ReapedJob, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -40,11 +43,11 @@ func (f *fakeStore) ReapExpired(ctx context.Context, limit int) (int, error) {
 	default: // the test isn't counting this many calls
 	}
 	if len(f.results) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	r := f.results[0]
 	f.results = f.results[1:]
-	return r.n, r.err
+	return make([]store.ReapedJob, r.n), r.err
 }
 
 func (f *fakeStore) callCount() int {
@@ -73,7 +76,7 @@ func start(t *testing.T, s Store, interval time.Duration, log *slog.Logger) (sto
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		Run(ctx, s, interval, 10, log)
+		Run(ctx, s, interval, 10, log, nil)
 	}()
 	return func() {
 		cancel()
@@ -143,9 +146,9 @@ func TestStopsOnCancel(t *testing.T) {
 // fullStore always reports a full batch, as if the backlog never ended.
 type fullStore struct{ calls atomic.Int64 }
 
-func (f *fullStore) ReapExpired(ctx context.Context, limit int) (int, error) {
+func (f *fullStore) ReapExpired(ctx context.Context, limit int) ([]store.ReapedJob, error) {
 	f.calls.Add(1)
-	return limit, nil
+	return make([]store.ReapedJob, limit), nil
 }
 
 func TestAlwaysFullBatchStopsOnCancel(t *testing.T) {
@@ -182,7 +185,7 @@ func TestNonPositiveSettingsUseDefaults(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			Run(ctx, f, tc.interval, tc.batch, discard())
+			Run(ctx, f, tc.interval, tc.batch, discard(), nil)
 		}()
 		waitCalls(t, f, 1)
 		time.Sleep(100 * time.Millisecond)
@@ -194,4 +197,22 @@ func TestNonPositiveSettingsUseDefaults(t *testing.T) {
 		}
 		require.Equal(t, 1, f.callCount(), "interval %v batch %d", tc.interval, tc.batch)
 	}
+}
+
+type reapedStore struct{ jobs []store.ReapedJob }
+
+func (r *reapedStore) ReapExpired(context.Context, int) ([]store.ReapedJob, error) {
+	jobs := r.jobs
+	r.jobs = nil
+	return jobs, nil
+}
+
+func TestReapAllRecordsMetrics(t *testing.T) {
+	m := metrics.New()
+	s := &reapedStore{jobs: []store.ReapedJob{{Queue: "q", Dead: true}}}
+
+	reapAll(context.Background(), s, 10, discard(), m)
+
+	require.Equal(t, 1.0, m.Value("tasklane_jobs_reaped_total", "queue", "q"))
+	require.Equal(t, 1.0, m.Value("tasklane_jobs_dead_total", "queue", "q", "reason", "expired"))
 }

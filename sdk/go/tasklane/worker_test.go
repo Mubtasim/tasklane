@@ -51,7 +51,7 @@ func startWorker(t *testing.T, w *Worker) (stop func() error) {
 		})
 		return err
 	}
-	t.Cleanup(func() { stop() })
+	t.Cleanup(func() { _ = stop() })
 	return stop
 }
 

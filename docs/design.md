@@ -192,7 +192,7 @@ One `proto/tasklane/v1/tasklane.proto` generates the gRPC server, the HTTP/JSON 
 | `Enqueue` | `POST /v1/queues/{queue}/jobs` | kind, payload, priority (1 critical … 4 low; 0 = unspecified, stored as 3), run_at, idempotency_key, max_attempts; returns `job_id`, `created` |
 | `EnqueueBatch` | `POST /v1/queues/{queue}/jobs:batch` | Up to 1,000 jobs in one transaction |
 | `Lease` | `POST /v1/queues/{queue}:lease` | `max_jobs`, `wait` (long poll, ≤ 30 s), optional `visibility_timeout` |
-| `LeaseStream` | gRPC only | Bidirectional: the worker sends capacity credits, the server pushes jobs |
+| `LeaseStream` | gRPC only | Bidirectional: the worker sends capacity credits, the server pushes jobs. **Deferred past v1** (§13) |
 | `Ack` | `POST /v1/jobs/{id}:ack` | Requires `lease_token` |
 | `Nack` | `POST /v1/jobs/{id}:nack` | `lease_token`, `error`, optional `retry_at` |
 | `Heartbeat` | `POST /v1/jobs/{id}:heartbeat` | Returns the new `lease_expires_at` |
@@ -239,7 +239,7 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 
 **Backpressure**
 - *Producer side:* `Enqueue` checks the queue's depth (`available + leased`) against `max_depth`. To avoid a `COUNT(*)` on every call, each server refreshes each queue's depth once a second (one count over the partial indexes) and checks against that cached value, so the limit is soft (it can overshoot by about one second of traffic). The docs state this.
-- *Worker side:* `LeaseStream` is credit-based. The server never sends more jobs than the worker has granted credits for, so a slow worker is never flooded.
+- *Worker side:* each `Lease` asks for at most the worker's free slots (§14.2), so a slow worker is never flooded. `LeaseStream`, if it is built (§13), is credit-based. The server never sends more jobs than the worker has granted credits for, so a slow worker is never flooded.
 
 **Auth:** a static API key per client, sent as `authorization: Bearer <key>` (gRPC metadata or HTTP header; the scheme is case-insensitive) and configured with `TASKLANE_API_KEYS` (comma-separated). With no keys configured, auth is disabled and the server logs a warning at startup. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
 
@@ -261,7 +261,7 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 
 ## 8. Observability
 
-- **Metrics** (`/metrics`):
+- **Metrics** (`/metrics`; the M4a spec in §16 supersedes this list):
   - `tasklane_jobs_enqueued_total`, `_leased_total`, `_acked_total`, `_nacked_total`, `_dead_total`, `_reaped_total`
   - `tasklane_queue_depth{queue,state,priority}`, `tasklane_oldest_available_age_seconds{queue}`
   - `tasklane_lease_latency_seconds` and `tasklane_rpc_duration_seconds` (histograms)
@@ -315,11 +315,14 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M2a | end of Nov | API server: proto + buf, gRPC and HTTP gateway, error mapping, API-key auth, idempotent ack, long-poll leasing with LISTEN/NOTIFY, reaper loop, graceful shutdown |
 | M2b | early Dec | Go SDK (producer + worker runner with heartbeats), live queue stats, `tasklane-watch`, docker-compose demo with flaky and poison jobs (§14) |
 | M3a | mid-Dec | Pruner, DLQ listing and redrive, cancel, backpressure (§15) |
-| M3b | mid-Dec | `LeaseStream`, designed separately; first question: does it beat batched long-polls enough to be worth it |
-| M4 | end of Dec | Metrics, tracing, Grafana dashboard, chaos and invariant tests |
+| M3b | — | `LeaseStream`: **deferred past v1** (see below) |
+| M4a | mid-Dec | CI, Prometheus metrics, Grafana dashboard, alert rules (§16) |
+| M4b | end of Dec | Tracing, invariant and chaos tests, two server copies behind a gRPC-aware load balancer |
 | M5 | mid-Jan 2027 | TS and C# SDKs, load tests and benchmark report, v1.0.0 release and a blog post |
 
 Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.
+
+**`LeaseStream` deferred (decided 2026-11-01).** A stream would replace one `Lease` request per batch with a credit message on an open call. That saves little: requests are already multiplexed over one HTTP/2 connection, each batch still needs the same Postgres transaction, and a batch of k jobs already costs k Acks besides its Lease. A waiting stream re-checks the queue once a second just like a waiting long-poll, and long-polls already ask only for free slots. Against that, a stream adds per-stream credit state, reconnects and a reconnect signal on shutdown, keepalives to detect half-open connections, a stream auth interceptor, no HTTP/JSON support, and stickiness: a stream is one request, so even a gRPC-aware load balancer pins it to one server copy. The M5 load test measures lease requests per job and p99 enqueue-to-start latency; `LeaseStream` is built only if the long-poll shows up as a bottleneck there.
 
 ## 14. M2b: Go SDK, live queue stats and demo
 
@@ -411,7 +414,7 @@ The same query later feeds the M3 backpressure cache and the M4 `tasklane_queue_
 - `cmd/tasklane-watch`: redraws once a second: `queue=demo  available 120 | leased 15 | dead 4 | completed 42/s` (`recently_completed / recent_window`). It is the start of the v1.1 CLI.
 - `examples/demo/producer`: creates the `demo` queue (`visibility_timeout` 15 s, `max_attempts` 5) and enqueues about 10 jobs/s: `normal` ~85% (sleeps 0.2–2 s, succeeds), `flaky` ~12% (fails 30% of runs), `poison` ~3% (always fails, reaches the DLQ).
 - `examples/demo/worker`: handlers for the three kinds, `Concurrency` 5.
-- `deploy/docker-compose.yml` with one multi-stage `Dockerfile`: `postgres` (not published on the host), `tasklane` (8080 and 7070 published), `producer`, `worker-1..3` (`stop_grace_period: 30s`, since Docker's default of 10 s is shorter than `ShutdownTimeout`). About 250 MB of RAM in total. `tasklane-watch` runs on the host.
+- `deploy/docker-compose.yml` with one multi-stage `Dockerfile`: `postgres` (not published on the host), `tasklane` (8080 and 7070 published), `producer`, `worker-1..3` (`stop_grace_period: 30s`, since Docker's default of 10 s is shorter than `ShutdownTimeout`). About 250 MB of RAM in total (before M4a added Prometheus and Grafana). `tasklane-watch` runs on the host.
 - Two failure paths to show: `docker compose kill worker-1` (SIGKILL: its jobs stay leased ~15 s until the reaper returns them) and `docker compose stop worker-2` (SIGTERM: running jobs finish, unfinished ones are Nacked and return within seconds). The README gets a Demo section with the tmux layout.
 - Deferred: two server copies with one killed (needs multi-address dialing or a proxy).
 
@@ -557,3 +560,92 @@ Dead jobs expire like messages in an SQS dead-letter queue. The docs say so; M4'
 - Interview notes Q16 onward at the M3a checkpoint.
 
 Out of scope: `LeaseStream` (M3b), a CLI, rate limits, a delete-dead-jobs RPC.
+
+## 16. M4a: CI, metrics, dashboard and alerts
+
+Decided 2026-11-01. This section is the M4a spec. Tracing, invariant and chaos tests and a two-server demo are M4b.
+
+### 16.1 CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request, with five parallel jobs on GitHub's Ubuntu runners:
+
+| Job | Runs |
+|---|---|
+| `lint` | `golangci-lint` (pinned) with `.golangci.yml`: the default linters (errcheck, govet, staticcheck, unused, ineffassign) plus errorlint and misspell, and the gofmt and goimports formatters |
+| `test` | `go test -race -count=1 ./...`; testcontainers starts Postgres 17 in the runner's Docker |
+| `proto` | `buf lint`; on pull requests `buf breaking` against `main`; `buf generate` followed by `git diff --exit-code gen/` |
+| `docker` | `docker build` of the server image, without pushing (publishing to GHCR comes with v1.0.0 in M5) |
+| `deploy` | `promtool check config` on `deploy/prometheus/prometheus.yml` (which also checks the rule files it loads); `docker compose -f deploy/docker-compose.yml config --quiet` |
+
+- **Pinned tools.** buf and the protoc plugins are `tool` directives in a separate `tools.mod` (with `tools.sum`) at the repo root and run as `go tool -modfile=tools.mod <tool>`; `buf.gen.yaml` runs the plugins the same way, so local runs and CI use the same versions and SDK users don't inherit buf's dependencies through the main `go.mod`. The README's generate command changes to match.
+- **First lint run.** Every finding in existing code is fixed in M4a; no linter is disabled to get a green build.
+- **Flaky tests** are fixed by widening their timing margins (the M2b follow-ups list the tight ones), never retried.
+- The README gets a CI badge. Requiring CI on `main` is a branch rule the maintainer sets in the GitHub UI.
+- Also folded in from the M4 follow-ups: a connect timeout on the LISTEN connection, and the database DSN parsed once.
+
+### 16.2 Metrics
+
+A new package `internal/metrics` defines every metric on its own registry (not the global one, so tests can create a fresh one) using `prometheus/client_golang`. The server serves it at `/metrics` on `TASKLANE_METRICS_ADDR` (default `:9464`; `off` disables metrics), a port separate from the API so operators can keep it internal. `/healthz` and `/readyz` stay on the HTTP port. `/metrics` has no API key.
+
+| Metric | Type | Labels | Recorded |
+|---|---|---|---|
+| `tasklane_jobs_enqueued_total` | counter | `queue` | per job created; an idempotent enqueue that returns an existing job doesn't count |
+| `tasklane_jobs_leased_total` | counter | `queue` | per job leased |
+| `tasklane_jobs_acked_total` | counter | `queue` | per job completed; a repeated Ack with the same token doesn't count |
+| `tasklane_jobs_nacked_total` | counter | `queue` | per Nack that schedules a retry |
+| `tasklane_jobs_dead_total` | counter | `queue`, `reason` (`nacked`, `expired`) | per job that reaches `dead`, from Nack or the reaper |
+| `tasklane_jobs_reaped_total` | counter | `queue` | per expired lease the reaper handles (retry or dead) |
+| `tasklane_jobs_cancelled_total` | counter | `queue` | per job cancelled; a repeated cancel doesn't count |
+| `tasklane_jobs_redriven_total` | counter | `queue` | per dead job made available again |
+| `tasklane_jobs_pruned_total` | counter | `state` (`finished` for completed and cancelled, `dead`) | per job deleted by the pruner |
+| `tasklane_enqueue_refused_total` | counter | `queue` | per `Enqueue`/`EnqueueBatch` call refused by backpressure |
+| `tasklane_rpc_duration_seconds` | histogram | `method`, `code` | every RPC, from a unary gRPC interceptor; HTTP calls pass through the gateway, so they are included |
+| `tasklane_queue_wait_seconds` | histogram | `queue` | per job leased: the lease time minus the time the job became ready (`run_at`), both from Postgres `now()` |
+| `tasklane_queue_depth` | gauge | `queue`, `state` (`available`, `leased`) | from the depth refresh; `available` includes delayed jobs, as in the backpressure check |
+| `tasklane_oldest_ready_job_age_seconds` | gauge | `queue` | from the depth refresh: now minus the oldest `run_at` among available jobs whose `run_at` has passed; 0 when there are none or the queue is paused |
+| `tasklane_queue_stats_age_seconds` | gauge | | seconds since the last successful depth refresh |
+| `tasklane_db_pool_acquired_connections`, `_idle_connections`, `_max_connections` | gauge | | the pgxpool stats, read on each scrape |
+| `tasklane_db_pool_empty_acquire_total` | counter | | acquires that had to wait for a connection |
+| Go runtime and process | | | the standard Go and process collectors (`go_goroutines`, `process_resident_memory_bytes`, …) |
+
+- **Counters count real changes after commit.** The store reports how many rows actually changed (a repeated Ack, cancel or idempotent enqueue changes none), and the API increments only after the transaction commits, so a rolled-back call counts nothing.
+- **Every known queue's counters start at 0.** Each depth refresh creates the queue's counter series at 0, so graphs show 0 rather than no data and `increase()` sees a queue's first dead job (a series born at 1 has no increase).
+- **Labels are bounded.** `queue` is chosen by operators; `kind` (free text from producers), `job_id` and `priority` are never labels.
+- **Gauges come from the existing one-second depth refresh (§15.3)**, which also returns the state split and the oldest ready age. The oldest ready age is one index lookup per priority on `jobs_available`. Each refresh replaces all gauge series, so a deleted queue's series disappear. While refreshes fail, the gauges keep their last values and `tasklane_queue_stats_age_seconds` grows.
+- **Several servers** each report the same database-wide gauges, so dashboards and alerts aggregate gauges with `max by (queue)` and counters with `sum`.
+
+### 16.3 Dashboard and alerts
+
+`deploy/grafana/dashboards/tasklane.json`, provisioned on startup (with the Prometheus data source) from `deploy/grafana/provisioning/`, with a `queue` variable and a 5 s refresh:
+
+1. Stats: throughput (acked/s), available, leased, dead in the last hour, oldest ready job age, refused enqueues/s, with yellow and red thresholds.
+2. Jobs per second by outcome (enqueued, acked, nacked, dead, reaped); queue depth by state.
+3. Queue wait p50 and p99; RPC latency p99 by method; RPC errors by code.
+4. DB pool (in use, idle, max, waits per second); goroutines; resident memory.
+
+The RPC latency panel leaves out `Lease`, whose duration includes the long-poll wait (up to 30 s).
+
+`deploy/prometheus/alerts.yml` (example rules; nothing is routed to a notifier):
+
+| Alert | Condition |
+|---|---|
+| `TasklaneDown` | `up == 0` for 1 m |
+| `TasklaneJobsStuck` | oldest ready job age > 5 m for 5 m (no workers, or workers that stopped leasing) |
+| `TasklaneDeadJobs` | any job became dead in the last 10 m |
+| `TasklaneReapRateHigh` | reaped > 10% of leased for 10 m |
+| `TasklaneQueueFull` | enqueues refused for 5 m |
+| `TasklaneErrors` | `Internal` or `Unavailable` (as gRPC code strings) > 5% of RPCs for 5 m |
+
+### 16.4 Demo
+
+- `deploy/docker-compose.yml` gains Prometheus (`127.0.0.1:9090`, scrape every 5 s, 1 day of retention, the alert rules loaded) and Grafana (`127.0.0.1:3000`, anonymous read-only access, the dashboard provisioned), both with pinned images and started by the plain `docker compose up`. Together they add about 375 MB of RAM.
+- The README gains a Monitoring section: what each panel shows, a walkthrough (kill a worker: acked/s holds while the others have spare capacity, available and queue wait rise, the reaped spike follows after the visibility timeout; stop `worker-2` and `worker-3`: one worker handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until they are started again), and a dashboard screenshot.
+
+### 16.5 Testing
+
+- **Unit:** each counter on its success path, its failure path and its idempotent-retry path; the interceptor records method and code; gauges are replaced on refresh and keep their values on a failed one.
+- **Integration:** a real server with known jobs; scrape `/metrics` and check the counters and gauges; `/metrics` is not served when `TASKLANE_METRICS_ADDR` is `off`.
+- **Files:** `promtool check rules` in CI; a Go test parses the dashboard JSON and checks every panel has a query.
+- Everything runs with `-race`, locally and in CI. The demo and screenshot are checked by hand.
+
+Out of scope: tracing, invariant and chaos tests, two server copies (M4b); SDK-side metrics; a `priority` label on depth.

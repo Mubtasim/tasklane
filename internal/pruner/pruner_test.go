@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/mubtasim/tasklane/internal/metrics"
 )
 
 // fakeStore returns scripted counts per kind, then 0, and records each call.
@@ -102,4 +104,16 @@ func TestRunPrunesAtOnceAndStopsOnCancel(t *testing.T) {
 
 func TestConfigDefaults(t *testing.T) {
 	require.Equal(t, Config{Interval: time.Minute, Retention: 24 * time.Hour, DeadRetention: 7 * 24 * time.Hour, Batch: 1000}, Config{}.withDefaults())
+}
+
+func TestPassRecordsPrunedCountsByState(t *testing.T) {
+	f := newFakeStore()
+	f.finished = []int{2, 1} // a full batch of 2, then a short one
+	f.dead = []int{1}
+	m := metrics.New()
+
+	pass(context.Background(), f, Config{Batch: 2, Metrics: m}.withDefaults(), slog.New(slog.DiscardHandler))
+
+	require.Equal(t, 3.0, m.Value("tasklane_jobs_pruned_total", "state", "finished"))
+	require.Equal(t, 1.0, m.Value("tasklane_jobs_pruned_total", "state", "dead"))
 }

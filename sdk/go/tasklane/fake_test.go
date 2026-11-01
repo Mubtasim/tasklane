@@ -79,7 +79,7 @@ func newFake(t *testing.T, opts ...Option) (*fakeServer, *Client) {
 	}))
 	tasklanev1.RegisterTasklaneServiceServer(gs, f)
 	lis := bufconn.Listen(1 << 20)
-	go gs.Serve(lis)
+	go func() { _ = gs.Serve(lis) }()
 	dialer := grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })
 	c, err := Dial("passthrough:///bufnet", append(opts, WithGRPCDialOptions(dialer))...)
 	require.NoError(t, err)

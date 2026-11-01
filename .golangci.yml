@@ -1,0 +1,25 @@
+version: "2"
+linters:
+  # The standard set (errcheck, govet, ineffassign, staticcheck, unused) plus:
+  enable:
+    - errorlint
+    - misspell
+  exclusions:
+    # Unchecked errors from Close, Rollback and similar cleanup calls are
+    # deliberate (std-error-handling).
+    presets:
+      - std-error-handling
+      - common-false-positives
+    paths:
+      - gen/
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mubtasim/tasklane
+  exclusions:
+    paths:
+      - gen/

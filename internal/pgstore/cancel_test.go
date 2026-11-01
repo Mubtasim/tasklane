@@ -3,6 +3,7 @@ package pgstore_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,9 +18,10 @@ func TestCancelAvailableJob(t *testing.T) {
 	mustQueue(t, s, store.Queue{Name: "emails"})
 	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 
-	got, err := s.CancelJob(ctx, id)
+	got, cancelled, err := s.CancelJob(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, store.StateCancelled, got.State)
+	require.True(t, cancelled)
 	require.False(t, got.FinishedAt.IsZero(), "finished_at is set so the pruner removes it")
 
 	jobs, err := s.Lease(ctx, "emails", 1, time.Minute)
@@ -33,11 +35,41 @@ func TestCancelTwiceSucceeds(t *testing.T) {
 	mustQueue(t, s, store.Queue{Name: "emails"})
 	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 
-	first, err := s.CancelJob(ctx, id)
+	first, firstCancelled, err := s.CancelJob(ctx, id)
 	require.NoError(t, err)
-	second, err := s.CancelJob(ctx, id)
+	second, secondCancelled, err := s.CancelJob(ctx, id)
 	require.NoError(t, err, "a retried cancel is harmless")
 	require.Equal(t, first.FinishedAt, second.FinishedAt, "the second cancel changes nothing")
+	require.True(t, firstCancelled)
+	require.False(t, secondCancelled, "a repeat cancel reports no change")
+}
+
+// Retries of a cancel can race each other; exactly one of them changes the job.
+func TestConcurrentCancelsChangeOnce(t *testing.T) {
+	s := newStore(t)
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	var changed atomic.Int32
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, cancelled, err := s.CancelJob(ctx, id)
+			if err != nil {
+				t.Errorf("concurrent CancelJob = %v, want nil", err)
+				return
+			}
+			if cancelled {
+				changed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	require.EqualValues(t, 1, changed.Load(), "exactly one racing cancel changes the job")
 }
 
 func TestCancelLeasedJobIsWrongState(t *testing.T) {
@@ -47,7 +79,7 @@ func TestCancelLeasedJobIsWrongState(t *testing.T) {
 	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	mustLeaseOne(t, s, "emails", time.Minute)
 
-	_, err := s.CancelJob(ctx, id)
+	_, _, err := s.CancelJob(ctx, id)
 	require.ErrorIs(t, err, store.ErrWrongState)
 	require.Contains(t, err.Error(), "leased")
 
@@ -58,7 +90,7 @@ func TestCancelLeasedJobIsWrongState(t *testing.T) {
 
 func TestCancelUnknownJob(t *testing.T) {
 	s := newStore(t)
-	_, err := s.CancelJob(context.Background(), 42)
+	_, _, err := s.CancelJob(context.Background(), 42)
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
@@ -88,7 +120,7 @@ func TestCancelRacesLease(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, cancelErr = s.CancelJob(ctx, id)
+			_, _, cancelErr = s.CancelJob(ctx, id)
 		}()
 		close(start)
 		wg.Wait()

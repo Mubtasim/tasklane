@@ -1,5 +1,7 @@
 # Tasklane
 
+[![CI](https://github.com/Mubtasim/tasklane/actions/workflows/ci.yml/badge.svg)](https://github.com/Mubtasim/tasklane/actions/workflows/ci.yml)
+
 A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
@@ -74,7 +76,9 @@ Delivery is at-least-once: a job can run twice (for example after a worker crash
 
 ## Demo
 
-One command starts PostgreSQL, the server, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison) and three workers with 5 slots each. It needs Docker and about 250 MB of RAM.
+One command starts PostgreSQL, the server, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus and Grafana. It needs Docker and about 600 MB of RAM.
+
+The main way to watch is the Grafana dashboard at http://localhost:3000 (see [Monitoring](#monitoring)). `tasklane-watch` is a lighter alternative in the terminal.
 
 A tmux layout that works well (`Ctrl+b |` and `Ctrl+b -` split panes):
 
@@ -125,18 +129,35 @@ TASKLANE_API_KEY=demo-key DEMO_QUEUE=bp DEMO_MAX_DEPTH=50 go run ./examples/demo
 
 After about 50 jobs it logs `queue full, retry after` once a second.
 
+## Monitoring
+
+The server exposes Prometheus metrics on `:9464/metrics` (`TASKLANE_METRICS_ADDR`; `off` disables them). The port is separate from the API, so you can keep it internal. The demo runs Prometheus and Grafana with a ready-made dashboard: open http://localhost:3000.
+
+![Tasklane dashboard with a worker killed and restarted](docs/images/dashboard.png)
+
+The screenshot shows "Dead (last hour)" in red because the demo produces poison jobs on purpose.
+
+- **Top row:** throughput, available and leased jobs, jobs that died in the last hour, the oldest ready job's wait, and refused enqueues.
+- **Jobs per second by outcome** and **queue depth by state:** the flow through the queue.
+- **Queue wait** (ready to leased, p50/p99), **RPC latency** and **RPC errors by code.**
+- **DB pool, goroutines and memory** for the server itself.
+
+Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill worker-1`. The acked rate holds at about 9.7 jobs/s, because the two other workers have spare capacity. Available jobs climb to about 30 and queue wait p99 to about 5 s while they catch up. Once the demo's 15 s visibility timeout passes, about 4 jobs (the killed worker's leases) are reaped and returned to the queue. `docker compose -f deploy/docker-compose.yml start worker-1` brings everything back to normal. Throughput only drops when the remaining workers can't keep up. Run `docker compose -f deploy/docker-compose.yml stop worker-2 worker-3`: one worker (5 slots) handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until you `start` them again.
+
+Example alert rules are in `deploy/prometheus/alerts.yml` (server down, jobs stuck, dead jobs, high reap rate, queue full, RPC errors); see them at http://localhost:9090/alerts. The demo's poison jobs keep `TasklaneDeadJobs` firing, as they should. With several server copies, aggregate the queue gauges with `max by (queue)` (every server reports the same database-wide numbers) and counters with `sum`. All metrics are listed in [design §16.2](docs/design.md#162-metrics).
+
 ## Development
 
 Requires Go and Docker (integration tests start PostgreSQL in a container).
 
     go test ./...
 
-The API is defined in `proto/tasklane/v1/tasklane.proto`. After changing it, run `buf lint && buf generate` and commit `gen/`. buf and the plugins install with `go install`:
+The API is defined in `proto/tasklane/v1/tasklane.proto`. After changing it, run
 
-    go install github.com/bufbuild/buf/cmd/buf@v1.74.0
-    go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
-    go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.32.0
+    go tool -modfile=tools.mod buf lint
+    go tool -modfile=tools.mod buf generate
+
+and commit `gen/`. buf and the protoc plugins are pinned in `tools.mod`, so there is nothing to install. Lint with [golangci-lint](https://golangci-lint.run) v2 (`golangci-lint run ./...`); CI runs the linters, the tests with `-race`, `buf lint`, `buf breaking` and the image build on pushes to `main` and on pull requests.
 
 ## License
 

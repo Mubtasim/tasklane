@@ -22,10 +22,10 @@ func TestQueueStatsCountsEachState(t *testing.T) {
 	leased, err := s.Lease(ctx, "q", 4, 0)
 	require.NoError(t, err)
 	require.Len(t, leased, 4)
-	require.NoError(t, s.Ack(ctx, leased[0].ID, leased[0].LeaseToken))
-	require.NoError(t, s.Ack(ctx, leased[1].ID, leased[1].LeaseToken))
+	require.NoError(t, ackErr(s, ctx, leased[0].ID, leased[0].LeaseToken))
+	require.NoError(t, ackErr(s, ctx, leased[1].ID, leased[1].LeaseToken))
 	// max_attempts 1: the first failure is final.
-	require.NoError(t, s.Nack(ctx, leased[2].ID, leased[2].LeaseToken, "boom", nil))
+	require.NoError(t, nackErr(s, ctx, leased[2].ID, leased[2].LeaseToken, "boom", nil))
 	// One completion falls outside the window.
 	_, err = testPool.Exec(ctx, `UPDATE jobs SET finished_at = now() - interval '1 minute' WHERE id = $1`, leased[1].ID)
 	require.NoError(t, err)

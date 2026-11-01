@@ -14,21 +14,21 @@ import (
 // Lease: if Lease locked the row first, this UPDATE waits, then re-checks
 // state = 'available' on the new row version (EvalPlanQual), finds 'leased'
 // and changes nothing; if Cancel locked it first, Lease skips the row.
-func (s *Store) CancelJob(ctx context.Context, id int64) (store.Job, error) {
+func (s *Store) CancelJob(ctx context.Context, id int64) (store.Job, bool, error) {
 	j, err := scanJob(s.pool.QueryRow(ctx,
 		`UPDATE jobs j SET state = 'cancelled', finished_at = now()
 		 WHERE j.id = $1 AND j.state = 'available'
 		 RETURNING `+jobColumns, id))
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return j, err
+		return j, err == nil, err
 	}
 	// Nothing matched: say why. GetJob returns ErrNotFound for a missing job.
 	j, err = s.GetJob(ctx, id)
 	if err != nil {
-		return store.Job{}, err
+		return store.Job{}, false, err
 	}
 	if j.State == store.StateCancelled {
-		return j, nil
+		return j, false, nil
 	}
-	return store.Job{}, fmt.Errorf("%w: job %d is %s; only available jobs can be cancelled", store.ErrWrongState, id, j.State)
+	return store.Job{}, false, fmt.Errorf("%w: job %d is %s; only available jobs can be cancelled", store.ErrWrongState, id, j.State)
 }

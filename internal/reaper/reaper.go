@@ -6,6 +6,9 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/mubtasim/tasklane/internal/metrics"
+	"github.com/mubtasim/tasklane/internal/store"
 )
 
 const (
@@ -15,15 +18,15 @@ const (
 
 // Store is the part of store.Store the reaper needs.
 type Store interface {
-	ReapExpired(ctx context.Context, limit int) (int, error)
+	ReapExpired(ctx context.Context, limit int) ([]store.ReapedJob, error)
 }
 
 // Run reaps once immediately and then every interval until ctx is cancelled.
 // While a call returns a full batch, it calls again at once instead of waiting
 // for the next tick, so a backlog drains quickly. Errors are logged, never
 // fatal: the next tick tries again. A non-positive interval or batch uses
-// DefaultInterval or DefaultBatch.
-func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *slog.Logger) {
+// DefaultInterval or DefaultBatch. m may be nil.
+func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *slog.Logger, m *metrics.Metrics) {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
@@ -33,7 +36,7 @@ func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *s
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		reapAll(ctx, s, batch, log)
+		reapAll(ctx, s, batch, log, m)
 		if ctx.Err() != nil {
 			return // select picks randomly when a tick is also ready
 		}
@@ -45,15 +48,17 @@ func Run(ctx context.Context, s Store, interval time.Duration, batch int, log *s
 	}
 }
 
-func reapAll(ctx context.Context, s Store, batch int, log *slog.Logger) {
+func reapAll(ctx context.Context, s Store, batch int, log *slog.Logger, m *metrics.Metrics) {
 	for ctx.Err() == nil {
-		n, err := s.ReapExpired(ctx, batch)
+		reaped, err := s.ReapExpired(ctx, batch)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Error("reap expired leases failed", "err", err)
 			}
 			return
 		}
+		m.Reaped(reaped)
+		n := len(reaped)
 		if n > 0 {
 			log.Info("reaped expired leases", "count", n)
 		}

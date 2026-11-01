@@ -2,8 +2,10 @@ package pgstore_test
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,7 +25,7 @@ func TestAckCompletesJob(t *testing.T) {
 	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	j := mustLeaseOne(t, s, "emails", 0)
 
-	require.NoError(t, s.Ack(ctx, j.ID, j.LeaseToken))
+	require.NoError(t, ackErr(s, ctx, j.ID, j.LeaseToken))
 
 	got, err := s.GetJob(ctx, j.ID)
 	require.NoError(t, err)
@@ -40,9 +42,9 @@ func TestAckRequiresCurrentToken(t *testing.T) {
 	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	j := mustLeaseOne(t, s, "emails", 0)
 
-	require.ErrorIs(t, s.Ack(ctx, j.ID, uuid.New()), store.ErrLeaseLost)
-	require.ErrorIs(t, s.Ack(ctx, math.MaxInt64, j.LeaseToken), store.ErrNotFound)
-	require.NoError(t, s.Ack(ctx, j.ID, j.LeaseToken))
+	require.ErrorIs(t, ackErr(s, ctx, j.ID, uuid.New()), store.ErrLeaseLost)
+	require.ErrorIs(t, ackErr(s, ctx, math.MaxInt64, j.LeaseToken), store.ErrNotFound)
+	require.NoError(t, ackErr(s, ctx, j.ID, j.LeaseToken))
 }
 
 // A worker whose Ack response was lost retries it; the retry must succeed
@@ -54,9 +56,9 @@ func TestAckIsIdempotent(t *testing.T) {
 	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	j := mustLeaseOne(t, s, "emails", 0)
 
-	require.NoError(t, s.Ack(ctx, j.ID, j.LeaseToken))
-	require.NoError(t, s.Ack(ctx, j.ID, j.LeaseToken), "repeated ack with the same token")
-	require.ErrorIs(t, s.Ack(ctx, j.ID, uuid.New()), store.ErrLeaseLost, "another token on a completed job")
+	require.NoError(t, ackErr(s, ctx, j.ID, j.LeaseToken))
+	require.NoError(t, ackErr(s, ctx, j.ID, j.LeaseToken), "repeated ack with the same token")
+	require.ErrorIs(t, ackErr(s, ctx, j.ID, uuid.New()), store.ErrLeaseLost, "another token on a completed job")
 }
 
 // Retries of the same ack can race each other (a client retrying on a
@@ -70,16 +72,23 @@ func TestConcurrentSameTokenAcksAllSucceed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
+	var changed atomic.Int32
 	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := s.Ack(ctx, j.ID, j.LeaseToken); err != nil {
+			res, err := s.Ack(ctx, j.ID, j.LeaseToken)
+			if err != nil {
 				t.Errorf("concurrent Ack with the same token = %v, want nil", err)
+				return
+			}
+			if !res.Repeated {
+				changed.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
+	require.EqualValues(t, 1, changed.Load(), "exactly one racing ack changes the job")
 
 	got, err := s.GetJob(ctx, j.ID)
 	require.NoError(t, err)
@@ -95,8 +104,8 @@ func TestAckAfterNackIsRejected(t *testing.T) {
 	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	j := mustLeaseOne(t, s, "emails", 0)
 
-	require.NoError(t, s.Nack(ctx, j.ID, j.LeaseToken, "boom", nil)) // out of attempts: dead
-	require.ErrorIs(t, s.Ack(ctx, j.ID, j.LeaseToken), store.ErrLeaseLost)
+	require.NoError(t, nackErr(s, ctx, j.ID, j.LeaseToken, "boom", nil)) // out of attempts: dead
+	require.ErrorIs(t, ackErr(s, ctx, j.ID, j.LeaseToken), store.ErrLeaseLost)
 }
 
 // A late ack is accepted while nobody else holds the job (design §5).
@@ -107,7 +116,7 @@ func TestLateAckBeforeReapSucceeds(t *testing.T) {
 	j := mustLeaseOne(t, s, "emails", 50*time.Millisecond)
 
 	time.Sleep(100 * time.Millisecond)
-	require.NoError(t, s.Ack(context.Background(), j.ID, j.LeaseToken))
+	require.NoError(t, ackErr(s, context.Background(), j.ID, j.LeaseToken))
 }
 
 func TestHeartbeatExtendsLease(t *testing.T) {
@@ -132,7 +141,7 @@ func TestNackRetriesThenBuries(t *testing.T) {
 	id := mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 
 	j := mustLeaseOne(t, s, "emails", 0)
-	require.NoError(t, s.Nack(ctx, j.ID, j.LeaseToken, "smtp timeout", nil))
+	require.NoError(t, nackErr(s, ctx, j.ID, j.LeaseToken, "smtp timeout", nil))
 	got, err := s.GetJob(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, store.StateAvailable, got.State)
@@ -140,7 +149,7 @@ func TestNackRetriesThenBuries(t *testing.T) {
 
 	j = mustLeaseOne(t, s, "emails", 0)
 	require.Equal(t, 2, j.Attempts)
-	require.NoError(t, s.Nack(ctx, j.ID, j.LeaseToken, "smtp timeout again", nil))
+	require.NoError(t, nackErr(s, ctx, j.ID, j.LeaseToken, "smtp timeout again", nil))
 	got, err = s.GetJob(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, store.StateDead, got.State)
@@ -160,8 +169,8 @@ func TestNackUsesBackoffOrExplicitRetryAt(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, jobs, 2)
 	retryAt := time.Now().Add(10 * time.Minute)
-	require.NoError(t, s.Nack(ctx, jobs[0].ID, jobs[0].LeaseToken, "boom", nil))
-	require.NoError(t, s.Nack(ctx, jobs[1].ID, jobs[1].LeaseToken, "rate limited", &retryAt))
+	require.NoError(t, nackErr(s, ctx, jobs[0].ID, jobs[0].LeaseToken, "boom", nil))
+	require.NoError(t, nackErr(s, ctx, jobs[1].ID, jobs[1].LeaseToken, "rate limited", &retryAt))
 
 	gotA, err := s.GetJob(ctx, a)
 	require.NoError(t, err)
@@ -181,7 +190,7 @@ func TestNackRequiresCurrentToken(t *testing.T) {
 	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
 	j := mustLeaseOne(t, s, "emails", 0)
 
-	require.ErrorIs(t, s.Nack(context.Background(), j.ID, uuid.New(), "x", nil), store.ErrLeaseLost)
+	require.ErrorIs(t, nackErr(s, context.Background(), j.ID, uuid.New(), "x", nil), store.ErrLeaseLost)
 }
 
 // Nack holds a transaction while it decides the error to return, so the stale
@@ -208,10 +217,47 @@ func TestStaleNacksDoNotExhaustPool(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := s.Nack(tctx, j.ID, uuid.New(), "x", nil); err != store.ErrLeaseLost {
+			if err := nackErr(s, tctx, j.ID, uuid.New(), "x", nil); !errors.Is(err, store.ErrLeaseLost) {
 				t.Errorf("Nack with stale token = %v, want ErrLeaseLost", err)
 			}
 		}()
 	}
 	wg.Wait()
+}
+
+func TestAckReportsQueueAndRepeat(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails"})
+	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+	j := mustLeaseOne(t, s, "emails", 0)
+
+	res, err := s.Ack(ctx, j.ID, j.LeaseToken)
+	require.NoError(t, err)
+	require.Equal(t, store.AckResult{Queue: "emails"}, res)
+
+	res, err = s.Ack(ctx, j.ID, j.LeaseToken)
+	require.NoError(t, err)
+	require.Equal(t, store.AckResult{Queue: "emails", Repeated: true}, res)
+}
+
+func TestNackReportsDead(t *testing.T) {
+	s := newStore(t) // zero backoff: the retry is immediately leasable
+	ctx := context.Background()
+	mustQueue(t, s, store.Queue{Name: "emails", MaxAttempts: 2})
+	mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "welcome"})
+
+	j := mustLeaseOne(t, s, "emails", 0)
+	res, err := s.Nack(ctx, j.ID, j.LeaseToken, "boom", nil)
+	require.NoError(t, err)
+	require.Equal(t, store.NackResult{Queue: "emails", Dead: false}, res)
+
+	j = mustLeaseOne(t, s, "emails", 0)
+	res, err = s.Nack(ctx, j.ID, j.LeaseToken, "boom", nil)
+	require.NoError(t, err)
+	require.Equal(t, store.NackResult{Queue: "emails", Dead: true}, res)
+
+	res, err = s.Nack(ctx, j.ID, uuid.New(), "boom", nil)
+	require.ErrorIs(t, err, store.ErrLeaseLost)
+	require.Equal(t, store.NackResult{}, res, "an error returns the zero result")
 }

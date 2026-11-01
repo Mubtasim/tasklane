@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	"github.com/mubtasim/tasklane/internal/metrics"
 	"github.com/mubtasim/tasklane/internal/store"
 )
 
@@ -38,12 +39,18 @@ type Server struct {
 	log          *slog.Logger
 	pollInterval time.Duration
 	depths       *depthCache
+	metrics      *metrics.Metrics // nil records nothing
 
 	stopOnce sync.Once
 	stopping chan struct{}
 }
 
 type Option func(*Server)
+
+// WithMetrics records the server's metrics in m (design §16.2).
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(s *Server) { s.metrics = m }
+}
 
 // WithPollInterval overrides DefaultPollInterval (tests use it). A d <= 0
 // is ignored.
@@ -104,11 +111,15 @@ func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*
 		return nil, err
 	}
 	if s.depths.isFull(req.GetQueue()) {
+		s.metrics.EnqueueRefused(req.GetQueue())
 		return nil, queueFullError(req.GetQueue())
 	}
 	res, err := s.store.Enqueue(ctx, []store.NewJob{job})
 	if err != nil {
 		return nil, toStatus(s.log, "Enqueue", err)
+	}
+	if res[0].Created {
+		s.metrics.Enqueued(req.GetQueue(), 1)
 	}
 	return &tasklanev1.EnqueueResponse{JobId: res[0].ID, Created: res[0].Created}, nil
 }
@@ -118,6 +129,7 @@ func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchR
 		return nil, invalid("batch must be at most %d bytes as protobuf, got %d", MaxMessageBytes-maxBatchSlack, n)
 	}
 	if s.depths.isFull(req.GetQueue()) {
+		s.metrics.EnqueueRefused(req.GetQueue())
 		return nil, queueFullError(req.GetQueue())
 	}
 	jobs := make([]store.NewJob, 0, len(req.GetJobs()))
@@ -133,9 +145,14 @@ func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchR
 		return nil, toStatus(s.log, "EnqueueBatch", err)
 	}
 	out := &tasklanev1.EnqueueBatchResponse{Results: make([]*tasklanev1.EnqueueResult, len(res))}
+	created := 0
 	for i, r := range res {
 		out.Results[i] = &tasklanev1.EnqueueResult{JobId: r.ID, Created: r.Created}
+		if r.Created {
+			created++
+		}
 	}
+	s.metrics.Enqueued(req.GetQueue(), created)
 	return out, nil
 }
 
@@ -182,6 +199,7 @@ func (s *Server) Lease(ctx context.Context, req *tasklanev1.LeaseRequest) (*task
 			return nil, toStatus(s.log, "Lease", err)
 		}
 		if len(jobs) > 0 || wait <= 0 {
+			s.metrics.Leased(jobs)
 			resp, err := leaseResponse(jobs)
 			return resp, toStatus(s.log, "Lease", err)
 		}
@@ -215,8 +233,12 @@ func (s *Server) Ack(ctx context.Context, req *tasklanev1.AckRequest) (*tasklane
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.Ack(ctx, req.GetId(), token); err != nil {
+	res, err := s.store.Ack(ctx, req.GetId(), token)
+	if err != nil {
 		return nil, toStatus(s.log, "Ack", err)
+	}
+	if !res.Repeated {
+		s.metrics.Acked(res.Queue)
 	}
 	return &tasklanev1.AckResponse{}, nil
 }
@@ -237,9 +259,11 @@ func (s *Server) Nack(ctx context.Context, req *tasklanev1.NackRequest) (*taskla
 	// A long error (a stack trace, say) is truncated rather than rejected:
 	// failing the Nack would only leave the job to the reaper.
 	errMsg := store.TruncateUTF8(req.GetError(), store.MaxErrorBytes)
-	if err := s.store.Nack(ctx, req.GetId(), token, errMsg, retryAt); err != nil {
+	res, err := s.store.Nack(ctx, req.GetId(), token, errMsg, retryAt)
+	if err != nil {
 		return nil, toStatus(s.log, "Nack", err)
 	}
+	s.metrics.Nacked(res.Queue, res.Dead)
 	return &tasklanev1.NackResponse{}, nil
 }
 

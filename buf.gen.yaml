@@ -1,12 +1,12 @@
 version: v2
 clean: true
 plugins:
-  - local: protoc-gen-go
+  - local: ["go", "tool", "-modfile=tools.mod", "protoc-gen-go"]
     out: gen
     opt: paths=source_relative
-  - local: protoc-gen-go-grpc
+  - local: ["go", "tool", "-modfile=tools.mod", "protoc-gen-go-grpc"]
     out: gen
     opt: paths=source_relative
-  - local: protoc-gen-grpc-gateway
+  - local: ["go", "tool", "-modfile=tools.mod", "protoc-gen-grpc-gateway"]
     out: gen
     opt: paths=source_relative

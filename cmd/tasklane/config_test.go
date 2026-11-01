@@ -22,7 +22,18 @@ func TestLoadConfigDefaults(t *testing.T) {
 		Retention:      24 * time.Hour,
 		DeadRetention:  168 * time.Hour,
 		PruneInterval:  time.Minute,
+		MetricsAddr:    ":9464",
 	}, cfg)
+}
+
+func TestLoadConfigMetricsAddr(t *testing.T) {
+	cfg, err := LoadConfig(env(map[string]string{"TASKLANE_DATABASE_URL": "postgres://x", "TASKLANE_METRICS_ADDR": "off"}))
+	require.NoError(t, err)
+	require.Empty(t, cfg.MetricsAddr, "off disables the metrics server")
+
+	cfg, err = LoadConfig(env(map[string]string{"TASKLANE_DATABASE_URL": "postgres://x", "TASKLANE_METRICS_ADDR": "127.0.0.1:9999"}))
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:9999", cfg.MetricsAddr)
 }
 
 func TestLoadConfigRetention(t *testing.T) {

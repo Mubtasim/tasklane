@@ -1,0 +1,14 @@
+# Prometheus for the demo: scrapes the Tasklane server every 5 s (15 s is the
+# usual default; 5 s keeps short demo runs readable) and evaluates the
+# example alerts.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: tasklane
+    static_configs:
+      - targets: ["tasklane:9464"]

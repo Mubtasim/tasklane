@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
@@ -66,4 +67,15 @@ func mustLeaseOne(t *testing.T, s *pgstore.Store, queue string, ttl time.Duratio
 	require.NoError(t, err)
 	require.Len(t, jobs, 1)
 	return jobs[0]
+}
+
+// ackErr and nackErr drop the result for tests that only care about the error.
+func ackErr(s *pgstore.Store, ctx context.Context, id int64, token uuid.UUID) error {
+	_, err := s.Ack(ctx, id, token)
+	return err
+}
+
+func nackErr(s *pgstore.Store, ctx context.Context, id int64, token uuid.UUID, errMsg string, retryAt *time.Time) error {
+	_, err := s.Nack(ctx, id, token, errMsg, retryAt)
+	return err
 }

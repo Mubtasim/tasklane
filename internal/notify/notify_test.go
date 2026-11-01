@@ -33,7 +33,8 @@ func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard
 // startListener runs a Listener until the test ends and waits for its LISTEN.
 func startListener(t *testing.T) *Listener {
 	t.Helper()
-	l := New(testDB.DSN, quietLogger())
+	l, err := New(testDB.DSN, quietLogger())
+	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -80,8 +81,25 @@ func requireNotWoken(t *testing.T, ch <-chan struct{}) {
 	}
 }
 
+func TestNewRejectsBadDSN(t *testing.T) {
+	_, err := New("postgres://%zz", quietLogger())
+	require.Error(t, err)
+}
+
+func TestNewSetsConnectTimeout(t *testing.T) {
+	l, err := New("postgres://u:p@localhost:5432/db", quietLogger())
+	require.NoError(t, err)
+	require.Equal(t, ConnectTimeout, l.cfg.ConnectTimeout)
+	require.Equal(t, ApplicationName, l.cfg.RuntimeParams["application_name"])
+
+	l, err = New("postgres://u:p@localhost:5432/db?connect_timeout=3", quietLogger())
+	require.NoError(t, err)
+	require.Equal(t, 3*time.Second, l.cfg.ConnectTimeout, "an explicit connect_timeout wins")
+}
+
 func TestWakeIsNonBlockingAndCollapses(t *testing.T) {
-	l := New("", quietLogger())
+	l, err := New("", quietLogger())
+	require.NoError(t, err)
 	ch, unsubscribe := l.Subscribe("emails")
 	defer unsubscribe()
 
@@ -92,7 +110,8 @@ func TestWakeIsNonBlockingAndCollapses(t *testing.T) {
 }
 
 func TestUnsubscribeStopsWakeUps(t *testing.T) {
-	l := New("", quietLogger())
+	l, err := New("", quietLogger())
+	require.NoError(t, err)
 	ch, unsubscribe := l.Subscribe("emails")
 	unsubscribe()
 	unsubscribe() // idempotent

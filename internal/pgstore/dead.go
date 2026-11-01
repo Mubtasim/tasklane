@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/mubtasim/tasklane/internal/store"
 )
 
@@ -66,7 +67,7 @@ func (s *Store) RedriveDead(ctx context.Context, queue string, ids []int64, limi
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	const update = `
 		UPDATE jobs j

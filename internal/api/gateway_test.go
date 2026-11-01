@@ -205,7 +205,7 @@ func TestHTTPQueueFullIs429WithRetryAfter(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	code, _ = call(t, "POST", base+"/v1/queues/small/jobs", "", `{"kind":"k"}`)
 	require.Equal(t, http.StatusOK, code)
-	require.NoError(t, e.server.depths.refresh(context.Background(), e.store))
+	mustRefresh(t, e.server.depths, context.Background(), e.store)
 
 	resp, _ := callRaw(t, "POST", base+"/v1/queues/small/jobs", "", `{"kind":"k"}`)
 	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
