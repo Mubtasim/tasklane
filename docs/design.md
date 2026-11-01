@@ -317,7 +317,8 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M3a | mid-Dec | Pruner, DLQ listing and redrive, cancel, backpressure (§15) |
 | M3b | — | `LeaseStream`: **deferred past v1** (see below) |
 | M4a | mid-Dec | CI, Prometheus metrics, Grafana dashboard, alert rules (§16) |
-| M4b | end of Dec | Tracing, invariant and chaos tests, two server copies behind a gRPC-aware load balancer |
+| M4b | end of Dec | Invariant and chaos tests, two server copies behind Envoy (§17) |
+| M4c | end of Dec | Tracing with OpenTelemetry and Jaeger |
 | M5 | mid-Jan 2027 | TS and C# SDKs, load tests and benchmark report, v1.0.0 release and a blog post |
 
 Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.
@@ -649,3 +650,107 @@ The RPC latency panel leaves out `Lease`, whose duration includes the long-poll 
 - Everything runs with `-race`, locally and in CI. The demo and screenshot are checked by hand.
 
 Out of scope: tracing, invariant and chaos tests, two server copies (M4b); SDK-side metrics; a `priority` label on depth.
+
+## 17. M4b: invariant and chaos tests, two servers behind Envoy
+
+Decided 2026-11-02. This section is the M4b spec. M4 was split again: M4b proves correctness under failure; tracing with OpenTelemetry and Jaeger is M4c. If either test finds a real bug, fixing it is part of M4b.
+
+### 17.1 SDK: `WorkerOptions.OnResult`
+
+The SDK sends Ack and Nack after the handler returns, so a caller cannot see whether the server accepted them. A new optional callback reports each run's outcome once, after the SDK has finished with the job:
+
+```go
+type Outcome int
+
+const (
+	OutcomeAcked     Outcome = iota + 1 // the server accepted the Ack
+	OutcomeNacked                       // the server accepted the Nack (retry scheduled or dead)
+	OutcomeLeaseLost                    // the server rejected a heartbeat, Ack or Nack: the lease is no longer ours
+	OutcomeGaveUp                       // Ack or Nack could not reach the server before the local lease deadline
+)
+
+type Result struct {
+	Job     *LeasedJob
+	Outcome Outcome
+	Start   time.Time // the handler started
+	End     time.Time // the outcome was known
+	Err     error     // the handler's error, if any
+}
+
+// WorkerOptions
+OnResult func(Result) // called from the job's goroutine; must be safe for concurrent use
+```
+
+A shutdown Nack that the server accepts reports `OutcomeNacked`. `OnResult` is useful beyond the tests (logging, the caller's own metrics). A panic in `OnResult` is recovered and logged, like a panic in a handler.
+
+### 17.2 The invariants
+
+A shared package, `test/invariants`, holds one checker used by both tests. Its input is the run ledger (one `Result` per run, plus the worker's name), the producer's ledger (the idempotency keys it enqueued) and the final `jobs` table read from Postgres after the queue drains. It checks:
+
+1. **Nothing lost or stuck.** Every key in the producer's ledger has a job, and every job is `completed` or `dead`; none is `available` or `leased`.
+2. **No duplicate jobs.** One job per idempotency key, even when an enqueue was retried after its server died.
+3. **Fencing works.** Each `completed` job has exactly one run with `OutcomeAcked`, and that run's attempt is the job's last attempt (`jobs.attempts`); a `dead` job has no `OutcomeAcked` run. Every `OutcomeLeaseLost` run has an earlier attempt than the job's last one.
+4. **Repeat runs are justified.** For consecutive attempts k and k+1 of a job, either attempt k ended with `OutcomeNacked`, or attempt k+1 started no earlier than attempt k's start plus the visibility timeout, minus a 500 ms tolerance (attempt k's lease cannot have expired sooner, since every lease lasts at least one visibility timeout from its lease time, which comes before the handler starts).
+5. **Counters match the database** (invariant test only): `tasklane_jobs_acked_total` equals the completed count, `tasklane_jobs_dead_total` the dead count, and `tasklane_jobs_reaped_total` is at least the number of `OutcomeLeaseLost` and `OutcomeGaveUp` runs whose job was later leased again. The chaos test skips this rule, because a restarted server starts its counters at 0.
+
+On a failure the checker reports the seed, the rule broken and the job with all its runs in order.
+
+### 17.3 Invariant test (in-process)
+
+`test/invariant`, part of the normal `go test ./...`:
+
+- One Postgres from `internal/testpg`; two Tasklane servers in the test process on that database, each with its own reaper, pruner and depth refresh, so concurrent background loops are exercised.
+- A producer enqueues every job with an idempotency key; workers (5 slots each) are split between the two servers. The queue's visibility timeout is 2 s and max attempts 3.
+- Each job draws its behaviour from a seeded random source: about 85% succeed, 10% fail once or twice and then succeed, 3% are poison (always fail, so they go dead), 2% run longer than the visibility timeout (their lease expires, the job is leased again, and the late Ack is rejected).
+- A few workers stop abruptly mid-run: their gRPC connection is closed, so their in-flight jobs can't be acked and must be reaped.
+- Sizes: 10 workers × 1,000 jobs by default (about 15 s); 50 workers × 10,000 jobs with `-invariant.full` (about 1–2 min on the dev laptop). `-invariant.seed` replays a run.
+- After the producer finishes, the test waits until nothing is available or leased (maximum 60 s), then runs all five rules.
+
+### 17.4 Two servers behind Envoy
+
+`deploy/docker-compose.yml` runs `tasklane-1` and `tasklane-2` (same image, same database) and `envoy` (pinned image). Producers, workers and `tasklane-watch` talk only to Envoy. Envoy owns the host ports 127.0.0.1:7070 (gRPC) and 127.0.0.1:8080 (HTTP/JSON), so every README command is unchanged. The stack grows by about 80 MB.
+
+`deploy/envoy/envoy.yaml`:
+
+- **Balancing:** `least_request` per request (HTTP/2 to the servers for gRPC). Long-poll Leases hold a request on a server for up to 30 s, which round robin would ignore.
+- **Health checks:** `GET /readyz` on each server's HTTP port every 2 s; unhealthy after 2 failures, healthy after 1 success.
+- **Outlier detection:** a server with 3 consecutive gateway errors is ejected for 10 s, before its health check notices.
+- **Route timeout 35 s.** Envoy's default of 15 s would cut every idle Lease long-poll (`MaxWait` = 30 s) halfway.
+- **Retries only when the request never reached a server** (`connect-failure`, `refused-stream`, `reset-before-request`). A Lease that reached a server may already have leased jobs, so it is never retried by the proxy; the SDK handles the error as it does today.
+- The admin interface is not published.
+
+Why not alternatives: an L4 balancer would pin each client's single HTTP/2 connection to one server; client-side `round_robin` would have to be rebuilt in every SDK and wouldn't cover HTTP/JSON; nginx needs its paid edition for active gRPC health checks.
+
+**Monitoring.** Prometheus scrapes both servers (`instance` label). The dashboard gains "Servers up" (`count(up{job="tasklane"} == 1)`) and "Requests per server" (`sum by (instance) (rate(tasklane_rpc_duration_seconds_count[1m]))`). `TasklaneDown` already fires per server.
+
+### 17.5 Chaos test (Docker)
+
+`test/chaos`, behind the `chaos` build tag (`go test -tags chaos ./test/chaos`), so `go test ./...` never starts it:
+
+1. **Start** the demo stack with `deploy/chaos.override.yml`: visibility timeout 10 s; the demo worker writes each `Result` as one JSON line to `$DEMO_LEDGER_DIR/<worker>.jsonl` (one `write` per line, so a SIGKILL loses nothing already written); the producer writes each idempotency key to its ledger before sending and retries the enqueue until it succeeds; Postgres is published on 127.0.0.1:5433 for the checker. The ledger directory is a bind mount in a temp directory.
+2. **Run for 3 minutes** with the producer at a steady rate. About every 15 s, one fault is chosen from a seeded random source:
+   - kill a worker (`docker compose kill`), start it again after 10 s;
+   - kill a server, start it again after 15 s;
+   - pause a worker for 15 s (longer than the visibility timeout), then unpause it: a zombie whose late Acks must be rejected;
+   - restart Postgres (a few seconds down): servers reconnect, including the LISTEN connection.
+   One fault at a time, and never both servers down.
+3. **Heal and drain:** stop the producer, start anything still stopped, wait until nothing is available or leased (maximum 2 min).
+4. **Check** rules 1–4 (§17.2).
+5. **On failure:** print the seed and the checker's report, and save `docker compose logs` next to the ledger.
+
+A run takes about 5 minutes and uses the stack's ~700 MB.
+
+### 17.6 Follow-ups folded in
+
+- Tests: heartbeat with a zero TTL, two reapers on the same expired leases, cancel during a retry backoff.
+- `TasklaneStatsStale` alert: `tasklane_queue_stats_age_seconds > 30` for 1 m.
+- Atomic gauge updates: a scrape never sees a half-replaced set of depth series (a custom collector serves the last complete snapshot).
+
+### 17.7 CI and docs
+
+- The default-size invariant test runs on every PR inside the existing `test` job.
+- New `.github/workflows/chaos.yml`: the chaos test nightly and on manual trigger (`workflow_dispatch`); on failure it uploads the ledger and logs.
+- README: the Demo section gains the server-kill lab (`docker compose kill tasklane-1`: "Servers up" drops to 1, traffic moves to `tasklane-2`, throughput holds); a new Correctness section says what the tests prove and how to run them.
+- `docs/interview-notes.md`: the invariants and why each matters, the zombie worker and fencing, L4 vs L7 balancing and proxy vs client-side, the proxy-timeout-shorter-than-long-poll pitfall, and why more server copies don't add throughput (Postgres is shared; the fix at scale is batching, a leader for background loops, PgBouncer).
+
+Out of scope: tracing (M4c); network faults (Toxiproxy); the load test (M5); leader election and PgBouncer.
