@@ -53,6 +53,9 @@ func pick(ws []weighted, roll int) string {
 // retryDelay is how long ledger mode waits before retrying a failed enqueue.
 const retryDelay = 200 * time.Millisecond
 
+// enqueueTimeout caps a single Enqueue attempt.
+const enqueueTimeout = 5 * time.Second
+
 // sleep waits d and reports false if ctx ended first.
 func sleep(ctx context.Context, d time.Duration) bool {
 	select {
@@ -92,7 +95,6 @@ func main() {
 	var led *ledger.Writer
 	runID := ""
 	if cfg.LedgerDir != "" {
-		var err error
 		if led, err = ledger.Open(filepath.Join(cfg.LedgerDir, "producer.enqueued.jsonl")); err != nil {
 			log.Error("open ledger", "err", err)
 			os.Exit(1)
@@ -120,7 +122,12 @@ func main() {
 			job.IdempotencyKey = fmt.Sprintf("%s-%d", runID, seq)
 		}
 		for {
-			res, err := client.Enqueue(ctx, cfg.Queue, job)
+			// Bound each attempt so a paused server cannot stall the producer;
+			// the retry reuses the same key, so a timed-out call that did
+			// land is not enqueued twice.
+			actx, cancel := context.WithTimeout(ctx, enqueueTimeout)
+			res, err := client.Enqueue(actx, cfg.Queue, job)
+			cancel()
 			if err == nil {
 				if led != nil {
 					if err := led.Append(ledger.Enqueued{Key: job.IdempotencyKey, JobID: res.JobID}); err != nil {
