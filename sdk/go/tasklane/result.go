@@ -48,9 +48,12 @@ type Result struct {
 	Err     error     // the handler's error, or the shutdown reason when the worker cancelled and nacked a still-running job at shutdown
 }
 
-// report calls OnResult, recovering a panic so a faulty observer can't stop
+// report ends the run's handle span and calls OnResult, recovering a panic so a faulty observer can't stop
 // the worker.
 func (w *Worker) report(a *activeJob, o Outcome, err error) {
+	if a.span != nil {
+		endHandleSpan(a.span, a.job, o, err)
+	}
 	if w.opts.OnResult == nil {
 		return
 	}
