@@ -26,7 +26,13 @@ func main() {
 		log.Error("DEMO_CONCURRENCY must be a positive integer", "value", os.Getenv("DEMO_CONCURRENCY"))
 		os.Exit(1)
 	}
-	client, err := demo.Dial(cfg)
+	tp, flush, err := demo.SetupTracing(context.Background(), name)
+	if err != nil {
+		log.Error("tracing", "err", err)
+		os.Exit(1)
+	}
+	defer flush()
+	client, err := demo.Dial(cfg, tp)
 	if err != nil {
 		log.Error("dial", "err", err)
 		os.Exit(1)

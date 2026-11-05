@@ -18,6 +18,9 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/mubtasim/tasklane/examples/demo/internal/demo"
 	"github.com/mubtasim/tasklane/internal/ledger"
 	"github.com/mubtasim/tasklane/sdk/go/tasklane"
@@ -74,7 +77,14 @@ func main() {
 		log.Error("DEMO_RATE must be a positive number of jobs per second", "value", os.Getenv("DEMO_RATE"))
 		os.Exit(1)
 	}
-	client, err := demo.Dial(cfg)
+	tp, flush, err := demo.SetupTracing(context.Background(), "producer")
+	if err != nil {
+		log.Error("tracing", "err", err)
+		os.Exit(1)
+	}
+	// Deferred first so it runs after client.Close and sends the last spans.
+	defer flush()
+	client, err := demo.Dial(cfg, tp)
 	if err != nil {
 		log.Error("dial", "err", err)
 		os.Exit(1)
@@ -121,11 +131,14 @@ func main() {
 		if led != nil {
 			job.IdempotencyKey = fmt.Sprintf("%s-%d", runID, seq)
 		}
+		// One root span per job, so the trace has a real top and retries
+		// of the same enqueue appear under it.
+		jctx, span := tp.Tracer("demo").Start(ctx, "demo produce", trace.WithAttributes(attribute.String("tasklane.kind", kind)))
 		for {
 			// Bound each attempt so a paused server cannot stall the producer;
 			// the retry reuses the same key, so a timed-out call that did
 			// land is not enqueued twice.
-			actx, cancel := context.WithTimeout(ctx, enqueueTimeout)
+			actx, cancel := context.WithTimeout(jctx, enqueueTimeout)
 			res, err := client.Enqueue(actx, cfg.Queue, job)
 			cancel()
 			if err == nil {
@@ -159,6 +172,7 @@ func main() {
 				break
 			}
 		}
+		span.End()
 		if seq%100 == 0 {
 			log.Info("enqueued", "total", seq)
 		}

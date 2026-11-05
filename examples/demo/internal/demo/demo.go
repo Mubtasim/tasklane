@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/mubtasim/tasklane/internal/tracing"
 	"github.com/mubtasim/tasklane/sdk/go/tasklane"
 )
 
@@ -53,8 +55,24 @@ func Env(key, fallback string) string {
 	return fallback
 }
 
-func Dial(cfg Config) (*tasklane.Client, error) {
-	var opts []tasklane.Option
+// SetupTracing exports the program's spans when OTEL_EXPORTER_OTLP_ENDPOINT
+// is set, as any application using the SDK would; flush sends what is
+// buffered and is safe to call once at exit.
+func SetupTracing(ctx context.Context, service string) (trace.TracerProvider, func(), error) {
+	tp, shutdown, err := tracing.Setup(ctx, os.Getenv, service)
+	if err != nil {
+		return nil, nil, err
+	}
+	flush := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = shutdown(ctx)
+	}
+	return tp, flush, nil
+}
+
+func Dial(cfg Config, tp trace.TracerProvider) (*tasklane.Client, error) {
+	opts := []tasklane.Option{tasklane.WithTracerProvider(tp)}
 	if cfg.APIKey != "" {
 		opts = append(opts, tasklane.WithAPIKey(cfg.APIKey))
 	}

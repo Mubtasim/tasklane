@@ -92,3 +92,44 @@ func TestAlertRulesUseOnlyRealMetrics(t *testing.T) {
 		require.True(t, known[n], "alerts.yml uses unknown metric %s", n)
 	}
 }
+
+func TestDemoWiresTracing(t *testing.T) {
+	read := func(p string) string {
+		b, err := os.ReadFile("../../deploy/" + p)
+		require.NoError(t, err)
+		return string(b)
+	}
+	compose := read("docker-compose.yml")
+	require.Regexp(t, `image: jaegertracing/jaeger:2\.\d+\.\d+`, compose, "Jaeger pinned to an exact v2 version")
+	require.Contains(t, compose, "--enable-feature=exemplar-storage")
+	require.Contains(t, compose, "OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317")
+	require.Contains(t, compose, `127.0.0.1:16686:16686`)
+	require.Contains(t, read("jaeger/config.yaml"), "max_traces: 50000")
+
+	jaegerDS := read("grafana/provisioning/datasources/jaeger.yml")
+	require.Contains(t, jaegerDS, "type: jaeger")
+	require.Contains(t, jaegerDS, "uid: jaeger")
+	require.Contains(t, read("grafana/provisioning/datasources/prometheus.yml"), "datasourceUid: jaeger")
+
+	raw, err := os.ReadFile("../../deploy/grafana/dashboards/tasklane.json")
+	require.NoError(t, err)
+	var dash struct {
+		Panels []struct {
+			Title   string `json:"title"`
+			Targets []struct {
+				Exemplar bool `json:"exemplar"`
+			} `json:"targets"`
+		} `json:"panels"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &dash))
+	withExemplars := 0
+	for _, p := range dash.Panels {
+		if strings.HasPrefix(p.Title, "Queue wait") || strings.HasPrefix(p.Title, "RPC latency") {
+			for _, tg := range p.Targets {
+				require.True(t, tg.Exemplar, "panel %q target without exemplars", p.Title)
+			}
+			withExemplars++
+		}
+	}
+	require.Equal(t, 2, withExemplars)
+}

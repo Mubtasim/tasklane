@@ -1,13 +1,15 @@
 # Tasklane demo: PostgreSQL, two servers behind Envoy, a producer, three
-# workers, Prometheus and Grafana. From the repo root:
+# workers, Prometheus, Grafana and Jaeger. From the repo root:
 #   docker compose -f deploy/docker-compose.yml up --build
-# then open http://localhost:3000 for the dashboard.
+# then open http://localhost:3000 for the dashboard and http://localhost:16686
+# for traces.
 name: tasklane-demo
 
 x-demo-env: &demo-env
   TASKLANE_ADDR: envoy:7070
   TASKLANE_API_KEY: ${TASKLANE_API_KEY:-demo-key}
   DEMO_QUEUE: demo
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
 
 x-worker: &worker
   image: tasklane:dev
@@ -16,19 +18,26 @@ x-worker: &worker
   # Longer than the worker's 25 s ShutdownTimeout: Docker's default is 10 s,
   # after which it sends SIGKILL.
   stop_grace_period: 30s
-  depends_on: [envoy]
+  depends_on: [envoy, jaeger]
+
+# A merge key replaces a service's whole environment map, so the settings the
+# two servers share live in their own anchor and each server adds its
+# OTEL_SERVICE_NAME next to them.
+x-server-env: &server-env
+  TASKLANE_DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
+  TASKLANE_API_KEYS: ${TASKLANE_API_KEY:-demo-key}
+  TASKLANE_REAPER_INTERVAL: 2s
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
 
 x-server: &server
   image: tasklane:dev
-  environment:
-    TASKLANE_DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable
-    TASKLANE_API_KEYS: ${TASKLANE_API_KEY:-demo-key}
-    TASKLANE_REAPER_INTERVAL: 2s
   # Both servers migrate at startup; the advisory lock in pgstore.Migrate
   # makes that safe.
   depends_on:
     postgres:
       condition: service_healthy
+    jaeger:
+      condition: service_started
 
 services:
   postgres:
@@ -46,12 +55,18 @@ services:
 
   tasklane-1:
     <<: *server
+    environment:
+      <<: *server-env
+      OTEL_SERVICE_NAME: tasklane-1
     build:
       context: ..
       dockerfile: Dockerfile
 
   tasklane-2:
     <<: *server
+    environment:
+      <<: *server-env
+      OTEL_SERVICE_NAME: tasklane-2
     pull_policy: never
 
   # Owns the host ports 7070 (gRPC) and 8080 (HTTP). The admin interface is
@@ -73,31 +88,46 @@ services:
     environment:
       <<: *demo-env
       DEMO_RATE: "10"
-    depends_on: [envoy]
+      OTEL_SERVICE_NAME: producer
+    depends_on: [envoy, jaeger]
 
   worker-1:
     <<: *worker
     environment:
       <<: *demo-env
       WORKER_NAME: worker-1
+      OTEL_SERVICE_NAME: worker-1
 
   worker-2:
     <<: *worker
     environment:
       <<: *demo-env
       WORKER_NAME: worker-2
+      OTEL_SERVICE_NAME: worker-2
 
   worker-3:
     <<: *worker
     environment:
       <<: *demo-env
       WORKER_NAME: worker-3
+      OTEL_SERVICE_NAME: worker-3
+
+  # Traces from the servers, the producer and the workers. In-memory storage
+  # capped at 50,000 traces; the UI is on http://localhost:16686.
+  jaeger:
+    image: jaegertracing/jaeger:2.23.0
+    command: ["--config", "/etc/jaeger/config.yaml"]
+    volumes:
+      - ./jaeger:/etc/jaeger:ro
+    ports:
+      - "127.0.0.1:16686:16686"
 
   prometheus:
     image: prom/prometheus:v3.15.1
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=1d
+      - --enable-feature=exemplar-storage
     volumes:
       - ./prometheus:/etc/prometheus:ro
     ports:
@@ -121,4 +151,4 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "127.0.0.1:3000:3000"
-    depends_on: [prometheus]
+    depends_on: [prometheus, jaeger]
