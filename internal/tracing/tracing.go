@@ -7,6 +7,7 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -16,8 +17,14 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// Enabled reports whether an OTLP endpoint is configured.
+// Enabled reports whether an OTLP endpoint is configured and tracing is not
+// switched off. The standard OTEL_SDK_DISABLED=true and
+// OTEL_TRACES_EXPORTER=none win over an endpoint, so an operator can turn
+// tracing off without removing the endpoint from a shared environment.
 func Enabled(getenv func(string) string) bool {
+	if strings.EqualFold(getenv("OTEL_SDK_DISABLED"), "true") || strings.EqualFold(getenv("OTEL_TRACES_EXPORTER"), "none") {
+		return false
+	}
 	return getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != ""
 }
 

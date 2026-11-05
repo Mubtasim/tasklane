@@ -83,8 +83,7 @@ w := client.NewWorker("emails", tasklane.WorkerOptions{Concurrency: 5, OnResult:
 }})
 ```
 
-
-**Tracing.** `tasklane.Dial(addr, tasklane.WithTracerProvider(tp))` records a client span for every RPC with your tracer provider (default: the global one; a worker uses its client's). A handler's `ctx` already carries the job's span, so anything it traces nests under `handle <kind>`. Enqueue with a `ctx` that holds your request's span and the job joins that trace. The SDK depends only on the OpenTelemetry API; you configure the exporter.
+**Tracing.** `tasklane.Dial(addr, tasklane.WithTracerProvider(tp))` records a client span for every RPC with your tracer provider (default: the global one; a worker uses its client's). A handler's `ctx` already carries the job's span, so anything it traces nests under `handle <kind>`. Enqueue with a `ctx` that holds your request's span and the job joins that trace. The SDK depends only on the OpenTelemetry API; you configure the exporter. Handler errors are exported to the tracing backend (span status and recorded error). A handle span whose Ack is still in flight when the worker's shutdown grace expires ends after `Run` returns (same as `OnResult`), so a program that flushes its tracer right after `Run` may miss it.
 
 ## Demo
 
@@ -182,9 +181,9 @@ To find one yourself: open Jaeger, pick a worker service (`worker-1`, `worker-2`
 
 **From a graph to a trace.** The "Queue wait" and "RPC latency" panels in Grafana carry exemplars: small dots on the graph, each a sampled request. Click one to open its trace in Jaeger. (Exemplars need the OpenMetrics format, which the server's `/metrics` serves; Prometheus runs with `--enable-feature=exemplar-storage`.)
 
-**Cost.** In the demo Jaeger keeps traces in memory (capped at 10,000 traces, about 8 minutes of the demo's traffic). A normal job makes 12 spans; with the retried and poison jobs and the workers' `Lease` calls, the stack produces about 200 spans a second (my estimate from counting spans in Jaeger over one minute). After a restart Jaeger's memory climbed to about 240 MiB in 12 minutes (cgroup anon 215 MiB), and then stayed there (239 MiB at 12, 14 and 16 minutes, cgroup anon 216 MiB) once the 10,000-trace cap filled. `docker stats` for the whole stack read about 615 MiB at that moment (Grafana's share varies between about 215 and 700 MiB because it counts file cache), so budget about 1 GB.
+**Cost.** In the demo Jaeger keeps traces in memory (capped at 10,000 traces, about 8 minutes of the demo's traffic). A normal job makes 12 spans; with the retried and poison jobs and the workers' `Lease` calls, the stack produces about 200 spans a second (my estimate from counting spans in Jaeger over one minute). After a restart Jaeger's memory climbed to about 240 MiB in 12 minutes (cgroup anon 215 MiB), and then stayed there (239 MiB at 12, 14 and 16 minutes, cgroup anon 216 MiB; 226.5 MiB at 19-20 minutes by `docker stats`), so it is flat at about 225-240 MiB once the 10,000-trace cap filled. `docker stats` for the whole stack read about 615 MiB at that moment (Grafana's share varies between about 215 and 700 MiB because it counts file cache), so budget about 1 GB.
 
-**Overhead.** On the server, the benchmark (`go test ./internal/api -bench Enqueue`) measured an `Enqueue` with tracing off about 3% slower than `main` (about 0.93 ms per call on a two-core laptop with the demo running) and 100% sampling into an in-memory recorder within noise of that.
+**Overhead.** On the server, the benchmark (`go test ./internal/api -bench Enqueue`) measured an `Enqueue` with tracing off about 3.5% slower than `main` (about 0.93 ms per call on a two-core laptop with the demo running) and 100% sampling into an in-memory recorder within noise of that.
 
 **For your own deployment**, set the standard OpenTelemetry variables on the server and on your own processes; there are no Tasklane-specific flags:
 
@@ -195,7 +194,7 @@ OTEL_TRACES_SAMPLER=parentbased_traceidratio
 OTEL_TRACES_SAMPLER_ARG=0.1
 ```
 
-With the parent-based sampler the producer decides once and everyone else follows its `sampled` flag, so a trace is whole or absent. Without `OTEL_EXPORTER_OTLP_ENDPOINT` the server creates no spans and exports nothing.
+With the parent-based sampler the producer decides once and everyone else follows its `sampled` flag, so a trace is whole or absent. The server samples root spans at 100% unless `OTEL_TRACES_SAMPLER` is set, so every call from a client that sends no `traceparent` (`tasklane-watch`, curl, a worker without OpenTelemetry) becomes a sampled root trace; in production set a ratio (`parentbased_traceidratio` plus `OTEL_TRACES_SAMPLER_ARG`). Without `OTEL_EXPORTER_OTLP_ENDPOINT` the server creates no spans and exports nothing.
 
 ## Correctness
 

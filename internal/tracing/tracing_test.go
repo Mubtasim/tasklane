@@ -47,3 +47,30 @@ func TestSetupHonoursTheSamplerVariable(t *testing.T) {
 	require.False(t, span.SpanContext().IsSampled())
 	span.End()
 }
+
+func TestEnabledHonoursTheStandardSwitches(t *testing.T) {
+	const ep = "http://collector:4317"
+	for name, tc := range map[string]struct {
+		vars map[string]string
+		want bool
+	}{
+		"endpoint only":          {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep}, true},
+		"traces endpoint only":   {map[string]string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ep}, true},
+		"no endpoint":            {nil, false},
+		"sdk disabled":           {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_SDK_DISABLED": "true"}, false},
+		"sdk disabled any case":  {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_SDK_DISABLED": "TRUE"}, false},
+		"sdk disabled false":     {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_SDK_DISABLED": "false"}, true},
+		"exporter none":          {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_TRACES_EXPORTER": "none"}, false},
+		"exporter none any case": {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_TRACES_EXPORTER": "None"}, false},
+		"exporter otlp":          {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_TRACES_EXPORTER": "otlp"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, Enabled(env(tc.vars)))
+			if !tc.want {
+				tp, _, err := Setup(t.Context(), env(tc.vars), "svc")
+				require.NoError(t, err)
+				require.IsType(t, noop.TracerProvider{}, tp)
+			}
+		})
+	}
+}

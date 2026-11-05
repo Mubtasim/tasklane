@@ -114,8 +114,11 @@ func NewServer(st store.Store, n Notifier, log *slog.Logger, opts ...Option) *Se
 
 // parentTraceparent is the traceparent a job enqueued in this call stores
 // when the caller set none (design §18.2): the server's own span when tracing
-// is on, otherwise the caller's span from the request metadata, so producer
-// and worker still connect when the server exports nothing.
+// is on, otherwise the caller's span, so producer and worker still connect
+// when the server exports nothing. The otelgrpc stats handler's span, even a
+// no-op one, already carries the caller's context, so the first branch covers
+// both cases; the metadata fallback only matters when no stats handler is
+// installed.
 func parentTraceparent(ctx context.Context) string {
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		return traceparent.Format(sc)

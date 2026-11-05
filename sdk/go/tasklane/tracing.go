@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path"
 	"strconv"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	otelcodes "go.opentelemetry.io/otel/codes"
@@ -14,6 +15,11 @@ import (
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/traceparent"
 )
+
+// maxSpanStatusBytes bounds a span status description. RecordError already
+// exports the full error as a span event, so repeating an unbounded message
+// (a stack trace, say) in the status would export it twice.
+const maxSpanStatusBytes = 4096
 
 func notHeartbeat(info *stats.RPCTagInfo) bool {
 	return path.Base(info.FullMethodName) != "Heartbeat"
@@ -52,7 +58,7 @@ func endHandleSpan(span trace.Span, job *LeasedJob, o Outcome, err error) {
 			span.SetStatus(otelcodes.Error, "shutdown")
 		case err != nil:
 			span.RecordError(err)
-			span.SetStatus(otelcodes.Error, err.Error())
+			span.SetStatus(otelcodes.Error, truncateUTF8(err.Error(), maxSpanStatusBytes))
 		}
 		// NackResponse carries nothing, but a Nack on the last attempt
 		// always buries the job; the server's Nack span has the exact value.
@@ -65,4 +71,16 @@ func endHandleSpan(span trace.Span, job *LeasedJob, o Outcome, err error) {
 		span.SetStatus(otelcodes.Error, "gave up")
 	}
 	span.End()
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a character. The
+// SDK cannot import internal/store, which has the same helper for the server.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

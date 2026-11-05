@@ -515,11 +515,11 @@ Two parts: what each decides on, and the memory cost of waiting.
 **How:**
 1. Head, parent-based: the producer's sampler decides once (`OTEL_TRACES_SAMPLER=parentbased_traceidratio`, ratio 0.1) and every other process follows the `sampled` flag in the `traceparent`. A trace is whole or absent. Independent ratios per process (10% × 10% × ...) would leave most traces with holes.
 2. Tail needs a Collector that holds every span of a trace in memory until it decides, because it cannot know the outcome earlier. It must see all spans of a trace in one place.
-3. Its buffer is about span rate × trace duration × span size. At 1,000 jobs/s × 8 spans × 1 KB × 120 s that is 8,000 spans/s × 1 KB × 120 s ≈ 1 GB, before any overhead.
+3. Its buffer is about span rate × trace duration × span size. At 1,000 jobs/s × 12 spans × ~1 KB × 120 s that is 12,000 spans/s × ~1 KB × 120 s ≈ 1.4 GB, before any overhead.
 4. A queued job's trace lasts as long as its wait plus run plus retries: seconds to minutes, not the milliseconds of an HTTP request. That multiplies the buffer.
 5. The decision window has to be fixed (say 120 s). Spans that arrive after it, such as a retry attempt 10 minutes later, find the decision already made and are dropped or form a fragment.
 
-**Numbers:** the demo samples 100%: about 200 spans/s, 12 spans per normal job (my count from Jaeger). The 1 GB figure is arithmetic for a hypothetical 1,000 jobs/s, not a measurement; the demo is about 100 times smaller. Tail sampling is listed as future work (design §18).
+**Numbers:** the demo samples 100%: about 200 spans/s, 12 spans per normal job (my count from Jaeger). The 1.4 GB figure is arithmetic for a hypothetical 1,000 jobs/s, not a measurement; the demo is about 100 times smaller. Tail sampling is listed as future work (design §18).
 
 **Fails halfway:** if the buffer is too small the Collector evicts traces early and decides on partial data; if the decision window is too short, long-lived traces are cut. Head sampling has neither problem but can drop the one slow trace you wanted: a 10% head sample keeps 1 in 10 failures.
 
@@ -541,7 +541,7 @@ Three parts: which clock, who has both numbers, and what it matches.
 
 **Fails halfway:** a stored `traceparent` that is missing, malformed or unsampled records no wait span and no error. A `Lease` of 10 jobs records 10 spans, each in its own job's trace. A crash after the lease but before the span is recorded loses that one span only.
 
-**Trade-off:** the wait span is accurate but is created by the server, so it exists only if the server is traced and the span is exported even when the worker is slow to start. A span from the worker's own clock would also include network time and skew, which are exactly what this measurement should not contain.
+**Trade-off:** the wait span is accurate because both ends come from Postgres's one clock. The cost is that it exists only when the server is traced. A span measured on the worker's clock would include network time and clock skew, which this measurement should not contain.
 
 ## Q36. What is an exemplar, and why is it the bridge between metrics and traces?
 

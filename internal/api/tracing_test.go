@@ -13,6 +13,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
@@ -98,7 +99,7 @@ func TestBatchJobsShareOneParent(t *testing.T) {
 }
 
 func TestAnUntracedServerStoresTheCallersTraceparent(t *testing.T) {
-	e := newEnv(t, nil) // the global provider: a no-op
+	e := newEnv(t, nil, WithTracerProvider(noop.NewTracerProvider())) // what production uses without an endpoint
 	createQueue(t, e, "q", 0)
 	res, err := e.client.Enqueue(fromCaller(context.Background(), callerTP), &tasklanev1.EnqueueRequest{Queue: "q", Job: &tasklanev1.JobSpec{Kind: "k"}})
 	require.NoError(t, err)
