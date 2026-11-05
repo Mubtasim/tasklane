@@ -196,3 +196,57 @@ func TestHTTPHeartbeatsAreNotTraced(t *testing.T) {
 		require.NotContains(t, s.Name(), "Heartbeat")
 	}
 }
+
+func TestLeaseRecordsAQueueWaitSpanInEachJobsTrace(t *testing.T) {
+	e, rec := tracedEnv(t)
+	createQueue(t, e, "q", 0)
+	parents := []string{
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-1111111111111111-01",
+		"00-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-2222222222222222-01",
+	}
+	for _, p := range parents {
+		_, err := e.client.Enqueue(context.Background(), &tasklanev1.EnqueueRequest{Queue: "q", Job: &tasklanev1.JobSpec{Kind: "k", TraceContext: p}})
+		require.NoError(t, err)
+	}
+	leased, err := e.client.Lease(context.Background(), &tasklanev1.LeaseRequest{Queue: "q", MaxJobs: 2})
+	require.NoError(t, err)
+	require.Len(t, leased.GetJobs(), 2)
+
+	lease := serverSpan(t, rec, "Lease")
+	var waits []sdktrace.ReadOnlySpan
+	for _, s := range rec.Ended() {
+		if s.Name() == "queue wait" {
+			waits = append(waits, s)
+		}
+	}
+	require.Len(t, waits, 2)
+	for _, w := range waits {
+		require.NotEqual(t, lease.SpanContext().TraceID(), w.SpanContext().TraceID(), "a wait span belongs to its job's trace, not the Lease call's")
+		var want trace.SpanContext
+		for _, p := range parents {
+			if sc, _ := traceparent.Parse(p); sc.TraceID() == w.SpanContext().TraceID() {
+				want = sc
+			}
+		}
+		require.True(t, want.IsValid(), "wait span in an unknown trace")
+		require.Equal(t, want.SpanID(), w.Parent().SpanID())
+		require.False(t, w.EndTime().Before(w.StartTime()))
+		require.Contains(t, w.Attributes(), attribute.Int("tasklane.attempt", 1))
+		require.Contains(t, w.Attributes(), attribute.String("messaging.destination.name", "q"))
+	}
+}
+
+func TestNoWaitSpanForAMalformedOrUnsampledTrace(t *testing.T) {
+	e, rec := tracedEnv(t)
+	createQueue(t, e, "q", 0)
+	for _, tc := range []string{"garbage", "00-cccccccccccccccccccccccccccccccc-3333333333333333-00"} {
+		_, err := e.client.Enqueue(context.Background(), &tasklanev1.EnqueueRequest{Queue: "q", Job: &tasklanev1.JobSpec{Kind: "k", TraceContext: tc}})
+		require.NoError(t, err)
+	}
+	leased, err := e.client.Lease(context.Background(), &tasklanev1.LeaseRequest{Queue: "q", MaxJobs: 2})
+	require.NoError(t, err)
+	require.Len(t, leased.GetJobs(), 2)
+	for _, s := range rec.Ended() {
+		require.NotEqual(t, "queue wait", s.Name())
+	}
+}

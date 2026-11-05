@@ -284,6 +284,7 @@ func (s *Server) Lease(ctx context.Context, req *tasklanev1.LeaseRequest) (*task
 		}
 		if len(jobs) > 0 || wait <= 0 {
 			s.metrics.Leased(jobs)
+			s.recordWaits(jobs)
 			resp, err := leaseResponse(jobs)
 			return resp, toStatus(ctx, s.log, "Lease", err)
 		}
@@ -401,4 +402,32 @@ func (s *Server) GetJob(ctx context.Context, req *tasklanev1.GetJobRequest) (*ta
 		return nil, toStatus(ctx, s.log, "GetJob", err)
 	}
 	return &tasklanev1.GetJobResponse{Job: pj}, nil
+}
+
+// recordWaits records a "queue wait" span in each sampled job's own trace,
+// from when the job became ready (run_at) to its lease. Both times are
+// Postgres now(), so machines' clocks can't skew the span; they are the same
+// two values the queue-wait histogram uses. The Lease call has its own trace,
+// so the parent is the traceparent stored with the job, not the request.
+func (s *Server) recordWaits(jobs []store.Job) {
+	for _, j := range jobs {
+		parent, ok := traceparent.Parse(j.TraceContext)
+		if !ok || !parent.IsSampled() || j.LeasedAt.IsZero() {
+			continue
+		}
+		start := j.RunAt
+		if start.After(j.LeasedAt) { // a job leased the instant it became ready
+			start = j.LeasedAt
+		}
+		ctx := trace.ContextWithRemoteSpanContext(context.Background(), parent)
+		_, span := s.tracer.Start(ctx, "queue wait", trace.WithTimestamp(start), trace.WithAttributes(
+			attribute.String("messaging.system", "tasklane"),
+			attribute.String("messaging.destination.name", j.Queue),
+			attribute.String("messaging.message.id", strconv.FormatInt(j.ID, 10)),
+			attribute.String("tasklane.kind", j.Kind),
+			attribute.Int("tasklane.attempt", j.Attempts),
+			attribute.Int("tasklane.priority", int(j.Priority)),
+		))
+		span.End(trace.WithTimestamp(j.LeasedAt))
+	}
 }
