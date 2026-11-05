@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -162,6 +163,36 @@ func TestHeartbeatsAreNotTraced(t *testing.T) {
 	_, err = e.client.Heartbeat(context.Background(), &tasklanev1.HeartbeatRequest{Id: j.GetId(), LeaseToken: j.GetLeaseToken()})
 	require.NoError(t, err)
 	for _, s := range rec.Ended() {
+		require.NotContains(t, s.Name(), "Heartbeat")
+	}
+}
+
+func TestHTTPHeartbeatsAreNotTraced(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	e := newEnv(t, nil, WithTracerProvider(tp))
+	createQueue(t, e, "q", 0)
+	_, err := e.client.Enqueue(context.Background(), &tasklanev1.EnqueueRequest{Queue: "q", Job: &tasklanev1.JobSpec{Kind: "k"}})
+	require.NoError(t, err)
+	leased, err := e.client.Lease(context.Background(), &tasklanev1.LeaseRequest{Queue: "q", MaxJobs: 1})
+	require.NoError(t, err)
+	j := leased.GetJobs()[0]
+	conn, err := grpc.NewClient("passthrough:///bufnet", append(GatewayDialOptions(tp),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return e.lis.DialContext(ctx) }))...)
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	h, err := NewHTTPHandler(context.Background(), conn, func(context.Context) error { return nil }, nil, tp)
+	require.NoError(t, err)
+	base := serveHandler(t, h)
+
+	url := fmt.Sprintf("%s/v1/jobs/%d:heartbeat", base, j.GetId())
+	resp, err := http.Post(url, "application/json", strings.NewReader(`{"lease_token":"`+j.GetLeaseToken()+`"}`))
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	for _, s := range rec.Ended() {
+		// otelhttp names its span "<method> <route>", here "POST /".
+		require.False(t, strings.HasPrefix(s.Name(), "POST"), "HTTP span %q", s.Name())
 		require.NotContains(t, s.Name(), "Heartbeat")
 	}
 }

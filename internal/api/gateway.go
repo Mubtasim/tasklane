@@ -78,7 +78,9 @@ func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(conte
 	})
 	// Only the gateway route is traced, so health checks get no spans.
 	mux.Handle("/", otelhttp.NewHandler(limitGateway(gw, len(keys) > 0), "gateway",
-		otelhttp.WithTracerProvider(tp), otelhttp.WithPropagators(traceparent.W3C)))
+		otelhttp.WithTracerProvider(tp), otelhttp.WithPropagators(traceparent.W3C),
+		// Heartbeats get no spans over HTTP either, as over gRPC (see notHeartbeat).
+		otelhttp.WithFilter(func(r *http.Request) bool { return !strings.HasSuffix(r.URL.Path, ":heartbeat") })))
 	return mux, nil
 }
 
