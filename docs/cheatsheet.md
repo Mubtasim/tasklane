@@ -77,7 +77,7 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | Retried job | 20 spans for 2 attempts; +~8 per extra attempt | Each attempt adds a wait span, a handle span, Nack or Ack client + server and their Postgres spans. |
 | `Lease` traces | ~12/s across 3 workers, 5-15 spans each | A lease starts before any job is known, so it is its own short trace. |
 | Demo span rate | ~200 spans/s (about 10 jobs/s × ~13 spans, plus ~85/s of `Lease`) | An estimate from counting one minute in Jaeger, not a counter. |
-| Jaeger memory | 96 MiB at 2 min, 179 at 6, 226 at 9, 239 at 12 (anon 215) | In-memory store capped at 10,000 traces (~8 min at ~22 traces/s); growth slowed from ~20 to a few MiB/min at the cap, still creeping up at last reading. |
+| Jaeger memory | 96 MiB at 2 min, 179 at 6, 226 at 9, 239 at 12-16 (anon 216) | In-memory store capped at 10,000 traces (~8 min at ~22 traces/s); flat at ~239 (anon 216) from 12 to 16 min once the cap filled. |
 | Whole stack `docker stats` | ~615 MiB at 12 min after a Jaeger restart (~1 GiB earlier) | Grafana ranges 215-700 MiB because docker stats counts its file cache (cgroup anon ~285 MB); servers ~15 MiB each, workers ~9 MiB. |
 | Sampler | `parentbased_traceidratio`, `OTEL_TRACES_SAMPLER_ARG=0.1` for production; the demo uses 100% | The producer decides once; everyone follows the `sampled` flag. |
 | Propagation | W3C `traceparent`, explicit | The global propagator is a no-op unless the app sets one. |
