@@ -27,14 +27,14 @@ func (s *Server) CancelJob(ctx context.Context, req *tasklanev1.CancelJobRequest
 	defer cancel()
 	j, cancelled, err := s.store.CancelJob(wctx, req.GetId())
 	if err != nil {
-		return nil, toStatus(s.log, "CancelJob", err)
+		return nil, toStatus(ctx, s.log, "CancelJob", err)
 	}
 	if cancelled {
 		s.metrics.Cancelled(j.Queue)
 	}
 	pj, err := jobFromStore(j, false)
 	if err != nil {
-		return nil, toStatus(s.log, "CancelJob", err)
+		return nil, toStatus(ctx, s.log, "CancelJob", err)
 	}
 	return &tasklanev1.CancelJobResponse{Job: pj}, nil
 }
@@ -52,7 +52,7 @@ func (s *Server) ListDeadJobs(ctx context.Context, req *tasklanev1.ListDeadJobsR
 	}
 	jobs, err := s.store.ListDeadJobs(ctx, req.GetQueue(), after, size+1)
 	if err != nil {
-		return nil, toStatus(s.log, "ListDeadJobs", err)
+		return nil, toStatus(ctx, s.log, "ListDeadJobs", err)
 	}
 	out := &tasklanev1.ListDeadJobsResponse{}
 	if len(jobs) > size {
@@ -63,7 +63,7 @@ func (s *Server) ListDeadJobs(ctx context.Context, req *tasklanev1.ListDeadJobsR
 	for _, j := range jobs {
 		pj, err := jobFromStore(j, false)
 		if err != nil {
-			return nil, toStatus(s.log, "ListDeadJobs", err)
+			return nil, toStatus(ctx, s.log, "ListDeadJobs", err)
 		}
 		out.Jobs = append(out.Jobs, pj)
 	}
@@ -87,7 +87,7 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 		ids = slices.Compact(slices.Sorted(slices.Values(ids)))
 		n, err := s.redrive(ctx, req.GetQueue(), ids, len(ids))
 		if err != nil {
-			return nil, toStatus(s.log, "RedriveJobs", err)
+			return nil, toStatus(ctx, s.log, "RedriveJobs", err)
 		}
 		s.metrics.Redriven(req.GetQueue(), n)
 		return &tasklanev1.RedriveJobsResponse{Redriven: int64(n), Skipped: int64(len(ids) - n)}, nil
@@ -96,7 +96,7 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 	for {
 		n, err := s.redrive(ctx, req.GetQueue(), nil, redriveBatch)
 		if err != nil {
-			return nil, toStatus(s.log, "RedriveJobs", err)
+			return nil, toStatus(ctx, s.log, "RedriveJobs", err)
 		}
 		s.metrics.Redriven(req.GetQueue(), n)
 		total += int64(n)
@@ -106,7 +106,7 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 		// Each batch finishes once started, but a gone client starts no
 		// more: what is done stays done, and a new call finishes the rest.
 		if err := ctx.Err(); err != nil {
-			return nil, toStatus(s.log, "RedriveJobs", err)
+			return nil, toStatus(ctx, s.log, "RedriveJobs", err)
 		}
 	}
 }

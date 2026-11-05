@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -156,4 +157,26 @@ func TestQueueStatsScrapeIsAtomic(t *testing.T) {
 	}
 	close(stop)
 	<-done
+}
+
+func TestExemplarsCarryTheTraceID(t *testing.T) {
+	m := New()
+	tid, _ := trace.TraceIDFromHex("0af7651916cd43dd8448eb211c80319c")
+	sid, _ := trace.SpanIDFromHex("b7ad6b7169203331")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled}))
+	_, _ = m.UnaryInterceptor()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/s/Enqueue"}, func(context.Context, any) (any, error) { return nil, nil })
+	m.Leased([]store.Job{{Queue: "q", RunAt: time.Now().Add(-time.Second), LeasedAt: time.Now(),
+		TraceContext: "00-1234567890abcdef1234567890abcdef-b7ad6b7169203331-01"}})
+	// An unsampled job gets no exemplar.
+	m.Leased([]store.Job{{Queue: "q", RunAt: time.Now(), LeasedAt: time.Now(),
+		TraceContext: "00-fedcba0987654321fedcba0987654321-b7ad6b7169203331-00"}})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	req.Header.Set("Accept", "application/openmetrics-text; version=1.0.0")
+	m.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	require.Contains(t, body, `trace_id="0af7651916cd43dd8448eb211c80319c"`)
+	require.Contains(t, body, `trace_id="1234567890abcdef1234567890abcdef"`)
+	require.NotContains(t, body, "fedcba0987654321fedcba0987654321")
 }

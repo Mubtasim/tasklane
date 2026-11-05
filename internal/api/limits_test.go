@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -152,7 +153,7 @@ func TestHTTPRequestOverGatewaySendLimitIs413(t *testing.T) {
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { conn.Close() })
-	h, err := NewHTTPHandler(context.Background(), conn, func(context.Context) error { return nil }, nil)
+	h, err := NewHTTPHandler(context.Background(), conn, func(context.Context) error { return nil }, nil, noop.NewTracerProvider())
 	require.NoError(t, err)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -194,7 +195,7 @@ func TestJobSpecToStoreEnforcesLimits(t *testing.T) {
 }
 
 func TestProgramLimitExceededIsInvalidArgument(t *testing.T) {
-	err := toStatus(slog.New(slog.DiscardHandler), "Enqueue", &pgconn.PgError{Code: "54000", Message: "index row size 6016 exceeds btree version 4 maximum 2704"})
+	err := toStatus(context.Background(), slog.New(slog.DiscardHandler), "Enqueue", &pgconn.PgError{Code: "54000", Message: "index row size 6016 exceeds btree version 4 maximum 2704"})
 	requireCode(t, codes.InvalidArgument, err)
 	require.NotContains(t, err.Error(), "btree", "database details are not leaked")
 }

@@ -75,4 +75,8 @@ jobs:
         run: >
           docker run --rm -v "$PWD/deploy/envoy:/etc/envoy:ro"
           envoyproxy/envoy:v1.36.2 --mode validate -c /etc/envoy/envoy.yaml
+      - name: Jaeger config is valid
+        run: >
+          docker run --rm -v "$PWD/deploy/jaeger:/etc/jaeger:ro"
+          jaegertracing/jaeger:2.23.0 validate --config /etc/jaeger/config.yaml
       - run: docker compose -f deploy/docker-compose.yml config --quiet

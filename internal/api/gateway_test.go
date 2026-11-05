@@ -13,12 +13,19 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // newHTTP serves the gateway for e over a real HTTP server.
 func newHTTP(t *testing.T, e *env, ready func(context.Context) error) string {
 	t.Helper()
-	srv := httptest.NewServer(newHandler(t, e, ready))
+	return serveHandler(t, newHandler(t, e, ready))
+}
+
+// serveHandler serves h over a real HTTP server for the test's lifetime.
+func serveHandler(t *testing.T, h http.Handler) string {
+	t.Helper()
+	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -26,7 +33,7 @@ func newHTTP(t *testing.T, e *env, ready func(context.Context) error) string {
 // newHandler builds the gateway handler for e, with e's API keys.
 func newHandler(t *testing.T, e *env, ready func(context.Context) error) http.Handler {
 	t.Helper()
-	h, err := NewHTTPHandler(context.Background(), e.conn, ready, e.keys)
+	h, err := NewHTTPHandler(context.Background(), e.conn, ready, e.keys, noop.NewTracerProvider())
 	require.NoError(t, err)
 	return h
 }

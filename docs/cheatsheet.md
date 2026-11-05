@@ -66,8 +66,24 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | Producer | 10 jobs/s: 85% normal (0.2–2 s), 12% flaky (fails 30%), 3% poison |
 | Workers | 3 × 5 slots = 15 slots, ~15 jobs/s capacity |
 | One worker | ~4–5 jobs/s, so the backlog grows ~6/s (Little's law: throughput = slots ÷ average job time) |
-| Stack RAM | ~700 MB idle (measured ~690 MiB: Grafana 484, Prometheus 98, Postgres 50, Envoy 17, each server ~11) |
+| Stack RAM | ~0.6-1 GiB with Jaeger (`docker stats`: Grafana 215-700, Jaeger ~240, Postgres 55, Prometheus 32, Envoy 19, each server ~15); see Tracing |
 | Servers | 2 behind Envoy; killing one: acked rate held at ~9.3–9.7 jobs/s, `tasklane-2` went from ~16 to ~33 requests/s |
+
+## Tracing
+
+| What | Value | Why |
+|---|---|---|
+| Spans per normal job | 12 | demo produce, Enqueue client + server, BEGIN/INSERT/SELECT/COMMIT, queue wait, handle, Ack client + server, UPDATE. Counted in Jaeger: 20 of 20 normal jobs had 12. |
+| Retried job | 20 spans for 2 attempts; +~8 per extra attempt | Each attempt adds a wait span, a handle span, Nack or Ack client + server and their Postgres spans. |
+| `Lease` traces | ~12/s across 3 workers, 5-15 spans each | A lease starts before any job is known, so it is its own short trace. |
+| Demo span rate | ~200 spans/s (about 10 jobs/s × ~13 spans, plus ~85/s of `Lease`) | An estimate from counting one minute in Jaeger, not a counter. |
+| Jaeger memory | 96 MiB at 2 min, 179 at 6, 226 at 9, 239 at 12-16, 226.5 at 19-20 | In-memory store capped at 10,000 traces (~8 min at ~22 traces/s); flat at ~225-240 (239 at 12-16 min, anon 216; 226.5 at 19-20 min by `docker stats`) once the cap filled. |
+| Whole stack `docker stats` | ~615 MiB at 12 min after a Jaeger restart (~1 GiB earlier) | Grafana ranges 215-700 MiB because docker stats counts its file cache (cgroup anon ~285 MB); servers ~15 MiB each, workers ~9 MiB. |
+| Sampler | `parentbased_traceidratio`, `OTEL_TRACES_SAMPLER_ARG=0.1` for production; the demo uses 100% | The producer decides once; everyone follows the `sampled` flag. |
+| Propagation | W3C `traceparent`, explicit | The global propagator is a no-op unless the app sets one. |
+| Not traced | `Heartbeat` RPCs, `/healthz`, `/readyz`, reaper, pruner, depth refresh | Noise; metrics cover them. |
+| Tail-sampling buffer | span rate × trace duration × span size: 1,000 jobs/s × 12 spans × ~1 KB × 120 s ≈ 1.4 GB | Arithmetic, not measured. |
+| `Enqueue` benchmark | `main` 926 µs, off 959 µs (+3.5%), 100% sampled 991 µs (+3.3% over off, noise) | 2-core laptop, demo running, 6 × 2,000 calls, `benchstat`. Off vs `main` is +2.9% when no trace context is sent. |
 
 ## Envoy (two servers)
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -66,14 +67,23 @@ type env struct {
 	raw    tasklanev1.TasklaneServiceClient // the plain API, to act as a worker that dies
 }
 
-// newEnv resets the database and serves the real API (Postgres store, 50 ms
+func newEnv(t *testing.T) *env { return newEnvWith(t, nil, nil) }
+
+// newEnvWith is newEnv with tracer providers for the server and the client;
+// nil keeps the global (no-op) provider.
+//
+// It resets the database and serves the real API (Postgres store, 50 ms
 // lease re-check, reaper every 50 ms, zero retry backoff) over an in-memory
 // connection.
-func newEnv(t *testing.T) *env {
+func newEnvWith(t *testing.T, serverTP, clientTP trace.TracerProvider) *env {
 	t.Helper()
 	require.NoError(t, testDB.Reset(context.Background()))
 	st := pgstore.New(testDB.Pool, backoff.Policy{Base: time.Second, Cap: time.Hour, Rand: func() float64 { return 0 }})
-	srv := api.NewServer(st, testListener, discard, api.WithPollInterval(50*time.Millisecond))
+	opts := []api.Option{api.WithPollInterval(50 * time.Millisecond)}
+	if serverTP != nil {
+		opts = append(opts, api.WithTracerProvider(serverTP))
+	}
+	srv := api.NewServer(st, testListener, discard, opts...)
 	gs := api.NewGRPCServer(srv, nil, discard)
 	lis := bufconn.Listen(1 << 20)
 	go func() { _ = gs.Serve(lis) }()
@@ -85,7 +95,11 @@ func newEnv(t *testing.T) *env {
 	}()
 
 	dialer := grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })
-	client, err := tasklane.Dial("passthrough:///bufnet", tasklane.WithGRPCDialOptions(dialer))
+	dialOpts := []tasklane.Option{tasklane.WithGRPCDialOptions(dialer)}
+	if clientTP != nil {
+		dialOpts = append(dialOpts, tasklane.WithTracerProvider(clientTP))
+	}
+	client, err := tasklane.Dial("passthrough:///bufnet", dialOpts...)
 	require.NoError(t, err)
 	rawConn, err := grpc.NewClient("passthrough:///bufnet", dialer, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)

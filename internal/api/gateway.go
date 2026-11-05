@@ -11,14 +11,34 @@ import (
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	"github.com/mubtasim/tasklane/internal/traceparent"
 )
+
+// GatewayDialOptions are the options for the gateway's connection to the
+// gRPC server: the message limits, and trace propagation, so a traceparent
+// header on an HTTP call reaches the gRPC server span.
+func GatewayDialOptions(tp trace.TracerProvider) []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(MaxMessageBytes), grpc.MaxCallSendMsgSize(MaxMessageBytes)),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler(
+			otelgrpc.WithTracerProvider(tp),
+			otelgrpc.WithPropagators(traceparent.W3C),
+			otelgrpc.WithFilter(notHeartbeat),
+		)),
+	}
+}
 
 // NewHTTPHandler serves the HTTP/JSON gateway, which forwards each call over
 // conn to the gRPC server (so the auth interceptor applies to HTTP too; the
@@ -29,7 +49,7 @@ import (
 // Gateway request bodies are limited to MaxMessageBytes (413 beyond it). With
 // keys configured, a gateway request without an Authorization header gets a
 // 401 before its body is read; the gRPC interceptor still checks the key.
-func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(context.Context) error, keys []string) (http.Handler, error) {
+func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(context.Context) error, keys []string, tp trace.TracerProvider) (http.Handler, error) {
 	gw := runtime.NewServeMux(
 		runtime.WithErrorHandler(errorHandler),
 		// JSON field names as in the proto and the design doc (job_id, lease_token).
@@ -56,7 +76,11 @@ func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(conte
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	mux.Handle("/", limitGateway(gw, len(keys) > 0))
+	// Only the gateway route is traced, so health checks get no spans.
+	mux.Handle("/", otelhttp.NewHandler(limitGateway(gw, len(keys) > 0), "gateway",
+		otelhttp.WithTracerProvider(tp), otelhttp.WithPropagators(traceparent.W3C),
+		// Heartbeats get no spans over HTTP either, as over gRPC (see notHeartbeat).
+		otelhttp.WithFilter(func(r *http.Request) bool { return !strings.HasSuffix(r.URL.Path, ":heartbeat") })))
 	return mux, nil
 }
 

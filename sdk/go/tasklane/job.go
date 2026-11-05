@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -67,6 +68,7 @@ type activeJob struct {
 	start         time.Time          // set before the job is shared (drain reads it); the handler starts right after
 	cancel        context.CancelFunc // cancels the handler's context
 	stopHeartbeat context.CancelFunc
+	span          trace.Span    // the run's "handle" span; set before the job is shared, like start
 	lost          atomic.Bool   // the server reported the lease gone
 	finished      atomic.Bool   // the final Ack or Nack has been claimed
 	hbDone        chan struct{} // closed once the heartbeat goroutine has exited (or never started)
@@ -123,12 +125,13 @@ func leasedJobFromProto(pj *tasklanev1.Job) (*LeasedJob, error) {
 func (w *Worker) runJob(r *run, pj *tasklanev1.Job, leasedAt time.Time) {
 	defer func() { <-r.slots }()
 	job, err := leasedJobFromProto(pj)
+	spanCtx, span := w.startHandleSpan(pj)
 	// Not derived from Run's context: a shutdown lets running jobs finish.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(spanCtx)
 	defer cancel()
 	hbCtx, stopHeartbeat := context.WithCancel(context.Background())
 	defer stopHeartbeat()
-	a := &activeJob{job: job, start: time.Now(), cancel: cancel, stopHeartbeat: stopHeartbeat, deadline: leasedAt.Add(r.vt),
+	a := &activeJob{job: job, start: time.Now(), span: span, cancel: cancel, stopHeartbeat: stopHeartbeat, deadline: leasedAt.Add(r.vt),
 		hbDone: make(chan struct{}), sent: make(chan struct{})}
 	if err != nil {
 		close(a.hbDone) // no heartbeat runs for a job that can't be decoded
@@ -208,7 +211,7 @@ func (w *Worker) finish(a *activeJob, err error) Outcome {
 func (w *Worker) send(a *activeJob, what string, ok Outcome, call func(context.Context) error) Outcome {
 	for attempt := 0; ; attempt++ {
 		deadline := a.leaseDeadline()
-		ctx, cancel := context.WithTimeout(context.Background(), max(time.Until(deadline), w.finishTimeout))
+		ctx, cancel := context.WithTimeout(trace.ContextWithSpan(context.Background(), a.span), max(time.Until(deadline), w.finishTimeout))
 		err := call(ctx)
 		cancel()
 		switch {

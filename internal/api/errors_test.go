@@ -65,15 +65,15 @@ func TestToStatusMapsErrors(t *testing.T) {
 		{"anything else", &pgconn.PgError{Code: "42P01", Message: `relation "jobs" does not exist`}, codes.Internal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := toStatus(slog.New(slog.DiscardHandler), "/test", tc.err)
+			got := toStatus(context.Background(), slog.New(slog.DiscardHandler), "/test", tc.err)
 			require.Equal(t, tc.want, status.Code(got))
 		})
 	}
-	require.NoError(t, toStatus(slog.New(slog.DiscardHandler), "/test", nil))
+	require.NoError(t, toStatus(context.Background(), slog.New(slog.DiscardHandler), "/test", nil))
 }
 
 func TestToStatusMapsWrongState(t *testing.T) {
-	err := toStatus(slog.New(slog.DiscardHandler), "CancelJob", fmt.Errorf("%w: job 1 is leased", store.ErrWrongState))
+	err := toStatus(context.Background(), slog.New(slog.DiscardHandler), "CancelJob", fmt.Errorf("%w: job 1 is leased", store.ErrWrongState))
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	require.Contains(t, status.Convert(err).Message(), "job 1 is leased")
 }
@@ -83,7 +83,7 @@ func TestInternalErrorsAreLoggedNotLeaked(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&logs, nil))
 	secret := errors.New(`password authentication failed for user "tasklane"`)
 
-	got := toStatus(log, "/tasklane.v1.TasklaneService/GetJob", secret)
+	got := toStatus(context.Background(), log, "/tasklane.v1.TasklaneService/GetJob", secret)
 
 	require.Equal(t, codes.Internal, status.Code(got))
 	require.NotContains(t, status.Convert(got).Message(), "password")
@@ -100,7 +100,7 @@ func (timeoutNetErr) Temporary() bool { return true }
 
 func TestUnavailableHasFixedMessage(t *testing.T) {
 	err := &pgconn.PgError{Code: "08006", Message: "host 10.0.0.5 refused"}
-	got := toStatus(slog.New(slog.DiscardHandler), "/test", err)
+	got := toStatus(context.Background(), slog.New(slog.DiscardHandler), "/test", err)
 	require.Equal(t, codes.Unavailable, status.Code(got))
 	require.Equal(t, "database unavailable", status.Convert(got).Message())
 }

@@ -15,10 +15,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 
 	"github.com/mubtasim/tasklane/internal/store"
+	"github.com/mubtasim/tasklane/internal/traceparent"
 )
 
 const (
@@ -89,11 +91,21 @@ func (m *Metrics) statsAge() float64 {
 	return time.Since(since).Seconds()
 }
 
+// observe records v, with the trace ID as an exemplar when sc is sampled:
+// Grafana shows exemplars as dots on latency panels that open the trace.
+func observe(o prometheus.Observer, v float64, sc trace.SpanContext) {
+	if eo, ok := o.(prometheus.ExemplarObserver); ok && sc.IsSampled() {
+		eo.ObserveWithExemplar(v, prometheus.Labels{"trace_id": sc.TraceID().String()})
+		return
+	}
+	o.Observe(v)
+}
+
 func (m *Metrics) Handler() http.Handler {
 	if m == nil {
 		return http.NotFoundHandler()
 	}
-	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{Registry: m.reg})
+	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{Registry: m.reg, EnableOpenMetrics: true})
 }
 
 // UnaryInterceptor times every unary RPC by method and status code. It goes
@@ -105,7 +117,7 @@ func (m *Metrics) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		}
 		start := time.Now()
 		resp, err := handler(ctx, req)
-		m.rpc.WithLabelValues(path.Base(info.FullMethod), status.Code(err).String()).Observe(time.Since(start).Seconds())
+		observe(m.rpc.WithLabelValues(path.Base(info.FullMethod), status.Code(err).String()), time.Since(start).Seconds(), trace.SpanContextFromContext(ctx))
 		return resp, err
 	}
 }
@@ -126,7 +138,8 @@ func (m *Metrics) Leased(jobs []store.Job) {
 	for _, j := range jobs {
 		m.leased.WithLabelValues(j.Queue).Inc()
 		if !j.LeasedAt.IsZero() {
-			m.wait.WithLabelValues(j.Queue).Observe(max(0, j.LeasedAt.Sub(j.RunAt).Seconds()))
+			sc, _ := traceparent.Parse(j.TraceContext)
+			observe(m.wait.WithLabelValues(j.Queue), max(0, j.LeasedAt.Sub(j.RunAt).Seconds()), sc)
 		}
 	}
 }

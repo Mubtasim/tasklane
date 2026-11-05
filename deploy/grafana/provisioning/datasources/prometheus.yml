@@ -8,3 +8,7 @@ datasources:
     isDefault: true
     jsonData:
       timeInterval: 5s
+      # Exemplar dots on latency panels open their trace in Jaeger.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: jaeger

@@ -7,10 +7,14 @@ package tasklane
 import (
 	"context"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	"github.com/mubtasim/tasklane/internal/traceparent"
 )
 
 // maxMessageBytes matches the server's gRPC message limit: a full Lease
@@ -22,6 +26,8 @@ const maxMessageBytes = 16 << 20
 type Client struct {
 	conn *grpc.ClientConn
 	api  tasklanev1.TasklaneServiceClient
+
+	tracer trace.Tracer
 }
 
 // Option configures Dial.
@@ -30,6 +36,7 @@ type Option func(*dialConfig)
 type dialConfig struct {
 	apiKey   string
 	grpcOpts []grpc.DialOption
+	tp       trace.TracerProvider
 }
 
 // WithAPIKey sends "authorization: Bearer <key>" with every call.
@@ -43,6 +50,14 @@ func WithGRPCDialOptions(opts ...grpc.DialOption) Option {
 	return func(c *dialConfig) { c.grpcOpts = append(c.grpcOpts, opts...) }
 }
 
+// WithTracerProvider records the client's spans with tp: a client span per
+// RPC (heartbeats excepted) and a "handle <kind>" span per job run. The
+// default is the global provider, a no-op unless the application sets one.
+// The SDK never configures exporters; the application does.
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(c *dialConfig) { c.tp = tp }
+}
+
 // Dial creates a client for the server's gRPC address ("host:7070"). It does
 // not block: the connection is made on first use and re-made after failures.
 // The default transport is plaintext; pass TLS credentials with
@@ -52,9 +67,17 @@ func Dial(target string, opts ...Option) (*Client, error) {
 	for _, o := range opts {
 		o(&cfg)
 	}
+	if cfg.tp == nil {
+		cfg.tp = otel.GetTracerProvider()
+	}
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMessageBytes), grpc.MaxCallSendMsgSize(maxMessageBytes)),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler(
+			otelgrpc.WithTracerProvider(cfg.tp),
+			otelgrpc.WithPropagators(traceparent.W3C),
+			otelgrpc.WithFilter(notHeartbeat),
+		)),
 	}
 	if cfg.apiKey != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(bearerToken(cfg.apiKey)))
@@ -63,7 +86,8 @@ func Dial(target string, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{conn: conn, api: tasklanev1.NewTasklaneServiceClient(conn)}, nil
+	return &Client{conn: conn, api: tasklanev1.NewTasklaneServiceClient(conn),
+		tracer: cfg.tp.Tracer("github.com/mubtasim/tasklane/sdk/go/tasklane")}, nil
 }
 
 // Close closes the connection. Stop every Worker first.

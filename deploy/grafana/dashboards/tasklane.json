@@ -445,11 +445,13 @@
         {
           "refId": "A",
           "expr": "histogram_quantile(0.5, sum by (le) (rate(tasklane_queue_wait_seconds_bucket{queue=~\"$queue\"}[1m])))",
+          "exemplar": true,
           "legendFormat": "p50"
         },
         {
           "refId": "B",
           "expr": "histogram_quantile(0.99, sum by (le) (rate(tasklane_queue_wait_seconds_bucket{queue=~\"$queue\"}[1m])))",
+          "exemplar": true,
           "legendFormat": "p99"
         }
       ],
@@ -490,6 +492,7 @@
         {
           "refId": "A",
           "expr": "histogram_quantile(0.99, sum by (le, method) (rate(tasklane_rpc_duration_seconds_bucket{method!=\"Lease\"}[1m])))",
+          "exemplar": true,
           "legendFormat": "{{method}}"
         }
       ],

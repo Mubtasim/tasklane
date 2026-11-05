@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -15,6 +16,8 @@ import (
 // shutdownNackError is the Nack message for jobs still running at the
 // shutdown deadline.
 const shutdownNackError = "worker shutting down"
+
+var errShutdown = errors.New(shutdownNackError)
 
 // drain waits for running jobs after Run's context is cancelled. Jobs still
 // running after ShutdownTimeout are cancelled and nacked, so the server
@@ -58,12 +61,12 @@ func (w *Worker) drain(r *run) {
 			// its final call. A lost lease can only be reported before
 			// the heartbeat exits, so check it after the join.
 			<-a.hbDone
-			shutdownErr := errors.New(shutdownNackError)
+			shutdownErr := errShutdown
 			if a.lost.Load() {
 				w.report(a, OutcomeLeaseLost, shutdownErr)
 				return
 			}
-			ctx, cancel := context.WithDeadline(context.Background(), graceEnd)
+			ctx, cancel := context.WithDeadline(trace.ContextWithSpan(context.Background(), a.span), graceEnd)
 			defer cancel()
 			_, err := w.client.api.Nack(ctx, &tasklanev1.NackRequest{Id: a.job.ID, LeaseToken: a.job.token, Error: shutdownNackError})
 			if err != nil {

@@ -83,11 +83,13 @@ w := client.NewWorker("emails", tasklane.WorkerOptions{Concurrency: 5, OnResult:
 }})
 ```
 
+**Tracing.** `tasklane.Dial(addr, tasklane.WithTracerProvider(tp))` records a client span for every RPC with your tracer provider (default: the global one; a worker uses its client's). A handler's `ctx` already carries the job's span, so anything it traces nests under `handle <kind>`. Enqueue with a `ctx` that holds your request's span and the job joins that trace. The SDK depends only on the OpenTelemetry API; you configure the exporter. Handler errors are exported to the tracing backend (span status and recorded error). A handle span whose Ack is still in flight when the worker's shutdown grace expires ends after `Run` returns (same as `OnResult`), so a program that flushes its tracer right after `Run` may miss it.
+
 ## Demo
 
-One command starts PostgreSQL, two servers behind Envoy, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus and Grafana. It needs Docker and about 700 MB of RAM. Envoy owns the host ports 7070 and 8080 and balances each request across the two servers, so every client sees one address.
+One command starts PostgreSQL, two servers behind Envoy, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus, Grafana and Jaeger. It needs Docker and about 1 GB of RAM (details under [Tracing](#tracing)). Envoy owns the host ports 7070 and 8080 and balances each request across the two servers, so every client sees one address.
 
-The main way to watch is the Grafana dashboard at http://localhost:3000 (see [Monitoring](#monitoring)). `tasklane-watch` is a lighter alternative in the terminal.
+The main way to watch is the Grafana dashboard at http://localhost:3000 (see [Monitoring](#monitoring)); Jaeger at http://localhost:16686 shows each job's trace (see [Tracing](#tracing)). `tasklane-watch` is a lighter alternative in the terminal.
 
 A tmux layout that works well (`Ctrl+b |` and `Ctrl+b -` split panes):
 
@@ -157,6 +159,42 @@ Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill wor
 Try killing a server: `docker compose -f deploy/docker-compose.yml kill tasklane-1`. "Servers up" drops to 1 and "Requests per server" moves to `tasklane-2`, which went from about 16 to about 33 requests/s. After a hard kill, new calls fail fast for about 14-18 s, most likely until Envoy's health checks (2 s, 2 failures) and DNS re-resolution (5 s) drop the dead server (upstream keepalive and a retry rule that avoids the previous host didn't shorten it): in the run I measured, the producer and workers logged 25 failed calls (mostly Unavailable) between 0.2 s and 18 s after the kill, none after that. They retry, so throughput held. The acked rate was about 9.3 jobs/s with one server (9.6 before). `docker compose -f deploy/docker-compose.yml start tasklane-1` and the traffic splits again, about 16 and 17 requests/s, with the acked rate back at about 9.5 jobs/s.
 
 Example alert rules are in `deploy/prometheus/alerts.yml` (server down, jobs stuck, dead jobs, high reap rate, queue full, RPC errors, stale queue stats); see them at http://localhost:9090/alerts. The demo's poison jobs keep `TasklaneDeadJobs` firing, as they should. `TasklaneStatsStale` fires when a server's cached queue depths are over 30 s old, which usually means it can't reach the database. With several server copies, aggregate the queue gauges with `max by (queue)` (every server reports the same database-wide numbers) and counters with `sum`. All metrics are listed in [design §16.2](docs/design.md#162-metrics).
+
+## Tracing
+
+The demo exports OpenTelemetry traces to Jaeger (http://localhost:16686), sampling 100%. One trace follows a job from the producer to the worker that ran it, through the queue: the server stores the W3C `traceparent` in the job's row at enqueue, and the worker continues from it. A normal job's trace has 12 spans:
+
+```
+demo produce                                 producer
+ └─ tasklane.v1.TasklaneService/Enqueue      client span
+     └─ tasklane.v1.TasklaneService/Enqueue  server span: BEGIN, INSERT, SELECT, COMMIT
+         ├─ queue wait                       run_at → lease time, recorded by the server
+         └─ handle normal                    worker
+             └─ Ack (client + server), UPDATE
+```
+
+![One flaky job's trace in Jaeger: two attempts across five services](docs/images/trace.png)
+
+The screenshot is one flaky job: 20 spans, 5 services, 2.0 s. Attempt 1 waited 6.9 ms, then `handle flaky` ran 301 ms on worker-3 and failed (red); the Nack and its database spans follow, then a gap of about 1 s (the retry backoff), then `queue wait` for attempt 2 (17.6 ms) and `handle flaky` on worker-1 (482 ms), which succeeded and acked.
+
+To find one yourself: open Jaeger, pick a worker service (`worker-1`, `worker-2` or `worker-3`) and add the tag `tasklane.attempt=2` to see jobs that were retried (the tag is on the worker's spans, so searching `producer` with it finds nothing). Pick `producer` with no tag for every job. Traces of jobs that were retried several times are longer, because every attempt joins the same trace. `Lease` calls are their own short traces, since a lease starts before any job is known.
+
+**From a graph to a trace.** The "Queue wait" and "RPC latency" panels in Grafana carry exemplars: small dots on the graph, each a sampled request. Click one to open its trace in Jaeger. (Exemplars need the OpenMetrics format, which the server's `/metrics` serves; Prometheus runs with `--enable-feature=exemplar-storage`.)
+
+**Cost.** In the demo Jaeger keeps traces in memory (capped at 10,000 traces, about 8 minutes of the demo's traffic). A normal job makes 12 spans; with the retried and poison jobs and the workers' `Lease` calls, the stack produces about 200 spans a second (my estimate from counting spans in Jaeger over one minute). After a restart Jaeger's memory climbed to about 240 MiB in 12 minutes (cgroup anon 215 MiB), and then stayed there (239 MiB at 12, 14 and 16 minutes, cgroup anon 216 MiB; 226.5 MiB at 19-20 minutes by `docker stats`), so it is flat at about 225-240 MiB once the 10,000-trace cap filled. `docker stats` for the whole stack read about 615 MiB at that moment (Grafana's share varies between about 215 and 700 MiB because it counts file cache), so budget about 1 GB.
+
+**Overhead.** On the server, the benchmark (`go test ./internal/api -bench Enqueue`) measured an `Enqueue` with tracing off about 3.5% slower than `main` (about 0.93 ms per call on a two-core laptop with the demo running) and 100% sampling into an in-memory recorder within noise of that.
+
+**For your own deployment**, set the standard OpenTelemetry variables on the server and on your own processes; there are no Tasklane-specific flags:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
+OTEL_SERVICE_NAME=my-service
+OTEL_TRACES_SAMPLER=parentbased_traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.1
+```
+
+With the parent-based sampler the producer decides once and everyone else follows its `sampled` flag, so a trace is whole or absent. The server samples root spans at 100% unless `OTEL_TRACES_SAMPLER` is set, so every call from a client that sends no `traceparent` (`tasklane-watch`, curl, a worker without OpenTelemetry) becomes a sampled root trace; in production set a ratio (`parentbased_traceidratio` plus `OTEL_TRACES_SAMPLER_ARG`). Without `OTEL_EXPORTER_OTLP_ENDPOINT` the server creates no spans and exports nothing.
 
 ## Correctness
 

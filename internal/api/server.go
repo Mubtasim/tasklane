@@ -5,16 +5,22 @@ package api
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/metrics"
 	"github.com/mubtasim/tasklane/internal/store"
+	"github.com/mubtasim/tasklane/internal/traceparent"
 )
 
 const (
@@ -64,6 +70,8 @@ type Server struct {
 	pollInterval time.Duration
 	depths       *depthCache
 	metrics      *metrics.Metrics // nil records nothing
+	tp           trace.TracerProvider
+	tracer       trace.Tracer
 
 	stopOnce sync.Once
 	stopping chan struct{}
@@ -74,6 +82,12 @@ type Option func(*Server)
 // WithMetrics records the server's metrics in m (design §16.2).
 func WithMetrics(m *metrics.Metrics) Option {
 	return func(s *Server) { s.metrics = m }
+}
+
+// WithTracerProvider records the server's spans with tp (design §18). The
+// default is the global provider, a no-op unless the program sets one.
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(s *Server) { s.tp = tp }
 }
 
 // WithPollInterval overrides DefaultPollInterval (tests use it). A d <= 0
@@ -91,7 +105,40 @@ func NewServer(st store.Store, n Notifier, log *slog.Logger, opts ...Option) *Se
 	for _, o := range opts {
 		o(s)
 	}
+	if s.tp == nil {
+		s.tp = otel.GetTracerProvider()
+	}
+	s.tracer = s.tp.Tracer("github.com/mubtasim/tasklane/internal/api")
 	return s
+}
+
+// parentTraceparent is the traceparent a job enqueued in this call stores
+// when the caller set none (design §18.2): the server's own span when tracing
+// is on, otherwise the caller's span, so producer and worker still connect
+// when the server exports nothing. The otelgrpc stats handler's span, even a
+// no-op one, already carries the caller's context, so the first branch covers
+// both cases; the metadata fallback only matters when no stats handler is
+// installed.
+func parentTraceparent(ctx context.Context) string {
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		return traceparent.Format(sc)
+	}
+	md, _ := metadata.FromIncomingContext(ctx)
+	if v := md.Get("traceparent"); len(v) > 0 {
+		if sc, ok := traceparent.Parse(v[0]); ok {
+			return traceparent.Format(sc)
+		}
+	}
+	return ""
+}
+
+// annotate adds attributes to the RPC's server span (a no-op when untraced).
+func annotate(ctx context.Context, attrs ...attribute.KeyValue) {
+	trace.SpanFromContext(ctx).SetAttributes(attrs...)
+}
+
+func queueAttrs(queue string) []attribute.KeyValue {
+	return []attribute.KeyValue{attribute.String("messaging.system", "tasklane"), attribute.String("messaging.destination.name", queue)}
 }
 
 // Shutdown makes waiting leases return their (empty) result now, so a
@@ -110,7 +157,7 @@ func (s *Server) CreateQueue(ctx context.Context, req *tasklanev1.CreateQueueReq
 	wctx, cancel := detach(ctx)
 	defer cancel()
 	if err := s.store.CreateQueue(wctx, q); err != nil {
-		return nil, toStatus(s.log, "CreateQueue", err)
+		return nil, toStatus(ctx, s.log, "CreateQueue", err)
 	}
 	// Answer with the queue as stored, so CreateQueue and GetQueue agree: the
 	// store keeps the visibility timeout in whole milliseconds.
@@ -122,11 +169,11 @@ func (s *Server) CreateQueue(ctx context.Context, req *tasklanev1.CreateQueueReq
 func (s *Server) GetQueue(ctx context.Context, req *tasklanev1.GetQueueRequest) (*tasklanev1.GetQueueResponse, error) {
 	q, err := s.store.GetQueue(ctx, req.GetName())
 	if err != nil {
-		return nil, toStatus(s.log, "GetQueue", err)
+		return nil, toStatus(ctx, s.log, "GetQueue", err)
 	}
 	stats, err := s.store.QueueStats(ctx, req.GetName())
 	if err != nil {
-		return nil, toStatus(s.log, "GetQueue", err)
+		return nil, toStatus(ctx, s.log, "GetQueue", err)
 	}
 	return &tasklanev1.GetQueueResponse{Queue: queueFromStore(q), Stats: statsFromStore(stats)}, nil
 }
@@ -136,6 +183,10 @@ func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	if job.TraceContext == "" {
+		job.TraceContext = parentTraceparent(ctx)
+	}
+	annotate(ctx, append(queueAttrs(req.GetQueue()), attribute.String("messaging.operation.type", "send"))...)
 	if s.depths.isFull(req.GetQueue()) {
 		s.metrics.EnqueueRefused(req.GetQueue())
 		return nil, queueFullError(req.GetQueue())
@@ -144,8 +195,9 @@ func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*
 	defer cancel()
 	res, err := s.store.Enqueue(wctx, []store.NewJob{job})
 	if err != nil {
-		return nil, toStatus(s.log, "Enqueue", err)
+		return nil, toStatus(ctx, s.log, "Enqueue", err)
 	}
+	annotate(ctx, attribute.String("messaging.message.id", strconv.FormatInt(res[0].ID, 10)))
 	if res[0].Created {
 		s.metrics.Enqueued(req.GetQueue(), 1)
 	}
@@ -160,11 +212,16 @@ func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchR
 		s.metrics.EnqueueRefused(req.GetQueue())
 		return nil, queueFullError(req.GetQueue())
 	}
+	annotate(ctx, append(queueAttrs(req.GetQueue()), attribute.String("messaging.operation.type", "send"))...)
+	parent := parentTraceparent(ctx)
 	jobs := make([]store.NewJob, 0, len(req.GetJobs()))
 	for i, spec := range req.GetJobs() {
 		j, err := jobSpecToStore(req.GetQueue(), spec)
 		if err != nil {
 			return nil, invalid("jobs[%d]: %s", i, status.Convert(err).Message())
+		}
+		if j.TraceContext == "" {
+			j.TraceContext = parent
 		}
 		jobs = append(jobs, j)
 	}
@@ -172,7 +229,7 @@ func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchR
 	defer cancel()
 	res, err := s.store.Enqueue(wctx, jobs) // the store rejects 0 or > 1000 jobs
 	if err != nil {
-		return nil, toStatus(s.log, "EnqueueBatch", err)
+		return nil, toStatus(ctx, s.log, "EnqueueBatch", err)
 	}
 	out := &tasklanev1.EnqueueBatchResponse{Results: make([]*tasklanev1.EnqueueResult, len(res))}
 	created := 0
@@ -226,16 +283,17 @@ func (s *Server) Lease(ctx context.Context, req *tasklanev1.LeaseRequest) (*task
 	for {
 		jobs, err := s.lease(ctx, req.GetQueue(), n, ttl)
 		if err != nil {
-			return nil, toStatus(s.log, "Lease", err)
+			return nil, toStatus(ctx, s.log, "Lease", err)
 		}
 		if len(jobs) > 0 || wait <= 0 {
 			s.metrics.Leased(jobs)
+			s.recordWaits(jobs)
 			resp, err := leaseResponse(jobs)
-			return resp, toStatus(s.log, "Lease", err)
+			return resp, toStatus(ctx, s.log, "Lease", err)
 		}
 		select {
 		case <-ctx.Done():
-			return nil, toStatus(s.log, "Lease", ctx.Err())
+			return nil, toStatus(ctx, s.log, "Lease", ctx.Err())
 		case <-deadline.C:
 			return &tasklanev1.LeaseResponse{}, nil
 		case <-s.stopping:
@@ -248,7 +306,7 @@ func (s *Server) Lease(ctx context.Context, req *tasklanev1.LeaseRequest) (*task
 		// be handed jobs it will never run: they would sit leased until
 		// their visibility timeout.
 		if err := ctx.Err(); err != nil {
-			return nil, toStatus(s.log, "Lease", err)
+			return nil, toStatus(ctx, s.log, "Lease", err)
 		}
 	}
 }
@@ -283,8 +341,9 @@ func (s *Server) Ack(ctx context.Context, req *tasklanev1.AckRequest) (*tasklane
 	defer cancel()
 	res, err := s.store.Ack(wctx, req.GetId(), token)
 	if err != nil {
-		return nil, toStatus(s.log, "Ack", err)
+		return nil, toStatus(ctx, s.log, "Ack", err)
 	}
+	annotate(ctx, queueAttrs(res.Queue)...)
 	if !res.Repeated {
 		s.metrics.Acked(res.Queue)
 	}
@@ -311,8 +370,9 @@ func (s *Server) Nack(ctx context.Context, req *tasklanev1.NackRequest) (*taskla
 	defer cancel()
 	res, err := s.store.Nack(wctx, req.GetId(), token, errMsg, retryAt)
 	if err != nil {
-		return nil, toStatus(s.log, "Nack", err)
+		return nil, toStatus(ctx, s.log, "Nack", err)
 	}
+	annotate(ctx, append(queueAttrs(res.Queue), attribute.Bool("tasklane.dead", res.Dead))...)
 	s.metrics.Nacked(res.Queue, res.Dead)
 	return &tasklanev1.NackResponse{}, nil
 }
@@ -330,7 +390,7 @@ func (s *Server) Heartbeat(ctx context.Context, req *tasklanev1.HeartbeatRequest
 	defer cancel()
 	expires, err := s.store.Heartbeat(wctx, req.GetId(), token, ttl)
 	if err != nil {
-		return nil, toStatus(s.log, "Heartbeat", err)
+		return nil, toStatus(ctx, s.log, "Heartbeat", err)
 	}
 	return &tasklanev1.HeartbeatResponse{LeaseExpiresAt: timeFromStore(expires)}, nil
 }
@@ -338,11 +398,39 @@ func (s *Server) Heartbeat(ctx context.Context, req *tasklanev1.HeartbeatRequest
 func (s *Server) GetJob(ctx context.Context, req *tasklanev1.GetJobRequest) (*tasklanev1.GetJobResponse, error) {
 	j, err := s.store.GetJob(ctx, req.GetId())
 	if err != nil {
-		return nil, toStatus(s.log, "GetJob", err)
+		return nil, toStatus(ctx, s.log, "GetJob", err)
 	}
 	pj, err := jobFromStore(j, false)
 	if err != nil {
-		return nil, toStatus(s.log, "GetJob", err)
+		return nil, toStatus(ctx, s.log, "GetJob", err)
 	}
 	return &tasklanev1.GetJobResponse{Job: pj}, nil
+}
+
+// recordWaits records a "queue wait" span in each sampled job's own trace,
+// from when the job became ready (run_at) to its lease. Both times are
+// Postgres now(), so machines' clocks can't skew the span; they are the same
+// two values the queue-wait histogram uses. The Lease call has its own trace,
+// so the parent is the traceparent stored with the job, not the request.
+func (s *Server) recordWaits(jobs []store.Job) {
+	for _, j := range jobs {
+		parent, ok := traceparent.Parse(j.TraceContext)
+		if !ok || !parent.IsSampled() || j.LeasedAt.IsZero() {
+			continue
+		}
+		start := j.RunAt
+		if start.After(j.LeasedAt) { // a job leased the instant it became ready
+			start = j.LeasedAt
+		}
+		ctx := trace.ContextWithRemoteSpanContext(context.Background(), parent)
+		_, span := s.tracer.Start(ctx, "queue wait", trace.WithTimestamp(start), trace.WithAttributes(
+			attribute.String("messaging.system", "tasklane"),
+			attribute.String("messaging.destination.name", j.Queue),
+			attribute.String("messaging.message.id", strconv.FormatInt(j.ID, 10)),
+			attribute.String("tasklane.kind", j.Kind),
+			attribute.Int("tasklane.attempt", j.Attempts),
+			attribute.Int("tasklane.priority", int(j.Priority)),
+		))
+		span.End(trace.WithTimestamp(j.LeasedAt))
+	}
 }

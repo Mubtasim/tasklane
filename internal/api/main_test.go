@@ -68,7 +68,7 @@ type env struct {
 
 // newEnv resets the database and serves the API over an in-memory connection
 // (bufconn): real gRPC framing, interceptors and status codes, no TCP port.
-func newEnv(t *testing.T, keys []string, opts ...Option) *env {
+func newEnv(t testing.TB, keys []string, opts ...Option) *env {
 	t.Helper()
 	require.NoError(t, testDB.Reset(context.Background()))
 	st := pgstore.New(testDB.Pool, backoff.Policy{Base: time.Second, Cap: time.Hour, Rand: func() float64 { return 0 }})
