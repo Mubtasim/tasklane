@@ -19,7 +19,7 @@ import (
 // Errors). Sentinel errors keep their message, which never holds secrets.
 // Anything unexpected is logged in full and returned as a bare INTERNAL, so
 // SQL text and connection details never reach clients.
-func toStatus(log *slog.Logger, method string, err error) error {
+func toStatus(ctx context.Context, log *slog.Logger, method string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -40,19 +40,19 @@ func toStatus(log *slog.Logger, method string, err error) error {
 	case isProgramLimitExceeded(err):
 		// A safety net behind the request caps: a value too large for an
 		// index or row is the caller's argument, not a server fault.
-		log.Warn("value exceeds a database limit", "method", method, "err", err)
+		log.WarnContext(ctx, "value exceeds a database limit", "method", method, "err", err)
 		return status.Error(codes.InvalidArgument, "a value exceeds a size limit")
 	case isUnavailable(err):
 		// Before the context cases: pgconn wraps connect timeouts so that
 		// errors.Is(err, context.DeadlineExceeded) is true for them too.
-		log.Warn("database unavailable", "method", method, "err", err)
+		log.WarnContext(ctx, "database unavailable", "method", method, "err", err)
 		return status.Error(codes.Unavailable, "database unavailable")
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, "deadline exceeded")
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, "request cancelled")
 	}
-	log.Error("internal error", "method", method, "err", err)
+	log.ErrorContext(ctx, "internal error", "method", method, "err", err)
 	return status.Error(codes.Internal, "internal error")
 }
 

@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/mubtasim/tasklane/internal/api"
 	"github.com/mubtasim/tasklane/internal/backoff"
@@ -27,6 +27,7 @@ import (
 	"github.com/mubtasim/tasklane/internal/pgstore"
 	"github.com/mubtasim/tasklane/internal/pruner"
 	"github.com/mubtasim/tasklane/internal/reaper"
+	"github.com/mubtasim/tasklane/internal/tracing"
 )
 
 // Each drain step on SIGINT/SIGTERM gets its own budget, so a slow HTTP
@@ -36,10 +37,12 @@ const (
 	grpcShutdownTimeout = 10 * time.Second
 	// A scrape is short, and the last scrape during a drain is useful.
 	metricsShutdownTimeout = 2 * time.Second
+	// traceFlushTimeout bounds the final export of buffered spans.
+	traceFlushTimeout = 2 * time.Second
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log := slog.New(tracing.LogHandler{Handler: slog.NewJSONHandler(os.Stdout, nil)})
 	if err := run(log); err != nil {
 		log.Error("tasklane stopped", "err", err)
 		os.Exit(1)
@@ -51,10 +54,29 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	tp, flushTraces, err := tracing.Setup(context.Background(), os.Getenv, "tasklane-server")
+	if err != nil {
+		return err
+	}
+	// Deferred first, so it runs last: after the servers drained, the spans
+	// of the last requests are still sent. A collector that can't be reached
+	// costs at most traceFlushTimeout; exit never waits longer.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), traceFlushTimeout)
+		defer cancel()
+		if err := flushTraces(ctx); err != nil {
+			log.Warn("flushing traces failed", "err", err)
+		}
+	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("database config: %w", err)
+	}
+	poolCfg.ConnConfig.Tracer = tracing.ParentOnly(otelpgx.NewTracer(otelpgx.WithTracerProvider(tp)))
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return fmt.Errorf("database config: %w", err)
 	}
@@ -87,7 +109,7 @@ func run(log *slog.Logger) error {
 		pruner.Run(bgCtx, st, pruner.Config{Interval: cfg.PruneInterval, Retention: cfg.Retention, DeadRetention: cfg.DeadRetention, Metrics: m}, log)
 	})
 
-	srv := api.NewServer(st, listener, log, api.WithMetrics(m))
+	srv := api.NewServer(st, listener, log, api.WithMetrics(m), api.WithTracerProvider(tp))
 	background.Go(func() { srv.RunDepthRefresh(bgCtx) })
 	grpcServer := api.NewGRPCServer(srv, cfg.APIKeys, log)
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -99,16 +121,13 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(api.MaxMessageBytes), grpc.MaxCallSendMsgSize(api.MaxMessageBytes)),
-	)
+	conn, err := grpc.NewClient(target, api.GatewayDialOptions(tp)...)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	var shuttingDown atomic.Bool
-	handler, err := api.NewHTTPHandler(bgCtx, conn, readyFunc(&shuttingDown, pool.Ping), cfg.APIKeys)
+	handler, err := api.NewHTTPHandler(bgCtx, conn, readyFunc(&shuttingDown, pool.Ping), cfg.APIKeys, tp)
 	if err != nil {
 		return err
 	}
