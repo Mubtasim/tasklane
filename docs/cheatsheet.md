@@ -113,3 +113,40 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | Chaos runs | seed 1: 1,889 enqueued, 1,827 completed, 62 dead, 16 lease_lost, 3m42s; seed 1793568724465150275 (4 server kills): 1,654 / 1,610 / 44, 5 lease_lost, 4 gave_up, 3m52s | Both PASS. |
 | The counter bug | ~1 run in 60 failed rule 5; 0 in 180 after the fix | A cancelled client could make a committed write look failed. |
 | `storeWriteTimeout` | 5 s | Store writes run detached from the client; below the 10 s graceful-stop budget. |
+
+## Replication and Raft (phase 2)
+
+Phase 2 replaces the single PostgreSQL behind the `Store` interface with `RaftStore`: a small purpose-built database (the jobs and queues in memory, a log and snapshots on disk) that runs as several copies kept identical by the Raft consensus algorithm (design §12). Raft itself stores nothing; it only makes every copy apply the same changes in the same order.
+
+| Word | Meaning |
+|---|---|
+| Node | One running copy of the program; in Raft, one member of the group, usually one per machine. |
+| Cluster | The nodes working together as one system: "a 3-node cluster". |
+| Replica | A copy of the data; every Raft node holds a full one. |
+| Replication | Keeping the replicas the same by sending each change from the leader to the others. |
+| Leader | The one node that accepts writes and decides the order of changes; exactly one per term. |
+| Follower | Receives changes from the leader and stores them; doesn't accept writes. |
+| Candidate | A follower that stopped hearing the leader and asks for votes to replace it. |
+| Term | An election round number. A higher term always wins, so a term works like a fencing token for the whole cluster. |
+| Log, entry | The ordered list of changes ("enqueue job 1", "lease job 1 to worker A"); one change is an entry. |
+| Commit | An entry is committed once a majority has it on disk; from then on it is never lost. |
+| State machine | The data you get by applying committed entries in order: here, the jobs and queues. |
+| Majority, quorum | More than half of the nodes; needed to elect a leader and to commit anything. |
+| Snapshot | A saved copy of the whole data at entry N, so the log before N can be deleted. |
+| Partition | The network splits, so some running nodes can't reach the others. |
+| Split brain | Two nodes both acting as leader and accepting different writes; majorities and terms prevent it. |
+| Failover | A new leader taking over after the old one dies. |
+| Fault tolerance | How many nodes can fail while the system keeps working. |
+| Kubernetes node vs pod | In Kubernetes a node is a machine and a pod is a running program, so 3 Raft nodes are 3 pods, ideally on 3 different Kubernetes nodes. |
+
+| What | Value | Why |
+|---|---|---|
+| Nodes needed to survive f failures | 2f + 1 | A majority must stay alive. |
+| 1 / 2 / 3 / 4 / 5 nodes | survive 0 / 0 / 1 / 1 / 2 failures | Majority is 1 / 2 / 2 / 3 / 3. Two nodes are worse than one, and four are no better than three, so clusters are odd-sized. |
+| Why a majority, not "whoever is alive" | Two majorities of the same group always share a node | Only one side of a split can have a majority, so only one side accepts writes; the shared node carries every committed entry into the next term. |
+| Leader heartbeat | ~50 ms | Followers notice a dead leader quickly. |
+| Election timeout | random 150–300 ms | Random, like retry jitter, so two followers rarely run for election at once. |
+| Write latency | ≈ 2–6 ms in one datacenter | One round trip to the faster follower (~0.5 ms) plus a disk sync (1–5 ms). |
+| Failover time | ≈ 0.3–1 s | Election timeout plus one voting round. |
+| Throughput ceiling | etcd: roughly 10k–30k writes/s with batching on good SSDs | Every write goes through the one leader. |
+| Patroni (HA PostgreSQL) | uses etcd, a Raft store, to choose the Postgres leader | Raft already sits under highly available Postgres in practice. |
