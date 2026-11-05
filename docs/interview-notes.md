@@ -486,3 +486,109 @@ Three parts: the symptom, the cause, and the fix with its edges.
 **Fails halfway:** remaining edges. A write that commits exactly at the 5 s timeout can still be reported as `DeadlineExceeded`. A Lease whose client is gone before its first attempt still leases; the jobs are counted but wait out their visibility timeout. A client deadline shorter than the write no longer cuts the write short.
 
 **Trade-off:** the server now finishes work for clients that left, up to 5 s per call, in exchange for counters and responses that always match what was committed. The general lesson: a cancelled context means "the caller stopped waiting", not "the database did nothing". Any write whose outcome you record must outlive the request that started it, or check the database afterwards.
+
+## Q33. A job is enqueued now and runs in a different process minutes later. How does one trace survive the queue?
+
+Three parts: what gets stored, who writes it, who reads it.
+
+**What:** the trace context travels in the job's row, not in any connection. The server stores the W3C `traceparent` in `jobs.trace_context` at enqueue; the worker reads it back at lease time and starts its span as a child.
+
+**How:**
+1. The producer's span context goes out on the `Enqueue` call as a `traceparent` header (the SDK, `curl` or any instrumented client).
+2. The server creates its own `Enqueue` span as a child and, when the request's `trace_context` field is empty, stores that span's `traceparent` with the job (inside the same insert). An explicit field wins. With a no-op provider on the server it stores the incoming one, so producer and worker still connect.
+3. When a `Lease` returns the job, the server records a `queue wait` span under the stored context (Q35); the worker SDK extracts the same context and starts `handle <kind>` as a sibling, then runs the handler with that span in its `ctx`.
+4. The last field of a `traceparent` is the `sampled` flag. It is stored with the rest, so the producer's decision (head sampling, Q34) reaches the worker minutes later with no extra coordination: an unsampled job produces no spans anywhere.
+5. Every retry reads the same stored value, so all attempts are siblings in one trace, and the gap between a Nack and the next `queue wait` is the retry backoff.
+
+**Numbers:** a normal job's trace is 12 spans (producer, client and server `Enqueue`, four Postgres spans, `queue wait`, `handle`, client and server `Ack`, one `UPDATE`). A flaky job retried once was 20 spans over 5 services in 2.0 s. The stored value is 55 bytes (the field allows 512).
+
+**Fails halfway:** a missing or malformed `traceparent` gives the worker a fresh root span and no wait span, with no error: a broken trace is better than a failed job. If the exporter is down, spans are dropped (batch processor, bounded queue), never blocking the handler. If a worker dies mid-job its `handle` span never ends, so it never exports; the retry's spans still join the trace.
+
+**Trade-off:** one long trace per job, even across minutes of retries, is easy to read but can be big for a poison job (27 spans seen over 3 attempts in the demo, and a poison job runs 5). The OpenTelemetry messaging convention of a new trace per message linked to the producer's keeps traces small but makes the reader jump between them.
+
+## Q34. Head sampling or tail sampling, and why does tail sampling fit a queue badly?
+
+Two parts: what each decides on, and the memory cost of waiting.
+
+**What:** head sampling decides when the trace starts (a coin flip by the producer); tail sampling waits for the trace to end and then keeps the interesting ones (errors, slow). Tasklane uses parent-based head sampling.
+
+**How:**
+1. Head, parent-based: the producer's sampler decides once (`OTEL_TRACES_SAMPLER=parentbased_traceidratio`, ratio 0.1) and every other process follows the `sampled` flag in the `traceparent`. A trace is whole or absent. Independent ratios per process (10% × 10% × ...) would leave most traces with holes.
+2. Tail needs a Collector that holds every span of a trace in memory until it decides, because it cannot know the outcome earlier. It must see all spans of a trace in one place.
+3. Its buffer is about span rate × trace duration × span size. At 1,000 jobs/s × 8 spans × 1 KB × 120 s that is 8,000 spans/s × 1 KB × 120 s ≈ 1 GB, before any overhead.
+4. A queued job's trace lasts as long as its wait plus run plus retries: seconds to minutes, not the milliseconds of an HTTP request. That multiplies the buffer.
+5. The decision window has to be fixed (say 120 s). Spans that arrive after it, such as a retry attempt 10 minutes later, find the decision already made and are dropped or form a fragment.
+
+**Numbers:** the demo samples 100%: about 200 spans/s, 12 spans per normal job (my count from Jaeger). The 1 GB figure is arithmetic for a hypothetical 1,000 jobs/s, not a measurement; the demo is about 100 times smaller. Tail sampling is listed as future work (design §18).
+
+**Fails halfway:** if the buffer is too small the Collector evicts traces early and decides on partial data; if the decision window is too short, long-lived traces are cut. Head sampling has neither problem but can drop the one slow trace you wanted: a 10% head sample keeps 1 in 10 failures.
+
+**Trade-off:** head sampling is cheap, stateless and predictable, but blind to outcome. Tail sampling keeps what matters but costs memory and a stateful Collector that scales badly for long traces. For a queue, a higher head ratio plus exemplars (Q36, which point at specific sampled traces) is the cheaper way to be able to find a slow one.
+
+## Q35. Why does the server record the `queue wait` span from Postgres times instead of the SDK?
+
+Three parts: which clock, who has both numbers, and what it matches.
+
+**What:** the server creates a finished span at lease time, from the job's `run_at` to the lease time, both of which come from Postgres.
+
+**How:**
+1. `run_at` is set by Postgres (`now()` or the requested time) and the lease time (`leased_at`) is Postgres `now()` too. One clock, so no skew between the producer's machine and the worker's.
+2. The server already has both values inside `Lease`, so it needs no extra query and no proto change. If the SDK did it, the job would need to carry `run_at` to every SDK, and every SDK (Go, TypeScript, C#) would repeat the code.
+3. The span is parented to the job's stored `traceparent`, so it shows in the right trace even though the `Lease` RPC started before any job was known (that RPC is its own short trace).
+4. The same two values feed the `tasklane_queue_wait_seconds` histogram, so the span and the metric agree to the microsecond, and the histogram's exemplar (Q36) links to this very trace.
+
+**Numbers:** in the flaky job's trace attempt 1 waited 6.9 ms and attempt 2 17.6 ms. With the demo's 1 s retry backoff, the gap between the Nack and the second wait span is about 1 s, shown as empty space, not as wait.
+
+**Fails halfway:** a stored `traceparent` that is missing, malformed or unsampled records no wait span and no error. A `Lease` of 10 jobs records 10 spans, each in its own job's trace. A crash after the lease but before the span is recorded loses that one span only.
+
+**Trade-off:** the wait span is accurate but is created by the server, so it exists only if the server is traced and the span is exported even when the worker is slow to start. A span from the worker's own clock would also include network time and skew, which are exactly what this measurement should not contain.
+
+## Q36. What is an exemplar, and why is it the bridge between metrics and traces?
+
+Two parts: what is attached, and what it lets you do.
+
+**What:** an exemplar is a sample trace ID attached to one histogram bucket observation. The metric says "p99 spiked at 14:03"; the exemplar on that bucket says "here is one request that landed in it".
+
+**How:**
+1. When a request's span is sampled, the server observes the histogram with the span's `trace_id` (`ObserveWithExemplar`) on `tasklane_rpc_duration_seconds` and `tasklane_queue_wait_seconds` (for waits, the job's own trace).
+2. The `/metrics` endpoint serves the OpenMetrics format, the only text format that carries exemplars, and Prometheus runs with `--enable-feature=exemplar-storage`.
+3. Grafana's panels have exemplars switched on and the Prometheus data source maps the `trace_id` label to the Jaeger data source, so a dot on the graph opens that trace.
+4. Aggregates answer how many and how slow; one trace answers why. The exemplar is the link between them.
+
+**Numbers:** with a query on Prometheus's exemplar API, both histograms returned exemplars with `trace_id` labels in the demo. Prometheus keeps exemplars in a fixed-size in-memory buffer (100,000 by default), so they cover recent history only.
+
+**Fails halfway:** exemplars are only attached to sampled traces; with a 10% ratio a bucket may have none, or a trace that Jaeger has already evicted (the demo keeps 50,000 traces in memory). A scrape in the classic Prometheus text format drops them.
+
+**Trade-off:** one exemplar per bucket per scrape interval is a sample, not every slow request, so it points at a representative trace, not the worst one. In return it costs almost nothing: no extra series, a few bytes per bucket.
+
+## Q37. Why not put the job ID in the span name?
+
+**What:** span names are grouped, indexed and aggregated by tracing backends, so they must have few distinct values; IDs belong in attributes.
+
+**How:**
+1. Jaeger's operation list, span-metrics and most backends key on the span name. `handle email.send` is one entry; `handle job 48213` would be one entry per job.
+2. With 10 jobs/s the demo would create 36,000 operation names an hour. Every dropdown, index and metrics series grows with that number (the same reasoning as metric label cardinality).
+3. The job ID is still searchable: `messaging.message.id=<job id>` is an attribute on each span. The name carries the job's kind (`handle <kind>`), which is a small set.
+4. The same reason keeps the queue name, attempt and priority in attributes (`messaging.destination.name`, `tasklane.attempt`, `tasklane.priority`), following the OpenTelemetry messaging conventions.
+
+**Numbers:** the demo has 3 kinds (`normal`, `flaky`, `poison`), so 3 `handle` names; job IDs would make one per job. Searching `tasklane.attempt=2` found retried jobs in Jaeger's UI without any special naming.
+
+**Fails halfway:** if a name does carry an ID, nothing breaks at once: the UI gets slow and the backend's operation index grows without bound, long after the change that caused it. That makes it a hard bug to attribute.
+
+**Trade-off:** attributes are searchable but cost storage per span, and some backends index only a configured set. A readable name like `handle email.send` is worth more than one that tries to be unique.
+
+## Q38. Why do the SDK and the server use W3C trace context explicitly instead of the global propagator?
+
+**What:** OpenTelemetry's global propagator is a no-op until the application sets one, so code that relied on it would silently write and read nothing, and every trace would break at the queue.
+
+**How:**
+1. The stored `trace_context` field is defined as a W3C `traceparent`. The code that writes it and the code that reads it both call `traceparent.W3C` directly, so the format is fixed by the field, not by configuration.
+2. A library must not change global state. If the SDK installed the global propagator it would fight the application's own (B3, for example), and any other library in the process would change behaviour.
+3. The gRPC and HTTP instrumentation does take a propagator option, and the same W3C one is passed to it, so incoming headers from `curl` or other tracing clients are understood.
+4. The tests run with the global propagator left alone and still expect producer, server and worker spans in one trace.
+
+**Numbers:** the failure is binary, not slow: with a no-op global propagator the `traceparent` is empty, so jobs show up with no `trace_context` and each worker span is a separate root. The demo sets no global propagator and its traces are whole.
+
+**Fails halfway:** an application that sets a different global propagator (B3 only) still gets Tasklane's W3C inside the library; its own calls use B3. The two never mix because each side picks its format.
+
+**Trade-off:** the library ignores the application's choice of propagation format for its own calls. That is deliberate: a job's stored trace context has to be readable by every SDK and every future reader, so the format must be part of the data, not the environment.

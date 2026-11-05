@@ -802,7 +802,7 @@ Decided 2026-11-06. This section is the M4c spec. Kubernetes (Helm chart, probes
 | 2 | Who creates spans | The SDKs and the server (gRPC and Postgres spans); not the background loops | Server spans show where an RPC's time goes (network, server, `INSERT`, `COMMIT`). Reaper, pruner and depth-refresh spans would be separate traces every second or minute with no job in them; metrics already cover those loops. |
 | 3 | Queue wait | A span created by the server at lease time, from `run_at` to the lease time | Both timestamps come from Postgres `now()`, so there is no clock skew between machines, and the server already has both values inside `Lease`. Created by the SDK instead, it would need a proto change and code in every SDK. |
 | 4 | Sampling | Parent-based: the producer decides once, everyone follows the `sampled` flag | Complete traces or none. Independent ratios per process (10% × 10%) would leave most traces broken. Tail sampling needs a Collector that holds a trace's spans until it ends, minutes for a queued job: future work. |
-| 5 | SDK integration | The SDK uses the OpenTelemetry API only; the application configures exporters | The usual pattern for libraries (pgx, gRPC, net/http): no second provider fighting the application's own, and a no-op with zero cost when the application doesn't use OpenTelemetry. |
+| 5 | SDK integration | The SDK uses the OpenTelemetry API only; the application configures exporters | The usual pattern for libraries (pgx, gRPC, net/http): no second provider fighting the application's own, and a no-op with near-zero cost when the application doesn't use OpenTelemetry. |
 | 6 | Demo | Jaeger always on, plus exemplars on two Grafana panels | Metrics show that p99 spiked; an exemplar is a sampled trace ID on that bucket, so a click on the spike opens the slow trace. |
 | 7 | Who writes `trace_context` | The server, from its own `Enqueue` span, when the request field is empty | Any client that sends a standard `traceparent` header joins the trace: the Go SDK, the M5 TypeScript and C# SDKs, `curl`, any instrumented HTTP client. The SDKs don't copy anything into the field. An explicit field still wins. |
 
@@ -812,9 +812,9 @@ A job that fails once and succeeds on its second attempt:
 
 ```
 producer: the caller's span (for example HTTP POST /signup)
- └─ tasklane.Enqueue                      SDK client span (gRPC client middleware)
-     └─ Enqueue                           server span; its traceparent is stored in jobs.trace_context
-         ├─ INSERT, COMMIT                Postgres spans
+ └─ tasklane.v1.TasklaneService/Enqueue   SDK client span (gRPC client middleware)
+     └─ tasklane.v1.TasklaneService/Enqueue   server span; its traceparent is stored in jobs.trace_context
+         ├─ BEGIN, INSERT, SELECT, COMMIT Postgres spans
          ├─ queue wait       attempt 1    server, inside Lease: run_at → lease time
          ├─ handle email.send attempt 1   worker SDK span; the handler's ctx carries it
          │   ├─ the handler's own calls
@@ -833,14 +833,18 @@ producer: the caller's span (for example HTTP POST /signup)
 | Outcome | Span |
 |---|---|
 | Acked | OK |
-| Nacked (handler error or panic) | Error, the handler's error recorded; `tasklane.dead=true` when the server reports the job went dead |
+| Nacked (handler error or panic) | Error, the handler's error recorded; `tasklane.dead=true` when the SDK infers the job went dead (below) |
 | Lease lost | Error, description `lease lost` |
 | Gave up (Ack or Nack never reached the server) | Error, description `gave up` |
 | Shutdown Nack | Error, description `shutdown` |
 
-A missing or malformed `traceparent` starts a fresh root span. Ack and Nack calls run in the handle span's context, so their client and server spans nest under it. Heartbeats get no spans (noise; metrics cover them).
+A missing or malformed `traceparent` starts a fresh root span. Ack and Nack calls run in the handle span's context, so their client and server spans nest under it.
 
-**Attributes** follow the OpenTelemetry messaging conventions where they fit: `messaging.system=tasklane`, `messaging.destination.name=<queue>`, `messaging.message.id=<job id>`, `messaging.operation.type` (`send` for enqueue, `process` for handle), plus `tasklane.kind`, `tasklane.attempt` and `tasklane.priority`. Span names use the kind, never the job ID, so they stay low-cardinality.
+**Heartbeats get no spans.** The `Heartbeat` RPC is filtered out of the gRPC client spans (SDK) and server spans, and HTTP heartbeats (`…:heartbeat`) out of the gateway spans: a long job heartbeats every few seconds and each one would add a pair of spans of no interest (metrics cover them).
+
+**`tasklane.dead` on the SDK side is inferred.** `NackResponse` is empty (no proto change in this milestone), so when a Nack is accepted the worker sets `tasklane.dead=true` if `Attempt >= MaxAttempts`, the same rule the server applies. The server's own `Nack` span carries the exact value.
+
+**Attributes** follow the OpenTelemetry messaging conventions where they fit: `messaging.system=tasklane`, `messaging.destination.name=<queue>`, `messaging.message.id=<job id>`, `messaging.operation.type` (`send` for enqueue, `process` for handle), plus `tasklane.kind`, `tasklane.attempt` and `tasklane.priority`. Span names use the kind, never the job ID, so they stay low-cardinality. gRPC spans are named `tasklane.v1.TasklaneService/<Method>` (by the gRPC instrumentation) and gateway HTTP spans `POST /` (method plus the matched route, by `otelhttp`).
 
 **Logs.** Server log lines written inside a traced RPC carry `trace_id` and `span_id`.
 
@@ -848,14 +852,17 @@ A missing or malformed `traceparent` starts a fresh root span. Ack and Nack call
 
 The standard OpenTelemetry environment variables configure everything; there are no Tasklane-specific tracing flags.
 
-- **Server.** When `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) is set, the server builds a tracer provider: OTLP/gRPC exporter, batch span processor, W3C trace-context propagator, `service.name` defaulting to `tasklane-server`, sampler from `OTEL_TRACES_SAMPLER` (default `parentbased_always_on`). Otherwise it installs only the propagator and a no-op provider. The gRPC server, the HTTP gateway (so a `traceparent` header on an HTTP call joins the trace) and the pgx pool get tracing middleware. On shutdown the provider flushes buffered spans inside the existing drain budget; a flush that can't reach the collector is dropped, never blocking exit.
-- **Go SDK.** `ClientOptions.TracerProvider` and `WorkerOptions.TracerProvider` (optional; default: the global provider) and the global propagator. The SDK adds the gRPC client middleware to its connection. New dependency: the `go.opentelemetry.io/otel` API and the gRPC instrumentation; exporters stay out of the SDK.
+- **Server.** When `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) is set, the server builds a tracer provider: OTLP/gRPC exporter, batch span processor, `service.name` defaulting to `tasklane-server`, sampler from `OTEL_TRACES_SAMPLER` (default `parentbased_always_on`). Otherwise it uses a no-op provider. The gRPC server, the HTTP gateway route (so a `traceparent` header on an HTTP call joins the trace) and the pgx pool get tracing middleware. On shutdown the provider flushes buffered spans inside the existing drain budget; a flush that can't reach the collector is dropped, never blocking exit.
+- **Propagation is always W3C trace context, set explicitly** (`traceparent.W3C`) in the server and the SDK, not read from the global propagator. The stored `trace_context` field is W3C, and the global propagator is a no-op unless the application sets one, which would silently break every trace.
+- **Postgres spans only under an existing span** (`tracing.ParentOnly`): the reaper, pruner and depth refresh run with no span in their context, so they create none (decision 2).
+- **No health-endpoint spans.** Only the gateway route is wrapped, so `/healthz` and `/readyz` (Envoy polls `/readyz` every 2 s) produce no HTTP spans.
+- **Go SDK.** A `Dial` option, `tasklane.WithTracerProvider(tp)` (optional; default: the global provider), not fields on `ClientOptions` or `WorkerOptions`; a worker uses its client's provider. The SDK adds the gRPC client middleware to its connection and propagates with W3C trace context explicitly. New dependency: the `go.opentelemetry.io/otel` API and the gRPC instrumentation; exporters stay out of the SDK.
 - **Demo producer and worker.** They configure their own OTLP exporter from the same environment variables, as any application would. The producer wraps each enqueue in a root `demo produce` span so the tree has a real top.
 
 ### 18.4 Exemplars and the demo
 
 - **Exemplars.** `tasklane_rpc_duration_seconds` and `tasklane_queue_wait_seconds` observe with an exemplar (`trace_id`) when the span is sampled (`ObserveWithExemplar`). For the wait histogram the exemplar is the job's trace. `/metrics` enables the OpenMetrics format, the only text format that carries exemplars.
-- **Compose.** A `jaeger` service (Jaeger v2 all-in-one, pinned version, in-memory storage capped at about 50,000 traces, OTLP on the compose network, UI on 127.0.0.1:16686). The servers, producer and workers get `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317` and their own `OTEL_SERVICE_NAME`. The demo samples 100%: about 10 jobs/s × 6–10 spans is under 100 spans/s, well within an in-memory Jaeger (expected +100–200 MB on top of the demo's ~700 MB). Prometheus runs with `--enable-feature=exemplar-storage`. Grafana provisions a Jaeger data source; the queue-wait and RPC-latency panels show exemplars that link to the trace in Jaeger.
+- **Compose.** A `jaeger` service (Jaeger v2 all-in-one, pinned version, in-memory storage capped at about 50,000 traces, OTLP on the compose network, UI on 127.0.0.1:16686). The servers, producer and workers get `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317` and their own `OTEL_SERVICE_NAME`. The demo samples 100%. Measured: a normal job makes 12 spans, and with the retried and poison jobs plus the workers' `Lease` traces (about 12 a second, 5–15 spans each) the stack produces about 200 spans/s. Jaeger's memory grows with the stored traces: 66–91 MiB in the first minutes, about 225 MiB after 9 minutes (roughly 25 MiB a minute at this rate) until the 50,000-trace cap; at about 22 traces/s the cap is reached after about 40 minutes, and the memory at the cap has not been measured. `docker stats` for the whole stack read about 1 GiB, of which Grafana's 650–700 MiB is mostly file cache (cgroup anon about 285 MB). Prometheus runs with `--enable-feature=exemplar-storage`. Grafana provisions a Jaeger data source; the queue-wait and RPC-latency panels show exemplars that link to the trace in Jaeger.
 - **README.** A Tracing section: open Jaeger, find a flaky job and read its retry tree; click an exemplar on a latency panel. Screenshot in `docs/images/`.
 
 ### 18.5 Testing
@@ -864,12 +871,12 @@ The standard OpenTelemetry environment variables configure everything; there are
 - **Edges:** an unsampled parent produces no spans anywhere; an HTTP call with a `traceparent` header joins the trace; an explicit `trace_context` field wins over the request's context; all jobs in a batch share one parent; a malformed stored `traceparent` gives the worker a fresh root and no wait span, without errors; a lost lease marks the handle span Error; with the server's provider a no-op, producer and worker spans still connect.
 - **Exemplars:** an OpenMetrics scrape after a sampled RPC shows a `trace_id` exemplar on both histograms.
 - **Deploy test:** compose has the Jaeger service and the Prometheus flag, Grafana has the Jaeger data source, and the existing check that dashboards reference only known metrics still passes.
-- **Overhead:** a benchmark of `Enqueue` with tracing off must not move against `main`; tracing at 100% is measured and reported in the PR, with no target.
+- **Overhead:** `BenchmarkEnqueue` (`internal/api/bench_test.go`) measures one `Enqueue` through gRPC and Postgres. The off case must not move against `main`; tracing at 100% is reported with no target. Result (2-core laptop, demo running, so noisy; 6 runs of 2,000 each, `benchstat`): `main` 926 µs, tracing off 959 µs (+3.5%, p=0.002; +2.9% when the benchmark sends no trace context, the closest like-for-like), 100% sampled into an in-memory recorder 991 µs (+3.3% over off, p=0.24, not distinguishable from noise). The off cost is inside the 5% bar but real: the gRPC instrumentation and the server's trace-context handling still run with a no-op provider. In absolute terms it is about 30 µs on a call that spends most of its time in Postgres.
 - The invariant and chaos tests run unchanged.
 
 ### 18.6 Docs
 
-- `docs/interview-notes.md`: context propagation across a queue (why the trace survives a database row), parent-based vs tail sampling, why the wait span uses one clock, exemplars, and span-name cardinality.
+- `docs/interview-notes.md` (Q33–Q38): context propagation across a queue (why the trace survives a database row), parent-based vs tail sampling, why the wait span uses one clock, exemplars, and span-name cardinality.
 - `docs/cheatsheet.md`: spans per job, demo span rate, Jaeger memory.
 
 Out of scope: tail sampling and the OpenTelemetry Collector; span metrics; tracing the reaper, pruner and depth refresh; tracing in the TypeScript and C# SDKs (M5, same pattern); trace-to-logs links in Grafana.
