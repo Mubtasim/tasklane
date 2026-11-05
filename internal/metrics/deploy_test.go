@@ -104,7 +104,7 @@ func TestDemoWiresTracing(t *testing.T) {
 	require.Contains(t, compose, "--enable-feature=exemplar-storage")
 	require.Contains(t, compose, "OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317")
 	require.Contains(t, compose, `127.0.0.1:16686:16686`)
-	require.Contains(t, read("jaeger/config.yaml"), "max_traces: 50000")
+	require.Contains(t, read("jaeger/config.yaml"), "max_traces: 10000")
 
 	jaegerDS := read("grafana/provisioning/datasources/jaeger.yml")
 	require.Contains(t, jaegerDS, "type: jaeger")

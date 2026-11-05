@@ -113,7 +113,7 @@ services:
       OTEL_SERVICE_NAME: worker-3
 
   # Traces from the servers, the producer and the workers. In-memory storage
-  # capped at 50,000 traces; the UI is on http://localhost:16686.
+  # capped at 10,000 traces; the UI is on http://localhost:16686.
   jaeger:
     image: jaegertracing/jaeger:2.23.0
     command: ["--config", "/etc/jaeger/config.yaml"]

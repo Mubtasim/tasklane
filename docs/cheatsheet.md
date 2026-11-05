@@ -66,7 +66,7 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | Producer | 10 jobs/s: 85% normal (0.2–2 s), 12% flaky (fails 30%), 3% poison |
 | Workers | 3 × 5 slots = 15 slots, ~15 jobs/s capacity |
 | One worker | ~4–5 jobs/s, so the backlog grows ~6/s (Little's law: throughput = slots ÷ average job time) |
-| Stack RAM | ~1 GiB with Jaeger after 9 min (`docker stats`: Grafana 654, Jaeger 226 and growing, Postgres 55, Prometheus 32, Envoy 19, each server ~15); see Tracing |
+| Stack RAM | ~0.6-1 GiB with Jaeger (`docker stats`: Grafana 215-700, Jaeger ~240, Postgres 55, Prometheus 32, Envoy 19, each server ~15); see Tracing |
 | Servers | 2 behind Envoy; killing one: acked rate held at ~9.3–9.7 jobs/s, `tasklane-2` went from ~16 to ~33 requests/s |
 
 ## Tracing
@@ -77,8 +77,8 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | Retried job | 20 spans for 2 attempts; +~8 per extra attempt | Each attempt adds a wait span, a handle span, Nack or Ack client + server and their Postgres spans. |
 | `Lease` traces | ~12/s across 3 workers, 5-15 spans each | A lease starts before any job is known, so it is its own short trace. |
 | Demo span rate | ~200 spans/s (about 10 jobs/s × ~13 spans, plus ~85/s of `Lease`) | An estimate from counting one minute in Jaeger, not a counter. |
-| Jaeger memory | ~66-91 MiB after 2.5 min, ~225 MiB after 9 min (~25 MiB/min) | In-memory store, capped at 50,000 traces (about 40 min at ~22 traces/s); memory at the cap not measured. |
-| Whole stack `docker stats` | ~1 GiB at 9 min | Grafana is 650-700 MiB of it, mostly file cache (cgroup anon ~285 MB); servers ~15 MiB each, workers ~8 MiB. |
+| Jaeger memory | 96 MiB at 2 min, 179 at 6, 226 at 9, 239 at 12 (anon 215) | In-memory store capped at 10,000 traces (~8 min at ~22 traces/s); growth slowed from ~20 to a few MiB/min at the cap, still creeping up at last reading. |
+| Whole stack `docker stats` | ~615 MiB at 12 min after a Jaeger restart (~1 GiB earlier) | Grafana ranges 215-700 MiB because docker stats counts its file cache (cgroup anon ~285 MB); servers ~15 MiB each, workers ~9 MiB. |
 | Sampler | `parentbased_traceidratio`, `OTEL_TRACES_SAMPLER_ARG=0.1` for production; the demo uses 100% | The producer decides once; everyone follows the `sampled` flag. |
 | Propagation | W3C `traceparent`, explicit | The global propagator is a no-op unless the app sets one. |
 | Not traced | `Heartbeat` RPCs, `/healthz`, `/readyz`, reaper, pruner, depth refresh | Noise; metrics cover them. |

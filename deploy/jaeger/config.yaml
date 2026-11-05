@@ -20,7 +20,7 @@ extensions:
     backends:
       memstore:
         memory:
-          max_traces: 50000
+          max_traces: 10000
 
 receivers:
   otlp:

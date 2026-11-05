@@ -557,7 +557,7 @@ Two parts: what is attached, and what it lets you do.
 
 **Numbers:** with a query on Prometheus's exemplar API, both histograms returned exemplars with `trace_id` labels in the demo. Prometheus keeps exemplars in a fixed-size in-memory buffer (100,000 by default), so they cover recent history only.
 
-**Fails halfway:** exemplars are only attached to sampled traces; with a 10% ratio a bucket may have none, or a trace that Jaeger has already evicted (the demo keeps 50,000 traces in memory). A scrape in the classic Prometheus text format drops them.
+**Fails halfway:** exemplars are only attached to sampled traces; with a 10% ratio a bucket may have none, or a trace that Jaeger has already evicted (the demo keeps 10,000 traces in memory). A scrape in the classic Prometheus text format drops them.
 
 **Trade-off:** one exemplar per bucket per scrape interval is a sample, not every slow request, so it points at a representative trace, not the worst one. In return it costs almost nothing: no extra series, a few bytes per bucket.
 
