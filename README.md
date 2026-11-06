@@ -200,7 +200,7 @@ With the parent-based sampler the producer decides once and everyone else follow
 
 ## Kubernetes
 
-A Helm chart (`deploy/k8s/tasklane/`) runs the server: 2 pods behind Envoy, which balances each gRPC request rather than each connection; probes on `/healthz` and `/readyz`; a 5 s `preStop` wait so a pod keeps serving while it is removed from the endpoints; a disruption budget; non-root, read-only pods. Postgres is not part of the chart: set `databaseURL` or `existingSecret`.
+A Helm chart (`deploy/k8s/tasklane/`) runs the server: 2 pods behind Envoy, which balances each gRPC request rather than each connection; probes on `/healthz` and `/readyz`; a 5 s `preStop` wait so a pod keeps serving while it is removed from the endpoints; a disruption budget; non-root, read-only pods. Postgres is not part of the chart: set `databaseURL` or `existingSecret`. No image is published until v1.0.0 (milestone M5e), so the chart's default image can't be pulled yet: build and push your own and set `image.repository` and `image.tag` (the demo builds `tasklane:dev` and loads it into the cluster). With `existingSecret`, restart the server Deployment after rotating the Secret; only a chart-made Secret rolls the pods on change.
 
 The demo runs everything in a local k3d cluster (about 0.9 GB of RAM: `docker stats` on the idle k3s container, which holds every pod, KEDA and Postgres included) and scales the demo workers from zero with KEDA, on waiting plus running jobs read from Prometheus:
 
@@ -211,7 +211,7 @@ The demo runs everything in a local k3d cluster (about 0.9 GB of RAM: `docker st
     deploy/k8s/demo.sh restart             # replace both servers under load
     deploy/k8s/demo.sh down
 
-Measured on the laptop (medians of 3): the first worker started 8 s after a 3,000-job burst, 5 workers had drained it 77 s after the burst, and they were back to 0 31 s later. A rolling restart of both servers at 50 jobs/s lost no requests (0 failed sends in 3 runs). That took a fix: Envoy kept sending to a pod that had already exited, until two settings made it drop a pod as soon as DNS drops it and retry a failed connect on another server. CI checks the chart on every pull request, runs the end-to-end test on kind when the deployment changes and on every push to `main`, and the scaling test nightly. Design: [§20](docs/design.md#20-m5b-kubernetes-deployment-and-autoscaling).
+Measured on the laptop (medians of 3): the first worker started 8 s after a 3,000-job burst, 5 workers had drained it 77 s after the burst, and they were back to 0 31 s later. A rolling restart of both servers at 50 jobs/s lost no requests (0 failed sends in 3 runs on k3d, and in 3 on kind, where DNS caches for 30 s). That took a fix: Envoy kept sending to a pod that had already exited, until two settings made it drop a pod as soon as DNS drops it and retry a failed connect on another server. CI checks the chart on every pull request, runs the end-to-end test on kind when the deployment changes and on every push to `main`, and the scaling test nightly. Design: [§20](docs/design.md#20-m5b-kubernetes-deployment-and-autoscaling).
 
 ## Correctness
 

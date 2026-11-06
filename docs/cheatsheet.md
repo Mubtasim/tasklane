@@ -142,9 +142,9 @@ k3d on the laptop, one node. Full results: design §20.6.
 
 | What | Number | Why |
 |---|---|---|
-| Server pod shutdown | preStop 5 s → drain ≤ 22 s → grace 40 s | Endpoints drop the pod at the same time as SIGTERM; keep serving until Envoy (DNS every 2 s) stops sending. |
+| Server pod shutdown | preStop 5 s → drain ≤ 24 s (HTTP 10 + gRPC 10 + metrics 2 + traces 2) → exit ≤ 29 s → grace 40 s | Endpoints drop the pod at the same time as SIGTERM; keep serving until Envoy (DNS every 2 s) stops sending. |
 | Envoy and removed pods | `ignore_health_on_host_removal: true`; retry connects on another server (`previous_hosts`) | By default Envoy keeps a pod that left DNS while it passes health checks, and a terminating pod passes `/readyz` until it exits. |
-| DNS cache | CoreDNS 5 s on k3s, 30 s on kind | A removed pod stays in Envoy's view up to cache + 2 s: ~7 s on k3s, longer than the 5 s preStop. Retries on another server cover the gap. |
+| DNS cache | CoreDNS 5 s on k3s, 30 s on kind | A removed pod stays in Envoy's view up to cache + 2 s: ~7 s on k3s, ~32 s on kind, longer than the 5 s preStop. Retries on another server, health checks and `healthy_panic_threshold: 0` cover the gap: 0 failed sends in 3 restarts on each. |
 | Restart bug, before → after | 170 and 123 failed sends (4–6%) → 10, 0, 0 (fix 1) → 0, 0, 0 (fix 2) | Every failure was Envoy's 1 s connect timeout to a pod that had exited. |
 | Worker pod grace | 35 s | SDK ShutdownTimeout 25 s + 2 s to nack the rest. |
 | Rollout | maxUnavailable 0, maxSurge 1 | A new pod is ready before an old one stops. |
