@@ -6,6 +6,7 @@
 #   bench/run.sh                         # full suite, laptop profile
 #   SMOKE=1 bench/run.sh                 # 2 s warm-up, 5 s windows, small sizes
 #   SCENARIOS="s2 s4" OUT=bench/results/2026-11-08-laptop bench/run.sh
+#   SCENARIOS=s2t bench/run.sh           # S2's idle and trickle runs only
 #   PROFILE=vm bench/run.sh              # 8+ CPUs
 #
 # S2 finds the closed-loop maximum M (jobs/s) and the best worker count
@@ -152,6 +153,12 @@ s2)
   done
   M=$best
   for p in 50 80 95; do reset_db; lg s2 "s2-open$p-w$BEST_W" -mode open -workers "$BEST_W" -rate "$(pct "$M" "$p")" >/dev/null; done
+  reset_db; lg s2 s2-idle-w200 -mode closed -producers 0 -workers 200 >/dev/null
+  reset_db; lg s2 s2-trickle-w200 -mode open -workers 200 -rate 5 >/dev/null ;;
+s2t)
+  # S2's idle and trickle runs alone: they need no maximum, and they are where
+  # wake-up costs show (one lease query per woken long-poll).
+  log "S2 idle and trickle"
   reset_db; lg s2 s2-idle-w200 -mode closed -producers 0 -workers 200 >/dev/null
   reset_db; lg s2 s2-trickle-w200 -mode open -workers 200 -rate 5 >/dev/null ;;
 s3)
