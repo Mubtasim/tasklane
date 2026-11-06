@@ -65,6 +65,7 @@ func TestMain(m *testing.M) {
 type env struct {
 	client *tasklane.Client
 	raw    tasklanev1.TasklaneServiceClient // the plain API, to act as a worker that dies
+	server *api.Server                      // the API server, for tests that drive its background loops
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil, nil) }
@@ -111,7 +112,7 @@ func newEnvWith(t *testing.T, serverTP, clientTP trace.TracerProvider) *env {
 		stopReaper()
 		<-reaperDone
 	})
-	return &env{client: client, raw: tasklanev1.NewTasklaneServiceClient(rawConn)}
+	return &env{client: client, raw: tasklanev1.NewTasklaneServiceClient(rawConn), server: srv}
 }
 
 // runWorker runs w in the background. stop cancels Run and returns its
