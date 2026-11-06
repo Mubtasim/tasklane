@@ -94,8 +94,8 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | Health check | `GET /readyz` every 2 s, unhealthy after 2 failures, healthy after 1 | `/readyz` also fails when the database is unreachable. Two failed checks take ~4 s, but the measured failover was longer (below). |
 | Outlier ejection | 3 consecutive gateway errors → ejected for 10 s | Reacts to real traffic before the health check does. |
 | Connect timeout | 1 s (default 5 s) | A killed container's IP never answers. |
-| Proxy retries | 2, only `connect-failure`, `refused-stream`, `reset-before-request` | A Lease that reached a server may have leased jobs, so it is never retried by the proxy. |
-| DNS re-resolution | every 5 s (`STRICT_DNS` default) | |
+| Proxy retries | 2, only `connect-failure`, `refused-stream`, `reset-before-request`; on another server (`previous_hosts`, since M5b) | A Lease that reached a server may have leased jobs, so it is never retried by the proxy. |
+| DNS re-resolution (Compose) | every 5 s (`STRICT_DNS` default) | The Compose setup. In Kubernetes the chart re-reads DNS every 2 s (table below). |
 | Failover after `kill tasklane-1` | ~14–18 s of fast `Unavailable` errors on new calls, then none | Most likely health checks (2 × 2 s) plus DNS re-resolution (5 s); not proven. The SDK retries, so throughput held. |
 
 ## Correctness tests
@@ -135,6 +135,26 @@ Laptop, 2 cores / 4 threads, pinned: Postgres on one core (2 threads), the serve
 | HOT updates | 0 of 41,903 | Every state change touches an indexed column. |
 | Tracing at 100% | +38% server CPU per job | Sample a ratio in production. |
 | 200 slots vs 50 | 293 vs 352 jobs/s | Ack `UPDATE` 0.32 → 2.75 ms: more slots, more contention. |
+
+## Kubernetes (M5b)
+
+k3d on the laptop, one node. Full results: design §20.6.
+
+| What | Number | Why |
+|---|---|---|
+| Server pod shutdown | preStop 5 s → drain ≤ 24 s (HTTP 10 + gRPC 10 + metrics 2 + traces 2) → exit ≤ 29 s → grace 40 s | Endpoints drop the pod at the same time as SIGTERM; keep serving until Envoy (DNS every 2 s) stops sending. |
+| Envoy and removed pods | `ignore_health_on_host_removal: true`; retry connects on another server (`previous_hosts`) | By default Envoy keeps a pod that left DNS while it passes health checks, and a terminating pod passes `/readyz` until it exits. |
+| DNS cache | CoreDNS 5 s on k3s, 30 s on kind | A removed pod stays in Envoy's view up to cache + 2 s: ~7 s on k3s, ~32 s on kind, longer than the 5 s preStop. Retries on another server, health checks and `healthy_panic_threshold: 0` cover the gap: 0 failed sends in 3 restarts on each. |
+| Restart bug, before → after | 170 and 123 failed sends (4–6%) → 10, 0, 0 (fix 1) → 0, 0, 0 (fix 2) | Every failure was Envoy's 1 s connect timeout to a pod that had exited. |
+| Worker pod grace | 35 s | SDK ShutdownTimeout 25 s + 2 s to nack the rest. |
+| Rollout | maxUnavailable 0, maxSurge 1 | A new pod is ready before an old one stops. |
+| KEDA signal | available + leased jobs, `max by (state)` | Counting only waiting jobs reads 0 while workers still run jobs. |
+| KEDA rule | 50 jobs per pod, 0–5 pods, poll 5 s, cooldown 30 s | Burst of 3,000 → capped at 5 pods ≈ 45 jobs/s (measured ≈ 43). |
+| Scale from zero | 8 s to the first worker (median; 5–9 s) | Scrape ≤ 5 s + poll 5 s + pod start 2–5 s. |
+| 3,000-job burst | drained 77 s after the burst with 5 pods (median) | ≈ 5.5 min with one pod (≈ 9 jobs/s per pod). |
+| Scale back to 0 | 31 s after the queue empties (median) | 5 → 1 after the HPA's 30 s window, 1 → 0 after KEDA's 30 s cooldown. |
+| Rolling restart under 50 jobs/s | 0 failed sends (3 of 3 runs) | preStop + readiness + Envoy dropping removed pods + retries on another server. |
+| Demo cluster memory | ~0.9 GB (k3s container 882 MiB idle, `docker stats`) | KEDA, Postgres, Prometheus, 2 servers, 2 Envoys in one container. `demo.sh up`: 2 min 59 s. |
 
 ## Replication and Raft (phase 2)
 

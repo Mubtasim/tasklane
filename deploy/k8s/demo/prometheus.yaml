@@ -1,0 +1,68 @@
+# Prometheus for KEDA (design §20.1): finds every server pod through the
+# headless Service's DNS, so it needs no access to the Kubernetes API.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+    scrape_configs:
+      - job_name: tasklane
+        dns_sd_configs:
+          - names: [tasklane-headless.tasklane.svc.cluster.local]
+            type: A
+            port: 9464
+            refresh_interval: 5s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: prometheus }
+  template:
+    metadata:
+      labels: { app: prometheus }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.15.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=1h
+          ports:
+            - { name: web, containerPort: 9090 }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: web }
+            periodSeconds: 2
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus, readOnly: true }
+            - { name: data, mountPath: /prometheus }
+      volumes:
+        - name: config
+          configMap: { name: prometheus }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  type: NodePort
+  selector: { app: prometheus }
+  ports:
+    - { name: web, port: 9090, targetPort: web, nodePort: 30090 }

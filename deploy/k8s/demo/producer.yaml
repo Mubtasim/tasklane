@@ -1,0 +1,39 @@
+# A steady producer (10 jobs/s), off by default:
+#   kubectl -n tasklane scale deploy/demo-producer --replicas 1
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-producer
+spec:
+  replicas: 0
+  selector:
+    matchLabels: { app: demo-producer }
+  template:
+    metadata:
+      labels: { app: demo-producer }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: producer
+          image: tasklane:dev
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/producer"]
+          env:
+            - { name: TASKLANE_ADDR, value: "tasklane.tasklane.svc.cluster.local:7070" }
+            # Demo only: a fixed key in plain env. Outside the demo, put the
+            # key in a Secret and use secretKeyRef.
+            - { name: TASKLANE_API_KEY, value: demo-key }
+            - { name: DEMO_QUEUE, value: demo }
+            - { name: DEMO_RATE, value: "10" }
+          resources:
+            requests: { cpu: 20m, memory: 16Mi }
+            limits: { cpu: 200m, memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

@@ -1,0 +1,73 @@
+# The demo workers, scaled by KEDA on queue depth (design §20.4). replicas: 0
+# here; KEDA owns the count once the ScaledObject exists.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-worker
+spec:
+  replicas: 0
+  selector:
+    matchLabels: { app: demo-worker }
+  template:
+    metadata:
+      labels: { app: demo-worker }
+    spec:
+      # SDK ShutdownTimeout 25 s + 2 s to nack what is left, plus room.
+      terminationGracePeriodSeconds: 35
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: tasklane:dev
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/worker"]
+          env:
+            - { name: TASKLANE_ADDR, value: "tasklane.tasklane.svc.cluster.local:7070" }
+            # Demo only: a fixed key in plain env. Outside the demo, put the
+            # key in a Secret and use secretKeyRef.
+            - { name: TASKLANE_API_KEY, value: demo-key }
+            - { name: DEMO_QUEUE, value: demo }
+            - { name: DEMO_CONCURRENCY, value: "10" }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: demo-worker
+spec:
+  scaleTargetRef:
+    name: demo-worker
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  pollingInterval: 5
+  # Seconds of a zero signal before going back to 0 (default 300).
+  cooldownPeriod: 30
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 30
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.tasklane.svc.cluster.local:9090
+        # Waiting plus running jobs. max by (state): both servers export the
+        # same gauge. Counting only waiting jobs would read 0 while workers
+        # still run 50 jobs, and KEDA would drop to 0 mid-job. This does not
+        # keep every worker until the last job ends: the HPA wants
+        # ceil((available + leased) / 50), so it may go from 5 to 1 while
+        # jobs run. A removed worker's SDK drain finishes or nacks its jobs
+        # within 27 s, inside the 35 s grace period, so none are lost.
+        query: sum(max by (state) (tasklane_queue_depth{queue="demo", state=~"available|leased"}))
+        threshold: "50"
+        activationThreshold: "0"

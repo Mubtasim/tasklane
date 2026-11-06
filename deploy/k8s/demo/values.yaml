@@ -1,0 +1,16 @@
+# Chart values for the local demo (deploy/k8s/demo.sh). The image is built
+# and imported by demo.sh, never pulled.
+image:
+  repository: tasklane
+  tag: dev
+  pullPolicy: Never
+databaseURL: postgres://tasklane:tasklane@postgres.tasklane.svc.cluster.local:5432/tasklane?sslmode=disable
+apiKeys: demo-key
+env:
+  TASKLANE_REAPER_INTERVAL: 2s
+# Reached from the laptop on 127.0.0.1:7070 and :8080 (cluster port mappings).
+service:
+  type: NodePort
+  nodePorts:
+    grpc: 30070
+    http: 30080

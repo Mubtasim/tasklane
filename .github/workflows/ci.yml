@@ -82,3 +82,19 @@ jobs:
       - run: docker compose -f deploy/docker-compose.yml config --quiet
       - run: docker compose -f bench/compose.bench.yml config --quiet
       - run: bash -n bench/run.sh
+
+  k8s-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install helm and kubeconform
+        run: |
+          BIN="$RUNNER_TEMP/bin" deploy/k8s/tools.sh helm kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: deploy/k8s/check.sh
+      - run: go test -count=1 ./deploy/k8s/
+        env:
+          TASKLANE_REQUIRE_HELM: "1"

@@ -3,6 +3,8 @@ package metrics
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc"
 
 	"github.com/mubtasim/tasklane/internal/store"
@@ -132,4 +135,68 @@ func TestDemoWiresTracing(t *testing.T) {
 		}
 	}
 	require.Equal(t, 2, withExemplars)
+}
+
+// k8sDocs decodes every YAML document in a demo manifest.
+func k8sDocs(t *testing.T, name string) []map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile("../../deploy/k8s/demo/" + name)
+	require.NoError(t, err)
+	var docs []map[string]any
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	for {
+		var d map[string]any
+		err := dec.Decode(&d)
+		if errors.Is(err, io.EOF) {
+			return docs
+		}
+		require.NoError(t, err)
+		if d != nil {
+			docs = append(docs, d)
+		}
+	}
+}
+
+func k8sDoc(t *testing.T, docs []map[string]any, kind string) map[string]any {
+	t.Helper()
+	for _, d := range docs {
+		if d["kind"] == kind {
+			return d
+		}
+	}
+	t.Fatalf("no %s", kind)
+	return nil
+}
+
+func TestScaledObjectUsesOnlyRealMetrics(t *testing.T) {
+	docs := k8sDocs(t, "worker.yaml")
+	so := k8sDoc(t, docs, "ScaledObject")
+	spec := so["spec"].(map[string]any)
+	require.Equal(t, 0, spec["minReplicaCount"])
+	require.Equal(t, 5, spec["maxReplicaCount"])
+	require.Equal(t, 5, spec["pollingInterval"])
+	require.Equal(t, 30, spec["cooldownPeriod"])
+	trigger := spec["triggers"].([]any)[0].(map[string]any)
+	require.Equal(t, "prometheus", trigger["type"])
+	md := trigger["metadata"].(map[string]any)
+	require.Equal(t, "50", md["threshold"])
+	require.Equal(t, "0", md["activationThreshold"])
+	query := md["query"].(string)
+	require.Contains(t, query, `state=~"available|leased"`, "running jobs count, or KEDA removes busy workers")
+	require.Contains(t, query, "max by (state)", "both servers export the same gauge")
+	known := knownNames(t)
+	names := usedNames(query)
+	require.NotEmpty(t, names)
+	for _, n := range names {
+		require.True(t, known[n], "ScaledObject uses unknown metric %s", n)
+	}
+}
+
+// The worker pod must outlive the SDK's shutdown: ShutdownTimeout (25 s) plus
+// the 2 s Nack budget (design §20.3).
+func TestDemoWorkerGracePeriodCoversTheSDKDrain(t *testing.T) {
+	d := k8sDoc(t, k8sDocs(t, "worker.yaml"), "Deployment")
+	pod := d["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	require.Equal(t, 35, pod["terminationGracePeriodSeconds"])
+	require.Greater(t, pod["terminationGracePeriodSeconds"].(int), 25+2)
 }

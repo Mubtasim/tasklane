@@ -1,0 +1,135 @@
+# Envoy in front of the Tasklane server pods (design §17.4, §20). It balances
+# every request, not every connection: gRPC sends all of a client's calls over
+# one HTTP/2 connection, so the Service's connection-level balancing would pin
+# each client to one pod. TASKLANE_HEADLESS is the headless Service's DNS
+# name; it resolves to every ready server pod. Envoy asks every 2 s, but the
+# cluster DNS caches the answer (CoreDNS ttl: 5 s on k3s, 30 s on kind and
+# kubeadm), so a removed pod can stay in the answer that long.
+static_resources:
+  listeners:
+    - name: grpc
+      address: { socket_address: { address: 0.0.0.0, port_value: 7070 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: grpc
+                codec_type: AUTO
+                route_config:
+                  virtual_hosts:
+                    - name: tasklane
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: tasklane_grpc
+                            # A Lease long-poll waits up to 30 s (MaxWait);
+                            # Envoy's 15 s default would cut it off.
+                            timeout: 35s
+                            retry_policy:
+                              # Only requests that never reached a server: a
+                              # Lease that did may already have leased jobs.
+                              retry_on: connect-failure,refused-stream,reset-before-request
+                              num_retries: 2
+                              # Retry on another server: a pod that just exited
+                              # times out connects until health checks drop it.
+                              retry_host_predicate:
+                                - name: envoy.retry_host_predicates.previous_hosts
+                                  typed_config:
+                                    "@type": type.googleapis.com/envoy.extensions.retry.host.previous_hosts.v3.PreviousHostsPredicate
+                              host_selection_retry_max_attempts: 3
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+    - name: http
+      address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: http
+                codec_type: AUTO
+                route_config:
+                  virtual_hosts:
+                    - name: tasklane
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: tasklane_http
+                            timeout: 35s
+                            retry_policy:
+                              retry_on: connect-failure,refused-stream,reset-before-request
+                              num_retries: 2
+                              # Retry on another server: a pod that just exited
+                              # times out connects until health checks drop it.
+                              retry_host_predicate:
+                                - name: envoy.retry_host_predicates.previous_hosts
+                                  typed_config:
+                                    "@type": type.googleapis.com/envoy.extensions.retry.host.previous_hosts.v3.PreviousHostsPredicate
+                              host_selection_retry_max_attempts: 3
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: tasklane_grpc
+      connect_timeout: 1s
+      type: STRICT_DNS
+      dns_refresh_rate: 2s
+      respect_dns_ttl: false
+      dns_lookup_family: V4_ONLY
+      lb_policy: LEAST_REQUEST
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: { http2_protocol_options: {} }
+      load_assignment:
+        cluster_name: tasklane_grpc
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: TASKLANE_HEADLESS, port_value: 7070 } }, health_check_config: { port_value: 8080 } }
+      # Drop a pod as soon as DNS drops it. Envoy's default keeps a host that
+      # left DNS until it fails health checks, but a terminating pod passes
+      # /readyz through its 5 s preStop and then exits at once: Envoy kept
+      # sending to the gone IP for 2-4 s (connect timeouts, 4-6% failed sends
+      # in a rolling restart). DNS drops it after the CoreDNS cache expires
+      # (5 s on k3s, inside the preStop; up to 30 s on kind). Until then the
+      # health checks mark the exited pod down 2-4 s after it exits, and the
+      # previous_hosts retry sends a failed connect to another server.
+      ignore_health_on_host_removal: true
+      # Never route to a host that failed its health checks. With Envoy's
+      # default 50% panic threshold, two exited old pods plus two new ones
+      # not yet checked would read as "under half healthy", and Envoy would
+      # spread requests over all four, dead ones included.
+      common_lb_config: &lbconfig
+        healthy_panic_threshold: { value: 0 }
+      health_checks: &readyz
+        - timeout: 1s
+          interval: 2s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /readyz, codec_client_type: HTTP1 }
+      outlier_detection: &outliers
+        consecutive_gateway_failure: 3
+        enforcing_consecutive_gateway_failure: 100
+        base_ejection_time: 10s
+    - name: tasklane_http
+      connect_timeout: 1s
+      type: STRICT_DNS
+      dns_refresh_rate: 2s
+      respect_dns_ttl: false
+      dns_lookup_family: V4_ONLY
+      lb_policy: LEAST_REQUEST
+      load_assignment:
+        cluster_name: tasklane_http
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: TASKLANE_HEADLESS, port_value: 8080 } } }
+      ignore_health_on_host_removal: true
+      common_lb_config: *lbconfig
+      health_checks: *readyz
+      outlier_detection: *outliers

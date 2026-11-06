@@ -40,3 +40,12 @@ func TestPerJob(t *testing.T) {
 	require.Equal(t, 2.5, perJob(5*time.Second, 2000))
 	require.Zero(t, perJob(time.Second, 0), "no jobs: zero, not a division by zero")
 }
+
+// Without probes a snapshot reads nothing outside the process, so unreachable
+// endpoints are not problems and the run can still be valid.
+func TestTakeWithoutProbes(t *testing.T) {
+	cfg := Config{Probes: false, MetricsURL: "http://127.0.0.1:1/metrics", CgroupServer: "/nonexistent", CgroupPG: "/nonexistent"}
+	s := take(t.Context(), cfg, nil)
+	require.Empty(t, s.problems)
+	require.False(t, s.at.IsZero())
+}

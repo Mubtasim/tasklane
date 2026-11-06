@@ -28,6 +28,9 @@ type snapshot struct {
 
 func take(ctx context.Context, cfg Config, pool *pgxpool.Pool) snapshot {
 	s := snapshot{at: time.Now(), self: selfCPU()}
+	if !cfg.Probes {
+		return s
+	}
 	var err error
 	if s.serverCPU, err = probe.CgroupCPU(cfg.CgroupServer); err != nil {
 		s.problems = append(s.problems, "cgroup-server: "+err.Error())

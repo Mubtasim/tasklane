@@ -72,7 +72,7 @@ func (l *load) startWorkers(ctx context.Context) (wait func()) {
 				}
 			},
 		})
-		w.Handle("bench", func(_ context.Context, j *tasklane.LeasedJob) error {
+		w.Handle(l.cfg.Kind, func(_ context.Context, j *tasklane.LeasedJob) error {
 			now := time.Now()
 			if at, ok := scheduledTime(j.Payload); ok && l.win.Load().contains(at) {
 				l.e2s.Record(now.Sub(at))
@@ -95,7 +95,7 @@ func (l *load) startWorkers(ctx context.Context) (wait func()) {
 func (l *load) send(ctx context.Context, planned time.Time) {
 	jobs := make([]tasklane.Job, l.cfg.Batch)
 	for i := range jobs {
-		jobs[i] = tasklane.Job{Kind: "bench", Payload: newPayload(planned, l.cfg.Payload)}
+		jobs[i] = tasklane.Job{Kind: l.cfg.Kind, Payload: newPayload(planned, l.cfg.Payload)}
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -167,7 +167,7 @@ func fill(ctx context.Context, cfg Config, client *tasklane.Client) (float64, er
 				n := min(int64(cfg.Batch), int64(cfg.Jobs)-from)
 				jobs := make([]tasklane.Job, n)
 				for i := range jobs {
-					j := tasklane.Job{Kind: "bench", Payload: newPayload(time.Now(), cfg.Payload), Priority: tasklane.Priority(cfg.Priority)}
+					j := tasklane.Job{Kind: cfg.Kind, Payload: newPayload(time.Now(), cfg.Payload), Priority: tasklane.Priority(cfg.Priority)}
 					if cfg.Delay > 0 {
 						j.RunAt = time.Now().Add(cfg.Delay)
 					}

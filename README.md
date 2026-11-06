@@ -6,10 +6,11 @@ A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
 
-**Status:** early development (milestone M5a: load tests and tuning). Not ready for production use.
+**Status:** early development (milestone M5b: Kubernetes deployment and autoscaling). Not ready for production use.
 
 - Design: [docs/design.md](docs/design.md)
 - Benchmarks: [docs/benchmarks.md](docs/benchmarks.md). On a 2-core laptop with pinned CPUs, one server and one PostgreSQL complete about 430 jobs/s (enqueue, lease, ack; median of 4 runs), with p99 enqueue-to-start of 61 ms at 80% of that. The limit there is PostgreSQL's per-commit disk flush, not CPU.
+- Kubernetes: a Helm chart for the server, Envoy for per-request gRPC balancing, and demo workers that KEDA scales from zero on queue depth (see [Kubernetes](#kubernetes)).
 
 ## Running the server
 
@@ -157,7 +158,7 @@ The screenshot shows "Dead (last hour)" in red because the demo produces poison 
 
 Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill worker-1`. The acked rate holds at about 9.7 jobs/s, because the two other workers have spare capacity. Available jobs climb to about 30 and queue wait p99 to about 5 s while they catch up. Once the demo's 15 s visibility timeout passes, about 4 jobs (the killed worker's leases) are reaped and returned to the queue. `docker compose -f deploy/docker-compose.yml start worker-1` brings everything back to normal. Throughput only drops when the remaining workers can't keep up. Run `docker compose -f deploy/docker-compose.yml stop worker-2 worker-3`: one worker (5 slots) handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until you `start` them again.
 
-Try killing a server: `docker compose -f deploy/docker-compose.yml kill tasklane-1`. "Servers up" drops to 1 and "Requests per server" moves to `tasklane-2`, which went from about 16 to about 33 requests/s. After a hard kill, new calls fail fast for about 14-18 s, most likely until Envoy's health checks (2 s, 2 failures) and DNS re-resolution (5 s) drop the dead server (upstream keepalive and a retry rule that avoids the previous host didn't shorten it): in the run I measured, the producer and workers logged 25 failed calls (mostly Unavailable) between 0.2 s and 18 s after the kill, none after that. They retry, so throughput held. The acked rate was about 9.3 jobs/s with one server (9.6 before). `docker compose -f deploy/docker-compose.yml start tasklane-1` and the traffic splits again, about 16 and 17 requests/s, with the acked rate back at about 9.5 jobs/s.
+Try killing a server: `docker compose -f deploy/docker-compose.yml kill tasklane-1`. "Servers up" drops to 1 and "Requests per server" moves to `tasklane-2`, which went from about 16 to about 33 requests/s. After a hard kill, new calls fail fast for about 14-18 s, most likely until Envoy's health checks (2 s, 2 failures) and DNS re-resolution (5 s) drop the dead server (upstream keepalive and a retry rule that avoids the previous host didn't shorten it; that retry rule is back since M5b, for rolling restarts, see [design §20.3](docs/design.md#203-shutdown-without-dropped-requests)): in the run I measured, the producer and workers logged 25 failed calls (mostly Unavailable) between 0.2 s and 18 s after the kill, none after that. They retry, so throughput held. The acked rate was about 9.3 jobs/s with one server (9.6 before). `docker compose -f deploy/docker-compose.yml start tasklane-1` and the traffic splits again, about 16 and 17 requests/s, with the acked rate back at about 9.5 jobs/s.
 
 Example alert rules are in `deploy/prometheus/alerts.yml` (server down, jobs stuck, dead jobs, high reap rate, queue full, RPC errors, stale queue stats); see them at http://localhost:9090/alerts. The demo's poison jobs keep `TasklaneDeadJobs` firing, as they should. `TasklaneStatsStale` fires when a server's cached queue depths are over 30 s old, which usually means it can't reach the database. With several server copies, aggregate the queue gauges with `max by (queue)` (every server reports the same database-wide numbers) and counters with `sum`. All metrics are listed in [design §16.2](docs/design.md#162-metrics).
 
@@ -196,6 +197,21 @@ OTEL_TRACES_SAMPLER_ARG=0.1
 ```
 
 With the parent-based sampler the producer decides once and everyone else follows its `sampled` flag, so a trace is whole or absent. The server samples root spans at 100% unless `OTEL_TRACES_SAMPLER` is set, so every call from a client that sends no `traceparent` (`tasklane-watch`, curl, a worker without OpenTelemetry) becomes a sampled root trace; in production set a ratio (`parentbased_traceidratio` plus `OTEL_TRACES_SAMPLER_ARG`). Without `OTEL_EXPORTER_OTLP_ENDPOINT` the server creates no spans and exports nothing.
+
+## Kubernetes
+
+A Helm chart (`deploy/k8s/tasklane/`) runs the server: 2 pods behind Envoy, which balances each gRPC request rather than each connection; probes on `/healthz` and `/readyz`; a 5 s `preStop` wait so a pod keeps serving while it is removed from the endpoints; a disruption budget; non-root, read-only pods. Postgres is not part of the chart: set `databaseURL` or `existingSecret`. No image is published until v1.0.0 (milestone M5e), so the chart's default image can't be pulled yet: build and push your own and set `image.repository` and `image.tag` (the demo builds `tasklane:dev` and loads it into the cluster). With `existingSecret`, restart the server Deployment after rotating the Secret; only a chart-made Secret rolls the pods on change.
+
+The demo runs everything in a local k3d cluster (about 0.9 GB of RAM: `docker stats` on the idle k3s container, which holds every pod, KEDA and Postgres included) and scales the demo workers from zero with KEDA, on waiting plus running jobs read from Prometheus:
+
+    deploy/k8s/tools.sh kubectl helm k3d   # pinned binaries in ~/.local/bin
+    deploy/k8s/demo.sh up
+    deploy/k8s/demo.sh watch               # second terminal
+    deploy/k8s/demo.sh load 3000           # a burst of 3,000 jobs
+    deploy/k8s/demo.sh restart             # replace both servers under load
+    deploy/k8s/demo.sh down
+
+Measured on the laptop (medians of 3): the first worker started 8 s after a 3,000-job burst, 5 workers had drained it 77 s after the burst, and they were back to 0 31 s later. A rolling restart of both servers at 50 jobs/s lost no requests (0 failed sends in 3 runs on k3d, and in 3 on kind, where DNS caches for 30 s). That took a fix: Envoy kept sending to a pod that had already exited, until two settings made it drop a pod as soon as DNS drops it and retry a failed connect on another server. CI checks the chart on every pull request, runs the end-to-end test on kind when the deployment changes and on every push to `main`, and the scaling test nightly. Design: [§20](docs/design.md#20-m5b-kubernetes-deployment-and-autoscaling).
 
 ## Correctness
 

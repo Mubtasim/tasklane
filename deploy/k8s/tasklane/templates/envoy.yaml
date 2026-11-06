@@ -1,0 +1,77 @@
+{{- if .Values.envoy.enabled }}
+{{- $config := .Files.Get "files/envoy.yaml" | replace "TASKLANE_HEADLESS" (include "tasklane.headless" .) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-envoy
+  labels:
+    {{- include "tasklane.labels" . | nindent 4 }}
+data:
+  envoy.yaml: |
+    {{- $config | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-envoy
+  labels:
+    {{- include "tasklane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: envoy
+spec:
+  replicas: {{ .Values.envoy.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "tasklane.envoySelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tasklane.labels" . | nindent 8 }}
+        app.kubernetes.io/component: envoy
+      annotations:
+        checksum/config: {{ $config | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: 15
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: envoy
+          image: {{ .Values.envoy.image }}
+          # Run envoy directly: the image's entrypoint script switches users,
+          # which a non-root pod can't do.
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+          ports:
+            - { name: grpc, containerPort: 7070 }
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            tcpSocket: { port: grpc }
+            periodSeconds: 2
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            {{- toYaml .Values.envoy.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - { name: config, mountPath: /etc/envoy, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-envoy
+        - name: tmp
+          emptyDir: {}
+{{- end }}

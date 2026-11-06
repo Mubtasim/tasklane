@@ -326,7 +326,7 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M4b | end of Dec | Invariant and chaos tests, two server copies behind Envoy (§17) |
 | M4c | end of Dec | Tracing with OpenTelemetry and Jaeger, exemplars in Grafana (§18) |
 | M5a | Nov 2026 | Load tests, tuning and benchmark report (§19) |
-| M5b | Dec | Kubernetes deployment: Helm chart with probes, SIGTERM drain, KEDA autoscaling of workers on queue depth, k3d demo |
+| M5b | Dec | Kubernetes deployment: Helm chart with probes, SIGTERM drain, Envoy, KEDA autoscaling of workers on queue depth, k3d demo (§20) |
 | M5c | Dec | TypeScript SDK (npm) |
 | M5d | Jan 2027 | C# SDK (NuGet) |
 | M5e | mid-Jan 2027 | v1.0.0: image on GHCR, release notes, blog post |
@@ -747,7 +747,7 @@ Why not alternatives: an L4 balancer would pin each client's single HTTP/2 conne
 
 **Monitoring.** Prometheus scrapes both servers (`instance` label). The dashboard gains "Servers up" (`count(up{job="tasklane"} == 1) or vector(0)`, so it shows 0 rather than no data when both are down) and "Requests per server" (`sum by (instance) (rate(tasklane_rpc_duration_seconds_count[1m]))`). `TasklaneDown` already fires per server.
 
-**Measured failover** (`docker compose kill tasklane-1` on the demo; one run with this config and two with experiments described below): new calls failed fast with `Unavailable` ("upstream connect error or disconnect/reset before headers") for about 14–18 s after the kill, none after that. The SDK retries them, so the acked rate held at about 9.3–9.7 jobs/s with one server (9.6 before), and `tasklane-2` went from about 16 to about 33 requests/s. Upstream keepalive and a `previous_hosts` retry predicate were tried and did not shorten the window, so both were reverted. The most likely cause, not proven: the dead host stays in the pool until the health checks fail twice (2 × 2 s) and DNS re-resolution (5 s) runs.
+**Measured failover** (`docker compose kill tasklane-1` on the demo; one run with this config and two with experiments described below): new calls failed fast with `Unavailable` ("upstream connect error or disconnect/reset before headers") for about 14–18 s after the kill, none after that. The SDK retries them, so the acked rate held at about 9.3–9.7 jobs/s with one server (9.6 before), and `tasklane-2` went from about 16 to about 33 requests/s. Upstream keepalive and a `previous_hosts` retry predicate were tried and did not shorten the window, so both were reverted in M4b. M5b added `previous_hosts` back for a different reason: so a retried connect goes to a different server during a rolling restart (§20.3). It still does not shorten this window. The most likely cause, not proven: the dead host stays in the pool until the health checks fail twice (2 × 2 s) and DNS re-resolution (5 s) runs.
 
 ### 17.5 Chaos test (Docker)
 
@@ -995,3 +995,143 @@ Verdicts for the parked checks:
 - **Fixed after M5a:** a server waking its own leases twice after step 1 (lease queries at 5 jobs/s: 2,528 → 1,597 per minute, Postgres CPU 17.4% → 14.3%), by tagging each NOTIFY with its sender.
 - **Not needed at this scale:** thundering herd (1.0 lease request per job at 5 jobs/s, p99 31.5 ms); redrive-all (100,000 jobs in about 3 s; the batch plan uses index scans); HOT updates and fillfactor (0 HOT updates of 41,903, as §4 predicted; spare page room can't help updates that change indexed columns); connection pool size (16 connections were no faster than 4 and raised `Lock:object` to about 80%); idle long-poll cost (9.6 Postgres queries/s, 5.8% of one CPU, with 200 idle slots); payload size (100 KB: 302 against 395 jobs/s at 100 B); trimming idle `Lease` traces (idle traced server about 0.7% of one CPU, +0.2 points over untraced). Tracing at 100% costs +38% server CPU per job (paired runs; +51% in the suite), so production should sample a ratio.
 - **Deferred, with trigger:** `LeaseStream`: trigger not hit, about 1.0 lease request per job or less in every run (0.29–0.89 under steady open load) and p99 61 ms at 80%; build it if lease requests per job rise well above 1 or lease round trips show in p99. Delayed jobs slowing each lease (10,000 delayed priority-1 jobs: lease query 0.37 → 1.58 ms mean): when the lease statement reaches the top of `pg_stat_statements`. Autovacuum for a large standing backlog (with 1M rows, dead rows grew by about 41,000 a minute and the default threshold is about 200,000): lower `autovacuum_vacuum_scale_factor` for `jobs`. Two server copies: M5b or `PROFILE=vm`; capacity maths says one server CPU keeps about 2.2 Postgres CPUs busy. `synchronous_commit = off`: discussed in the report, not turned on. PgBouncer: when connection count matters with many copies (M5b). The tracing-off overhead (the +3.5% of §18): not measured in M5a (M4c micro-benchmark: +3.5%); re-measure when skipping otelgrpc/otelpgx for a no-op provider (the M4c follow-up) is built.
+
+## 20. M5b: Kubernetes deployment and autoscaling
+
+Decided 2026-11-06. This section is the M5b spec. It deploys the server to Kubernetes with a Helm chart, keeps requests flowing while pods restart, and scales the demo workers from zero on queue depth with KEDA. Everything runs on one laptop in k3d (about 1.3–1.5 GB of RAM); CI runs the same manifests in kind.
+
+### 20.1 Decisions
+
+| # | Question | Choice | Why |
+|---|---|---|---|
+| 1 | What KEDA reads to size the workers | The server's `tasklane_queue_depth` gauge, through Prometheus | The server already refreshes the depth every 1–5 s (§19.5 step 3), so the autoscaler adds no Postgres load and holds no API key or database password. Rejected: Tasklane's `GET /v1/queues/{q}` (each poll runs an O(backlog) count and needs an API key) and KEDA's PostgreSQL scaler (database password in the autoscaler, coupled to the table layout). Cost: Prometheus in the cluster and about 5 s of scrape delay. |
+| 2 | Spreading requests over server pods | Envoy as an L7 proxy in the cluster, finding pods through a headless Service | A Kubernetes Service balances connections, not requests, and a gRPC client keeps one HTTP/2 connection for hours, so one pod would get all of a client's requests and a new pod none. Envoy balances each request (least_request, as in §17). Rejected: client-side `round_robin` (every SDK must do it, new pods are seen only after a DNS refresh, plain HTTP clients get nothing) and a service mesh (a proxy per pod, about 300–500 MB on the laptop). |
+| 3 | Minimum worker count | 0 (scale to zero) | Nothing runs on an empty queue; plain HPA cannot do this. Cost: the first job after a quiet spell waits for scrape (≤ 5 s) + KEDA poll (5 s) + pod start (2–5 s), about 5–15 s instead of about 30 ms. The chart's own default does not apply here: workers are the user's application, so the minimum lives in the demo's `ScaledObject`. |
+| 4 | Testing in CI | Static checks on every PR; a kind end-to-end job on PRs that touch `deploy/k8s/**`, the Dockerfile or the load generator, and on every push to main; the scaling test nightly and on demand | Static checks catch bad fields in seconds. The end-to-end job proves the pods start, serve and restart without errors, but takes 5–7 minutes, so on PRs it runs only when the deployment, the image definition or the load generator changes; every push to main runs it too, so a server change that breaks the zero-loss restart is caught right after merge. The scaling test waits on KEDA's timers for minutes and can flake on timing, so it never blocks a merge (like the chaos test, §17). |
+
+Decided for the user (routine): Postgres is not part of the chart (production uses a managed database; the chart takes a URL, the demo brings its own Postgres); migrations stay at server start (`pgstore.Migrate` takes a Postgres advisory lock, so two pods starting together apply migrations one at a time); the servers do not autoscale (M5a: Postgres is the limit, one server CPU feeds about 2.2 Postgres CPUs, §19.8), so they run a fixed 2 replicas with a PodDisruptionBudget; Grafana and Jaeger stay in the Compose demo (saves about 600 MB); the two-servers throughput measurement deferred from M5a stays deferred (unpinned pods on one laptop would give a false number); k3d, kubectl, helm and kind are single pinned binaries, no sudo.
+
+### 20.2 Layout
+
+```
+ k3d cluster, one node
+ ┌────────────────────────────────────────────────────────────────┐
+ │  demo producer / loadgen ──> Envoy (Service tasklane) ──┐       │
+ │  demo workers (0..5) ───────┘                           ▼       │
+ │                         tasklane-headless ──> server pods (2)   │
+ │                                                    │            │
+ │                                                    ▼            │
+ │                                       Postgres (StatefulSet, 1) │
+ │  Prometheus ── DNS discovery on tasklane-headless, :9464/metrics│
+ │      ▲                                                          │
+ │  KEDA operator ── every 5 s ──> ScaledObject ──> worker replicas│
+ └────────────────────────────────────────────────────────────────┘
+```
+
+**Helm chart `deploy/k8s/tasklane/`** (the server only):
+
+- `Deployment`: 2 replicas, ports 7070 (gRPC), 8080 (HTTP), 9464 (metrics); `RollingUpdate` with `maxUnavailable: 0`, `maxSurge: 1`; liveness `GET /healthz`, readiness `GET /readyz` (period 2 s, timeout 2 s, failure threshold 2), a startup probe on `/healthz` so slow migrations don't trip liveness; `preStop` native `sleep` action of 5 s (the distroless image has no shell); `terminationGracePeriodSeconds: 40`; `runAsNonRoot`, `readOnlyRootFilesystem`, all capabilities dropped, no privilege escalation, `enableServiceLinks: false`; resource requests and limits from values (defaults sized for the laptop: 100m/64Mi requested, 1 CPU/256Mi limit).
+- `Service` `tasklane-headless` (`clusterIP: None`, `publishNotReadyAddresses: false`) lists every ready server pod for Envoy and Prometheus. The client-facing `Service` is named after the release (`tasklane`) and points at Envoy, or at the servers when Envoy is off.
+- `PodDisruptionBudget`: `maxUnavailable: 1`.
+- `Secret` with `TASKLANE_DATABASE_URL` and `TASKLANE_API_KEYS`, or `existingSecret` to use one made elsewhere. No secret value is ever a plain `env` value. The server pods carry a `checksum/secret` annotation, a SHA-256 of the rendered Secret, so changing these values rolls the pods; with `existingSecret` nothing is rendered, so after rotating that Secret, restart the Deployment.
+- Image: the default `ghcr.io/mubtasim/tasklane` is published only from v1.0.0 (M5e). Until then, build and push your own image and set `image.repository` and `image.tag`; the demo loads `tasklane:dev` into the cluster.
+- Envoy (`envoy.enabled`, default true): a `Deployment` (2 replicas, its own PDB), a `ConfigMap` with the §17 configuration adapted to two `STRICT_DNS` clusters (gRPC on 7070 and HTTP on 8080) on `tasklane-headless` with `dns_refresh_rate: 2s` and `/readyz` health checks (2 s, unhealthy after 2), and the `Service` `tasklane` that clients use. With Envoy off, `tasklane` points straight at the pods.
+- Other `TASKLANE_*` settings and the `OTEL_*` variables pass through `values.env`.
+
+**Demo manifests `deploy/k8s/demo/`:** Postgres (`postgres:17-alpine` StatefulSet with a 1 Gi volume claim), Prometheus (one Deployment, `dns_sd_configs` on `tasklane-headless`, scrape every 5 s, retention 1 h; it needs no cluster RBAC), the demo worker `Deployment` (`DEMO_CONCURRENCY=10`, `terminationGracePeriodSeconds: 35`), its KEDA `ScaledObject`, and the demo producer (0 replicas by default; `demo.sh load` uses loadgen instead).
+
+**`deploy/k8s/demo.sh`:** `up` (create the cluster, build and import `tasklane:dev`, install KEDA from its pinned official chart, the demo manifests and the chart), `load [jobs]` (the burst of §20.4), `restart` (a rolling restart of the servers under load, reporting failed sends), `watch`, `down`. Tool, image and chart versions are pinned in `deploy/k8s/versions.sh`, which `demo.sh`, `tools.sh`, `check.sh` and the workflows read.
+
+### 20.3 Shutdown without dropped requests
+
+When a pod is deleted, Kubernetes sends SIGTERM and removes the pod from Service endpoints **at the same time**, and other components learn about the removal a little later. A server that stopped serving at SIGTERM would refuse requests still being routed to it.
+
+| Time | Server pod | Rest of the cluster |
+|---|---|---|
+| 0 | Marked terminating; `preStop` sleeps 5 s while serving normally | Endpoints drop the pod; Envoy re-reads DNS every 2 s and stops sending to the pod once DNS no longer lists it (2 s plus the DNS cache time, below) |
+| 5 s | SIGTERM: the existing drain (§7, `cmd/tasklane`): not ready, end long-polls, HTTP ≤ 10 s, gRPC ≤ 10 s, metrics ≤ 2 s, then the final trace flush ≤ 2 s | Ended long-polls are retried by the SDK through Envoy on the other server |
+| ≤ 29 s | Exits | |
+| 40 s | Hard kill (grace period), 11 s spare | |
+
+The rolling update starts a new pod and waits for its `/readyz` before stopping an old one (`maxUnavailable: 0`), so capacity never drops below 2 ready servers during a deploy.
+
+The readiness probe's timeout is 2 s, not Kubernetes' default 1 s, because `/readyz` waits up to 2 s for a database ping: with 1 s, one slow ping would mark both pods unready at once, the headless DNS name would list no pod, and Envoy, Prometheus and so KEDA would all lose the servers together.
+
+**What the restart test added (§20.6).** The timeline assumes Envoy stops using a pod as soon as DNS stops listing it. Envoy's default does not do that: it keeps a host that left DNS for as long as the host passes its active health checks. A terminating pod passes `/readyz` for the whole `preStop` and then exits at once, so Envoy kept sending to an IP that was gone. Two settings in `deploy/k8s/tasklane/files/envoy.yaml` (both clusters, both routes) fix it:
+
+- `ignore_health_on_host_removal: true`: drop a server as soon as DNS stops listing it, even if its last health check passed.
+- The retry host predicate `previous_hosts` (with `host_selection_retry_max_attempts: 3`): a retried connect goes to a different server. Retries still cover only requests that never reached a server (`connect-failure`, `refused-stream`, `reset-before-request`, §17.4), so a Lease that reached a server is never retried by the proxy. This retry change also went into the Compose file `deploy/envoy/envoy.yaml`, so both setups retry the same way. `ignore_health_on_host_removal` did not: the Compose servers have fixed names that DNS never drops.
+- `healthy_panic_threshold: 0` (both clusters, added after the final review): never route to a host that failed its health checks. With Envoy's default of 50%, the moment of a rollout when two old pods have exited and two new pods are not yet checked reads as "under half healthy", and Envoy's panic mode would then spread requests over all four, the dead ones included. With 0, Envoy uses only the checked hosts, and a cluster with no healthy host fails fast with `Unavailable` instead of sending to dead pods.
+
+**DNS cache time.** Envoy asks DNS every 2 s (`respect_dns_ttl: false`), but CoreDNS caches its answers: 5 s on k3s (the demo) and 30 s on kind (CI, kubeadm's `ttl 30`). So a removed pod can stay in Envoy's view for up to the cache time plus 2 s: about 7 s on k3s, which is longer than the 5 s `preStop`, and about 32 s on kind. In that window the pod may already have exited. A connect to its IP gets no answer and times out after 1 s; the `previous_hosts` retry then sends the request to another server. Health checks also mark the gone pod down 2–4 s after it exits (every 2 s, 2 failures), and outlier detection ejects it after 3 gateway errors. `healthy_panic_threshold: 0` keeps Envoy off a pod once its health checks failed, even when that leaves fewer than half the hosts healthy. Both clusters were measured (§20.6): on k3s 3 restarts out of 3 and on kind 3 out of 3 (the end-to-end test plus two more runs) lost no request, with `ttl 30` confirmed in kind's CoreDNS Corefile. The `preStop` stays at 5 s; kind's CoreDNS was not changed.
+
+Workers: on SIGTERM the SDK stops leasing, lets running jobs finish for up to `ShutdownTimeout` (25 s), then nacks the rest within 2 s (§14.2), so the worker grace period is 35 s. A worker removed by a scale-down finishes or hands back its jobs; none waits for a lease timeout.
+
+**Known limitation: Envoy's own restart is not lossless.** Everything above covers the server pods. The Envoy pods have a 5 s `preStop` and a 15 s grace period, but no admin listener, so nothing tells Envoy to drain: when an Envoy pod stops, the client HTTP/2 connections it holds are reset. An Enqueue in flight on that connection fails (the producer SDK does not retry it; the caller can, with the same idempotency key), and a Lease long-poll (up to 30 s, longer than the 15 s grace) is cut, so any job it had already leased returns only after its visibility timeout. Any `helm upgrade` that changes the Envoy config rolls the Envoy pods (`checksum/config`). Follow-up, not done in M5b: an admin listener on 127.0.0.1, a `preStop` that calls `/drain_listeners?graceful` and then waits, a `drain_timeout` on the connection managers, an Envoy grace period above 35 s, and a restart test that rolls Envoy instead of the servers.
+
+### 20.4 Autoscaling the demo workers
+
+- **Signal:** `sum(max by (state) (tasklane_queue_depth{queue="demo", state=~"available|leased"}))`. `max by (state)` because both servers export the same gauge (§16); leased jobs count because a signal of "available" alone reads 0 while jobs are still running, and KEDA would scale to 0 mid-job. It does not keep every worker until the last job ends: the HPA wants ceil((available + leased) / 50) pods, so it can go from 5 to 1 while jobs still run. That is safe because a removed worker's SDK drain finishes or nacks its jobs within 27 s, inside its 35 s grace period (§20.3).
+- **Rule:** target 50 jobs per worker pod; `minReplicaCount: 0`, `maxReplicaCount: 5`; `activationThreshold: 0` (any job wakes the first pod); `pollingInterval: 5`; `cooldownPeriod: 30` (the 300 s default is too slow to watch); HPA scale-down stabilization 30 s.
+- **Load:** loadgen gains `-kind`, so `fill` can put a burst into queue `demo` as `normal` jobs that the demo workers handle.
+- **Expected, by arithmetic:** one worker pod runs 10 jobs at once and a `normal` job takes 0.2–2 s (about 1.1 s on average), so about 9 jobs/s per pod. A burst of 3,000 jobs asks for 60 pods, capped at 5 (about 45 jobs/s): it drains in about 70 s, against about 5.5 minutes with one pod. The pods return to 0 about 30–40 s after the queue empties. The first pod appears 5–15 s after the burst. §20.6 replaces these with measured numbers.
+
+### 20.5 Testing
+
+1. **Chart checks** (Go test under `deploy/k8s`, like `TestDemoWiresTracing`): render the chart with `helm template` and assert `preStop` sleep + the drain budgets (5 + 24 s) < grace period (40 s); `maxUnavailable: 0`; probes on `/healthz` and `/readyz`; the PDBs exist; the security context; no secret in a plain `env` value; Envoy points at the headless Service. Check that the `ScaledObject` query names only metrics the server exports (as the dashboard test does, §16).
+2. **CI `k8s-static`** (every PR): `helm lint`, then kubeconform on the rendered chart (Envoy on and off) and the demo manifests, with the KEDA CRD schema.
+3. **CI `k8s-e2e`** (PRs touching `deploy/k8s/**`, `Dockerfile`, the load generator `bench/loadgen/**` or the workflow, and every push to main, so a server change that breaks the zero-loss restart is caught right after merge): a kind cluster, the image loaded, everything installed as `demo.sh up` does. Enqueue 200 jobs and check that all complete. Then run loadgen in open mode at a modest rate while `kubectl rollout restart` replaces both servers, and require 0 failed sends, 0 dropped sends and every in-window job started (the §19.3 validity rule).
+4. **`k8s-scale` workflow** (nightly and manual): a 3,000-job burst; require worker replicas 0 → at least 3 within 60 s, the queue empty within 5 minutes, and 0 replicas within 2 minutes after that; log the measured times.
+
+### 20.6 Results
+
+Measured 2026-11-06 on the laptop (2 cores, 7.1 GiB of RAM by `free`) in k3d, one node.
+
+**Cluster.** `demo.sh up` finished in 2 min 59 s on the first try (cluster, image import, KEDA, demo manifests, chart). With the cluster idle, `docker stats` showed 882 MiB for the k3s container, which holds every pod (KEDA, Postgres, Prometheus, 2 servers, 2 Envoys), and 7.8 MiB for k3d's load balancer; `free` showed used memory going from 2.3 to 2.7 GiB. So the demo costs about 0.9 GB, under the 1.3–1.5 GB estimate above.
+
+**Burst** (`demo.sh load 3000`, 3 runs; times count from the start of the burst):
+
+```
+burst=3000 first_worker=8s three_workers=8s peak_workers=5 drained=77s back_to_zero=112s
+burst=3000 first_worker=9s three_workers=9s peak_workers=5 drained=77s back_to_zero=108s
+burst=3000 first_worker=5s three_workers=6s peak_workers=5 drained=75s back_to_zero=105s
+```
+
+Medians: first worker 8 s, 3 workers 8 s, peak 5 workers, queue empty 77 s, back to 0 workers 108 s (31 s after the queue was empty). All three runs pass the `k8s-scale` limits of §20.5 (3 workers within 60 s, empty within 5 minutes, 0 workers within 2 minutes of empty) with wide margins. Against the arithmetic of §20.4:
+
+- **Scale-up:** 0 → 5 workers in one step, 5–9 s after the burst; expected 5–15 s (a 5 s poll, a 5 s scrape, pod start). The HPA asks for 3,000 / 50 = 60 pods, capped at 5, so it jumps straight to 5, and the first worker and the third arrive in the same sample, give or take one.
+- **Drain:** about 68–70 s from the first worker to an empty queue, so about 43 jobs/s with 5 pods; expected about 45 jobs/s and about 70 s. The arithmetic held.
+- **Scale-down:** 31 s after empty (median), in two steps. 5 → 1 came about 20 s after empty: the HPA's 30 s stabilization window counts from its last recommendation of 5, which was a scrape plus a poll before the queue read 0. 1 → 0 came about 10–15 s later, from KEDA's 30 s `cooldownPeriod` since its last active poll. Expected 30–40 s.
+
+**Rolling restart** (`demo.sh restart`: loadgen in open mode at 50 jobs/s with 20 worker slots, 5 s warm-up plus 60 s, while `kubectl rollout restart` replaces both servers; the rollout ended about 25–30 s after loadgen started). With the shipped configuration, 3 runs out of 3:
+
+```
+rolling restart at 50 jobs/s: errors=0 dropped=0 valid=true   # enqueue-to-start p99 47 ms
+rolling restart at 50 jobs/s: errors=0 dropped=0 valid=true   # p99 38 ms
+rolling restart at 50 jobs/s: errors=0 dropped=0 valid=true   # p99 38 ms
+```
+
+The local end-to-end test (`CLUSTER=k3d deploy/k8s/e2e.sh`) passed in 3 min 39 s including cluster creation: 200 jobs done in about 20 s, then a restart with `errors=0 dropped=0 valid=true` (p99 135 ms).
+
+**The fix the restart test forced.** The first two runs lost requests: `errors=170` and `errors=123` (4–6% of sends), every one `Unavailable: upstream connect error or disconnect/reset before headers. reset reason: connection timeout`, which is Envoy's 1 s connect timeout. A diagnostic run polled the pods and the headless EndpointSlice every 0.3 s. The old pod's endpoint was already `ready=false, terminating=true` (out of DNS) when the pod started terminating; the pod completed 5.3 s later, right after the `preStop`, because its drain had nothing outstanding; loadgen's first failed send came less than a second after that. So Envoy was still sending to a pod that was gone. The cause was Envoy's default `ignore_health_on_host_removal: false` (§20.3): the pod passed `/readyz` until it exited, so Envoy kept it until two health checks failed, 2–4 s after exit, and all 3 tries of a request could hit the same dead pod or the other old pod, which died about 1.5 s later.
+
+- Fix 1, `ignore_health_on_host_removal: true`: `errors=10`, `0`, `0`. The 10 left were also connect timeouts, about 6 s after the delete, explained by the 5 s CoreDNS cache plus the 2 s refresh, which outlast the 5 s `preStop`. (That run reads `valid=true` because loadgen tolerates a small share of failed sends; `demo.sh restart` and the e2e test still fail on any error.)
+- Fix 2, the `previous_hosts` retry predicate: `errors=0` in the 3 runs above and again in the end-to-end test.
+
+No timing value changed: `preStop` 5 s, grace 40 s, `maxUnavailable: 0`, `maxSurge: 1`, readiness 2 s × 2, DNS refresh 2 s, health checks 2 s × 2, connect timeout 1 s and 2 retries are as specified. `chart_test.go` asserts both new settings.
+
+**kind, locally** (the cluster CI uses; added after the final review, with `healthy_panic_threshold: 0` in place). kind's CoreDNS caches for 30 s (`ttl 30` in its Corefile), so a removed pod can stay in Envoy's DNS view for up to about 32 s, far longer than the 5 s `preStop`. Measured on the same laptop, kind v0.33.0 with node v1.36.4:
+
+```
+CLUSTER=kind deploy/k8s/e2e.sh: exit 0 in 4 min 24 s, 200 jobs done in about 19 s
+rolling restart at 50 jobs/s: errors=0 dropped=0 valid=true   # in e2e.sh, p99 135 ms
+rolling restart at 50 jobs/s: errors=0 dropped=0 valid=true   # demo.sh restart, p99 53 ms
+rolling restart at 50 jobs/s: errors=0 dropped=0 valid=true   # demo.sh restart, p99 52 ms
+burst=3000 first_worker=5s three_workers=11s peak_workers=5 drained=78s back_to_zero=110s   # CHECK=1, passed
+```
+
+So the 30 s DNS window did not cost a request in 3 restarts: once an old pod exits, its connects fail, the `previous_hosts` retry moves them to another server, and two failed health checks (2–4 s) take the pod out of rotation for good. The kind node container used 1.2 GiB right after the burst (`docker stats`). This is 3 runs on one machine, not a proof; the `k8s-e2e` job on GitHub's runners repeats it on every relevant PR and every push to main.
+
+**CI.** Nothing has run in CI yet. The `k8s-e2e` job runs on this branch's pull request. The `k8s-scale` workflow runs only on its schedule or by hand, and GitHub runs both triggers only from the default branch, so its first GitHub run happens after the merge; until then the kind burst above is its result. Durations on GitHub's runners will be added here after the first runs; §20.1 estimates 5–7 minutes for the end-to-end job.
+
+Out of scope: Ingress and TLS from outside the cluster; publishing the image to GHCR (M5e); server autoscaling; HA Postgres or a Postgres operator; Grafana and Jaeger in Kubernetes; NetworkPolicies; the two-servers throughput measurement.

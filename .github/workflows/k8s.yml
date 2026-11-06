@@ -1,0 +1,50 @@
+name: Kubernetes
+
+# The end-to-end test (design §20.5) takes 5-7 minutes. PRs run it when the
+# deployment, the image definition or the load generator change; every push
+# to main runs it, so a server change that breaks the zero-loss restart is
+# caught right after merge.
+on:
+  pull_request:
+    paths:
+      - "deploy/k8s/**"
+      - "Dockerfile"
+      - "bench/loadgen/**"
+      - ".github/workflows/k8s.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to a PR replaces its running test; runs on main all finish, so
+# every merge gets its own result.
+concurrency:
+  group: k8s-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install kind, kubectl and helm
+        run: |
+          BIN="$RUNNER_TEMP/bin" deploy/k8s/tools.sh kind kubectl helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: deploy/k8s/e2e.sh
+        env:
+          CLUSTER: kind
+      - if: failure()
+        run: CLUSTER=kind deploy/k8s/demo.sh logs > k8s-logs.txt 2>&1
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: k8s-e2e-logs
+          path: |
+            k8s-logs.txt
+            deploy/k8s/out/
