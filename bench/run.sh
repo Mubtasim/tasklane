@@ -179,15 +179,18 @@ s4)
 s6)
   log "S6 tracing cost"
   [[ $M == 0 ]] && { echo "S6 needs S2's maximum; run s2 first in the same invocation" >&2; exit 1; }
+  # Clear a Jaeger container left by an earlier run: `down -v` without the
+  # profile does not remove it, and its network is gone, so `up` would fail.
+  "${COMPOSE[@]}" --profile tracing rm -sf jaeger >/dev/null 2>&1 || true
   OTEL_ENDPOINT=http://jaeger:4317 "${COMPOSE[@]}" --profile tracing up -d --wait jaeger tasklane
   wait_ready
   reset_db; lg s6 "s6-traced-open80-w$BEST_W" -mode open -workers "$BEST_W" -rate "$(pct "$M" 80)" >/dev/null
   reset_db; lg s6 s6-traced-idle-w200 -mode closed -producers 0 -workers 200 >/dev/null
-  "${COMPOSE[@]}" --profile tracing stop jaeger
+  "${COMPOSE[@]}" --profile tracing rm -sf jaeger
   "${COMPOSE[@]}" up -d --wait tasklane
   wait_ready ;;
 *) echo "unknown scenario $s" >&2; exit 2 ;;
 esac; done
 
 log "done: $OUT/results.csv"
-echo "stop the stack with: docker compose -f bench/compose.bench.yml down -v"
+echo "stop the stack with: docker compose -f bench/compose.bench.yml --profile tracing down -v"
