@@ -17,9 +17,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR replaces its running test; runs on main all finish, so
+# every merge gets its own result.
 concurrency:
   group: k8s-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   e2e:

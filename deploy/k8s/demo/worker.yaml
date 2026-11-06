@@ -26,6 +26,8 @@ spec:
           command: ["/usr/local/bin/worker"]
           env:
             - { name: TASKLANE_ADDR, value: "tasklane.tasklane.svc.cluster.local:7070" }
+            # Demo only: a fixed key in plain env. Outside the demo, put the
+            # key in a Secret and use secretKeyRef.
             - { name: TASKLANE_API_KEY, value: demo-key }
             - { name: DEMO_QUEUE, value: demo }
             - { name: DEMO_CONCURRENCY, value: "10" }
@@ -61,7 +63,11 @@ spec:
         serverAddress: http://prometheus.tasklane.svc.cluster.local:9090
         # Waiting plus running jobs. max by (state): both servers export the
         # same gauge. Counting only waiting jobs would read 0 while workers
-        # still run 50 jobs, and KEDA would remove them mid-job.
+        # still run 50 jobs, and KEDA would drop to 0 mid-job. This does not
+        # keep every worker until the last job ends: the HPA wants
+        # ceil((available + leased) / 50), so it may go from 5 to 1 while
+        # jobs run. A removed worker's SDK drain finishes or nacks its jobs
+        # within 27 s, inside the 35 s grace period, so none are lost.
         query: sum(max by (state) (tasklane_queue_depth{queue="demo", state=~"available|leased"}))
         threshold: "50"
         activationThreshold: "0"

@@ -24,6 +24,8 @@ spec:
           command: ["/usr/local/bin/producer"]
           env:
             - { name: TASKLANE_ADDR, value: "tasklane.tasklane.svc.cluster.local:7070" }
+            # Demo only: a fixed key in plain env. Outside the demo, put the
+            # key in a Secret and use secretKeyRef.
             - { name: TASKLANE_API_KEY, value: demo-key }
             - { name: DEMO_QUEUE, value: demo }
             - { name: DEMO_RATE, value: "10" }

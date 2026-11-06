@@ -1,7 +1,9 @@
 name: Kubernetes scaling
 
 # KEDA from 0 to N and back (design §20.5). It waits on KEDA's timers for
-# minutes, so it never blocks a merge: nightly and on demand.
+# minutes, so it never blocks a merge: nightly and on demand. GitHub runs
+# schedule and workflow_dispatch only from the default branch, so its first
+# run comes after the merge (the local kind result is in §20.6).
 on:
   schedule:
     - cron: "37 3 * * *"
@@ -38,4 +40,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: k8s-scale-logs
-          path: k8s-logs.txt
+          path: |
+            k8s-logs.txt
+            deploy/k8s/out/

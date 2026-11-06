@@ -9,10 +9,13 @@ chart=deploy/k8s/tasklane
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# CRD schemas (KEDA's ScaledObject) from the datree catalog, pinned to a
+# commit so a change upstream can't change this check's result.
+CRDS_CATALOG=c86448cbf1a840ca62d119259864863897c8748a
 kc() {
   kubeconform -strict -summary \
     -schema-location default \
-    -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+    -schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/$CRDS_CATALOG/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
     "$@"
 }
 

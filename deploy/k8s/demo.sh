@@ -7,7 +7,8 @@
 #   deploy/k8s/demo.sh logs        # everything needed to debug a failed run
 #   deploy/k8s/demo.sh down
 # CLUSTER=kind uses kind (CI); the default is k3d. Tools: deploy/k8s/tools.sh.
-# About 1.3-1.5 GB of RAM; stop the Compose demo first (same ports).
+# About 0.9 GB of RAM (the k3d node container, measured); stop the Compose
+# demo first (same ports).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source deploy/k8s/versions.sh
@@ -205,5 +206,5 @@ logs) logs ;;
 load) load "${2:-3000}" ;;
 restart) restart ;;
 down) down ;;
-*) sed -n '2,10p' "$0"; exit 2 ;;
+*) sed -n '2,11p' "$0"; exit 2 ;;
 esac
