@@ -6,6 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 export CLUSTER=${CLUSTER:-kind}
 demo=deploy/k8s/demo.sh
+stats='{}' left=unknown
 API_KEY=demo-key HTTP=http://127.0.0.1:8080
 
 $demo up
@@ -14,9 +15,12 @@ echo "== 200 jobs"
 go build -o bench/bin/loadgen ./bench/loadgen
 bench/bin/loadgen -addr 127.0.0.1:7070 -api-key "$API_KEY" -mode fill -queue demo -kind normal -jobs 200 -batch 50 >/dev/null
 for i in $(seq 180); do
-  stats=$(curl -fsS -H "Authorization: Bearer $API_KEY" "$HTTP/v1/queues/demo")
-  left=$(jq '((.stats.available // "0") | tonumber) + ((.stats.leased // "0") | tonumber)' <<<"$stats")
-  [[ $left == 0 ]] && break
+  # A failed request is retried on the next pass, not fatal under set -e.
+  if s=$(curl -fsS -H "Authorization: Bearer $API_KEY" "$HTTP/v1/queues/demo") &&
+    l=$(jq -e '((.stats.available // "0") | tonumber) + ((.stats.leased // "0") | tonumber)' <<<"$s"); then
+    stats=$s left=$l
+    [[ $left == 0 ]] && break
+  fi
   sleep 1
 done
 dead=$(jq '(.stats.dead // "0") | tonumber' <<<"$stats")

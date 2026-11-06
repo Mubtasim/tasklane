@@ -17,17 +17,33 @@ K=(kubectl -n "$NS")
 
 log() { printf '\n== %s\n' "$*"; }
 
-# depth prints waiting + running jobs in queue demo (0 if it doesn't exist).
+# The probes print a number, or nothing and fail when they can't tell. 0 is
+# what ends a load measurement, so a failed request must never read as 0.
+
+# depth prints waiting + running jobs in queue demo; 0 only when the server
+# answers that the queue doesn't exist (gRPC NOT_FOUND = 5).
 depth() {
-  curl -fsS -H "Authorization: Bearer $API_KEY" "$HTTP/v1/queues/demo" 2>/dev/null |
-    jq '((.stats.available // "0") | tonumber) + ((.stats.leased // "0") | tonumber)' || echo 0
+  local out code body
+  out=$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $API_KEY" "$HTTP/v1/queues/demo" 2>/dev/null) || return 1
+  code=${out##*$'\n'} body=${out%$'\n'*}
+  case $code in
+  200) jq -e '((.stats.available // "0") | tonumber) + ((.stats.leased // "0") | tonumber)' <<<"$body" 2>/dev/null ;;
+  404) jq -e '.code == 5' <<<"$body" >/dev/null 2>&1 && echo 0 ;;
+  *) return 1 ;;
+  esac
 }
 
-# workers prints the ready demo-worker pods.
+# workers prints the ready demo-worker pods; 0 only when the API server
+# answers (no readyReplicas yet, or the Deployment doesn't exist).
 workers() {
-  local n
-  n=$("${K[@]}" get deploy demo-worker -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
-  echo "${n:-0}"
+  local n err
+  if n=$("${K[@]}" get deploy demo-worker -o jsonpath='{.status.readyReplicas}' 2>/dev/null); then
+    echo "${n:-0}"
+  elif err=$("${K[@]}" get deploy demo-worker 2>&1 >/dev/null); [[ $err == *NotFound* ]]; then
+    echo 0
+  else
+    return 1
+  fi
 }
 
 cluster_up() {
@@ -79,7 +95,7 @@ up() {
 
 watch_() {
   while true; do
-    printf '%s  workers=%s  jobs=%s\n' "$(date +%T)" "$(workers)" "$(depth)"
+    printf '%s  workers=%s  jobs=%s\n' "$(date +%T)" "$(workers || echo '?')" "$(depth || echo '?')"
     sleep 2
   done
 }
@@ -114,13 +130,21 @@ loadgen() {
 # seconds until the first worker, until 3 workers, until the queue is empty,
 # and until the workers are back at 0. CHECK=1 enforces design §20.5's limits.
 load() {
-  local n=${1:-3000} start now first="" three="" empty="" zero="" peak=0 w d t
-  [[ $(workers) == 0 ]] || echo "note: $(workers) workers already running; first_worker will read 0" >&2
+  local n=${1:-3000} start now first="" three="" empty="" zero="" peak=0 gaveup="" w d t
+  w=$(workers || echo '?')
+  [[ $w == 0 ]] || echo "note: workers=$w at the start; first_worker may read 0" >&2
   start=$(date +%s)
   loadgen -mode fill -queue demo -kind normal -jobs "$n" -batch 100 -producers 4 >/dev/null
   while true; do
     now=$(date +%s); t=$((now - start))
-    w=$(workers); d=$(depth)
+    # A failed probe is skipped, never counted: 0 would end the run early.
+    w="" d=""
+    if ! w=$(workers) || ! d=$(depth) || [[ -z $w || -z $d ]]; then
+      printf '%4ss workers=%s jobs=%s (probe failed, sample skipped)\n' "$t" "${w:-?}" "${d:-?}"
+      ((t > 900)) && { gaveup=1; break; }
+      sleep 1
+      continue
+    fi
     ((w > peak)) && peak=$w
     [[ -z $first && $w -ge 1 ]] && first=$t
     [[ -z $three && $w -ge 3 ]] && three=$t
@@ -128,11 +152,12 @@ load() {
     [[ -n $empty && -z $zero && $w == 0 ]] && zero=$t
     printf '%4ss workers=%s jobs=%s\n' "$t" "$w" "$d"
     [[ -n $zero ]] && break
-    ((t > 900)) && { echo "gave up after 15 minutes" >&2; break; }
+    ((t > 900)) && { gaveup=1; break; }
     sleep 1
   done
-  local line="burst=$n first_worker=${first:-none}s three_workers=${three:-none}s peak_workers=$peak drained=${empty:-none}s back_to_zero=${zero:-none}s"
+  local line="burst=$n first_worker=${first:-none}${first:+s} three_workers=${three:-none}${three:+s} peak_workers=$peak drained=${empty:-none}${empty:+s} back_to_zero=${zero:-none}${zero:+s}"
   echo "$line" | tee -a "$OUT/load.txt"
+  [[ -z $gaveup ]] || { echo "FAIL: gave up after 15 minutes" >&2; exit 1; }
   if [[ ${CHECK:-0} == 1 ]]; then
     [[ -n $three && $three -le 60 ]] || { echo "FAIL: 3 workers not within 60 s" >&2; exit 1; }
     [[ -n $empty && $empty -le 300 ]] || { echo "FAIL: queue not empty within 5 minutes" >&2; exit 1; }
@@ -144,16 +169,24 @@ load() {
 # restart so KEDA's workers stay out of it) while both servers are replaced.
 # Every send must succeed and every job in the window must start.
 restart() {
-  local rate=${RATE:-50} pid row
+  local rate=${RATE:-50} pid row start took
   rm -f "$OUT/restart.csv"
+  start=$(date +%s)
   loadgen -mode open -queue restart -rate "$rate" -workers 20 -warmup 5s -duration 60s -probes=false \
     -scenario k8s -label restart -out "$OUT/restart.csv" &
   pid=$!
+  # If the rollout fails and set -e ends the script, don't leave loadgen behind.
+  trap "kill $pid 2>/dev/null || true" EXIT
   sleep 15
   log "rolling restart"
   "${K[@]}" rollout restart deploy/tasklane-server
   "${K[@]}" rollout status deploy/tasklane-server --timeout 3m
+  # loadgen measures 5 s warm-up + 60 s; a rollout that ended later was only
+  # partly measured, so the zero-loss result would not cover it.
+  took=$(($(date +%s) - start))
+  ((took <= 65)) || { echo "FAIL: rollout finished ${took}s after loadgen started, after its 65 s window" >&2; exit 1; }
   wait "$pid"
+  trap - EXIT
   row=$(tail -1 "$OUT/restart.csv")
   # Columns by name, so a new CSV column can't shift them.
   read -r errors dropped valid < <(awk -F, -v row="$row" 'NR == 1 {
