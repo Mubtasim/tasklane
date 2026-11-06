@@ -231,3 +231,14 @@ func TestWithoutEnvoyClientsReachTheServers(t *testing.T) {
 	svc := find(t, objs, "Service", "tasklane")
 	require.Equal(t, "server", dig(svc, "spec", "selector", "app.kubernetes.io/component"))
 }
+
+func TestDemoValuesRender(t *testing.T) {
+	objs := render(t, "-f", "demo/values.yaml")
+	svc := find(t, objs, "Service", "tasklane")
+	require.Equal(t, "NodePort", dig(svc, "spec", "type"))
+	require.Equal(t, 30070, dig(svc, "spec", "ports", 0, "nodePort"))
+	require.Equal(t, 30080, dig(svc, "spec", "ports", 1, "nodePort"))
+	c := serverContainer(t, objs)
+	require.Equal(t, "tasklane:dev", dig(c, "image"))
+	require.Equal(t, "Never", dig(c, "imagePullPolicy"))
+}
