@@ -29,6 +29,13 @@ static_resources:
                               # Lease that did may already have leased jobs.
                               retry_on: connect-failure,refused-stream,reset-before-request
                               num_retries: 2
+                              # Retry on another server: a pod that just exited
+                              # times out connects until health checks drop it.
+                              retry_host_predicate:
+                                - name: envoy.retry_host_predicates.previous_hosts
+                                  typed_config:
+                                    "@type": type.googleapis.com/envoy.extensions.retry.host.previous_hosts.v3.PreviousHostsPredicate
+                              host_selection_retry_max_attempts: 3
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -54,6 +61,13 @@ static_resources:
                             retry_policy:
                               retry_on: connect-failure,refused-stream,reset-before-request
                               num_retries: 2
+                              # Retry on another server: a pod that just exited
+                              # times out connects until health checks drop it.
+                              retry_host_predicate:
+                                - name: envoy.retry_host_predicates.previous_hosts
+                                  typed_config:
+                                    "@type": type.googleapis.com/envoy.extensions.retry.host.previous_hosts.v3.PreviousHostsPredicate
+                              host_selection_retry_max_attempts: 3
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:

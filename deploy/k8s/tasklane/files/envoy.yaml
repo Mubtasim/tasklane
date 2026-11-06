@@ -30,6 +30,13 @@ static_resources:
                               # Lease that did may already have leased jobs.
                               retry_on: connect-failure,refused-stream,reset-before-request
                               num_retries: 2
+                              # Retry on another server: a pod that just exited
+                              # times out connects until health checks drop it.
+                              retry_host_predicate:
+                                - name: envoy.retry_host_predicates.previous_hosts
+                                  typed_config:
+                                    "@type": type.googleapis.com/envoy.extensions.retry.host.previous_hosts.v3.PreviousHostsPredicate
+                              host_selection_retry_max_attempts: 3
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -55,6 +62,13 @@ static_resources:
                             retry_policy:
                               retry_on: connect-failure,refused-stream,reset-before-request
                               num_retries: 2
+                              # Retry on another server: a pod that just exited
+                              # times out connects until health checks drop it.
+                              retry_host_predicate:
+                                - name: envoy.retry_host_predicates.previous_hosts
+                                  typed_config:
+                                    "@type": type.googleapis.com/envoy.extensions.retry.host.previous_hosts.v3.PreviousHostsPredicate
+                              host_selection_retry_max_attempts: 3
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -76,6 +90,12 @@ static_resources:
         endpoints:
           - lb_endpoints:
               - endpoint: { address: { socket_address: { address: TASKLANE_HEADLESS, port_value: 7070 } }, health_check_config: { port_value: 8080 } }
+      # Drop a pod as soon as DNS drops it. Envoy's default keeps a host that
+      # left DNS until it fails health checks, but a terminating pod passes
+      # /readyz through its 5 s preStop and then exits at once: Envoy kept
+      # sending to the gone IP for 2-4 s (connect timeouts, 4-6% failed sends
+      # in a rolling restart). DNS drops it within 2 s, inside the preStop.
+      ignore_health_on_host_removal: true
       health_checks: &readyz
         - timeout: 1s
           interval: 2s
@@ -98,5 +118,6 @@ static_resources:
         endpoints:
           - lb_endpoints:
               - endpoint: { address: { socket_address: { address: TASKLANE_HEADLESS, port_value: 8080 } } }
+      ignore_health_on_host_removal: true
       health_checks: *readyz
       outlier_detection: *outliers

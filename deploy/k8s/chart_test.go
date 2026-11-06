@@ -211,6 +211,9 @@ func TestEnvoyBalancesOverTheHeadlessService(t *testing.T) {
 	require.Equal(t, 2, strings.Count(cfg, "address: tasklane-headless.tasklane.svc.cluster.local"), "both clusters")
 	require.Equal(t, 2, strings.Count(cfg, "dns_refresh_rate: 2s"))
 	require.Contains(t, cfg, "path: /readyz")
+	// The rolling restart lost 4-6% of sends without these (design §20.3).
+	require.Equal(t, 2, strings.Count(cfg, "ignore_health_on_host_removal: true"), "both clusters")
+	require.Equal(t, 2, strings.Count(cfg, "envoy.retry_host_predicates.previous_hosts"), "both routes")
 
 	d := find(t, objs, "Deployment", "tasklane-envoy")
 	require.Equal(t, 2, dig(d, "spec", "replicas"))
