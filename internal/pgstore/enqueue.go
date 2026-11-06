@@ -30,7 +30,8 @@ RETURNING id`
 const MaxEnqueueBatch = 1000
 
 // NotifyChannel is the Postgres channel that wakes long-polling leases. The
-// payload is the queue name.
+// payload is the queue name. The store doesn't send on it; notify.Publisher
+// does, after the write has committed.
 const NotifyChannel = "tasklane_jobs"
 
 func (s *Store) Enqueue(ctx context.Context, jobs []store.NewJob) ([]store.EnqueueResult, error) {
@@ -56,13 +57,10 @@ func (s *Store) Enqueue(ctx context.Context, jobs []store.NewJob) ([]store.Enque
 		}
 		results[i] = r
 	}
-	// NOTIFY is transactional: listeners hear it only if this commit succeeds,
-	// and never before the jobs are visible.
-	for _, q := range distinctQueues(jobs) {
-		if _, err := tx.Exec(ctx, "SELECT pg_notify($1, $2)", NotifyChannel, q); err != nil {
-			return nil, err
-		}
-	}
+	// No NOTIFY here: Postgres serializes every transaction that notifies
+	// behind one database-wide lock until its commit is flushed, which made
+	// enqueue commits wait in line (design §19). The API server publishes
+	// after this commit instead (notify.Publisher).
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -94,16 +92,6 @@ func insertOrder(jobs []store.NewJob) []int {
 		return 0
 	})
 	return order
-}
-
-func distinctQueues(jobs []store.NewJob) []string {
-	queues := make([]string, 0, 1)
-	for _, j := range jobs {
-		if !slices.Contains(queues, j.Queue) {
-			queues = append(queues, j.Queue)
-		}
-	}
-	return queues
 }
 
 func validateJob(j store.NewJob) error {

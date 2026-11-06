@@ -23,6 +23,7 @@ type fakeNotifier struct {
 	subs         map[chan struct{}]bool
 	subscribed   int
 	unsubscribed int
+	published    []string
 }
 
 func newFakeNotifier() *fakeNotifier {
@@ -44,6 +45,19 @@ func (n *fakeNotifier) Subscribe(string) (<-chan struct{}, func()) {
 			n.unsubscribed++
 		})
 	}
+}
+
+// Publish records the queue; tests that need the wake-up call fire.
+func (n *fakeNotifier) Publish(queue string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.published = append(n.published, queue)
+}
+
+func (n *fakeNotifier) publishes() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.published...)
 }
 
 // fire wakes every subscriber and reports how many there were: zero means

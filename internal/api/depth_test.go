@@ -77,6 +77,29 @@ func TestQueueFullErrorCarriesRetryInfo(t *testing.T) {
 	require.Equal(t, time.Second, ri.GetRetryDelay().AsDuration())
 }
 
+func TestNextDepthRefresh(t *testing.T) {
+	tests := []struct {
+		took time.Duration
+		want time.Duration
+	}{
+		{0, time.Second},
+		{50 * time.Millisecond, time.Second},
+		{100 * time.Millisecond, time.Second},
+		{200 * time.Millisecond, 2 * time.Second},
+		{450 * time.Millisecond, 4500 * time.Millisecond},
+		{2 * time.Second, 5 * time.Second},
+		{60 * time.Second, 5 * time.Second},
+	}
+	for _, tt := range tests {
+		require.Equal(t, tt.want, nextDepthRefresh(tt.took), "took %v", tt.took)
+	}
+}
+
+// The cap must leave room for a missed refresh before the cache goes stale.
+func TestDepthRefreshMaxBelowMaxStale(t *testing.T) {
+	require.Less(t, depthRefreshMax, depthMaxStale)
+}
+
 // mustRefresh refreshes the cache and fails the test on error.
 func mustRefresh(t *testing.T, c *depthCache, ctx context.Context, st store.Store) {
 	t.Helper()

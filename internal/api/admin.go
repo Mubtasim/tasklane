@@ -112,11 +112,16 @@ func (s *Server) RedriveJobs(ctx context.Context, req *tasklanev1.RedriveJobsReq
 }
 
 // redrive is one RedriveDead transaction, detached from the client (see
-// detach) so a committed batch is always counted.
+// detach) so a committed batch is always counted. A batch that redrove jobs
+// wakes waiting leases at once, before the next batch runs.
 func (s *Server) redrive(ctx context.Context, queue string, ids []int64, limit int) (int, error) {
 	wctx, cancel := detach(ctx)
 	defer cancel()
-	return s.store.RedriveDead(wctx, queue, ids, limit)
+	n, err := s.store.RedriveDead(wctx, queue, ids, limit)
+	if err == nil && n > 0 {
+		s.publish(queue)
+	}
+	return n, err
 }
 
 // Page tokens are the last job's (finished_at in microseconds, id) as 16

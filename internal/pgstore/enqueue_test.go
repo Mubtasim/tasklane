@@ -194,40 +194,39 @@ func TestEnqueueConcurrentBatchesDoNotDeadlock(t *testing.T) {
 	}
 }
 
-// Enqueue wakes listeners once per queue, and only when it commits.
-func TestEnqueueNotifiesOnCommit(t *testing.T) {
+// The store sends no NOTIFY: an in-transaction NOTIFY takes a database-wide
+// lock until commit. The API server publishes after the commit instead.
+func TestEnqueueSendsNoNotify(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	mustQueue(t, s, store.Queue{Name: "emails"})
 	mustQueue(t, s, store.Queue{Name: "sms"})
+	conn := listen(t)
 
-	conn, err := pgx.Connect(ctx, testDB.DSN)
-	require.NoError(t, err)
-	defer conn.Close(ctx)
-	_, err = conn.Exec(ctx, "LISTEN "+pgstore.NotifyChannel)
-	require.NoError(t, err)
-
-	_, err = s.Enqueue(ctx, []store.NewJob{
+	_, err := s.Enqueue(ctx, []store.NewJob{
 		{Queue: "emails", Kind: "a"}, {Queue: "sms", Kind: "b"}, {Queue: "emails", Kind: "c"},
 	})
 	require.NoError(t, err)
+	requireNoNotification(t, conn)
+}
 
-	got := map[string]int{}
-	for range 2 {
-		wctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		n, err := conn.WaitForNotification(wctx)
-		cancel()
-		require.NoError(t, err)
-		got[n.Payload]++
-	}
-	require.Equal(t, map[string]int{"emails": 1, "sms": 1}, got)
+// listen opens a connection that LISTENs on the jobs channel.
+func listen(t *testing.T) *pgx.Conn {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, testDB.DSN)
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close(ctx) })
+	_, err = conn.Exec(ctx, "LISTEN "+pgstore.NotifyChannel)
+	require.NoError(t, err)
+	return conn
+}
 
-	// A failed (rolled back) enqueue sends nothing.
-	_, err = s.Enqueue(ctx, []store.NewJob{{Queue: "emails", Kind: "a"}, {Queue: "missing", Kind: "b"}})
-	require.ErrorIs(t, err, store.ErrNotFound)
-	wctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+func requireNoNotification(t *testing.T, conn *pgx.Conn) {
+	t.Helper()
+	wctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, err = conn.WaitForNotification(wctx)
-	require.Error(t, err, "no notification after a rollback")
-	require.Equal(t, context.DeadlineExceeded, wctx.Err())
+	n, err := conn.WaitForNotification(wctx)
+	require.Error(t, err, "unexpected notification %+v", n)
+	require.ErrorIs(t, wctx.Err(), context.DeadlineExceeded)
 }

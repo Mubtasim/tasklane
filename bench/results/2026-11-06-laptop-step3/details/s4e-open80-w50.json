@@ -1,0 +1,110 @@
+{
+  "label": "s4e-open80-w50",
+  "top_statements": [
+    {
+      "Query": "INSERT INTO jobs (queue, kind, payload, priority, run_at, max_attempts, idempotency_key, trace_context) SELECT q.name, $2::text, $3::jsonb, $4::smallint, coalesce($5::timestamptz, now()), coalesce(nullif($6::int, 0), q.max_attempts), nullif($7::text, ''), nullif($8::text, '') FROM queues q WHERE q.name = $1 ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id",
+      "Calls": 20779,
+      "TotalMs": 8017.633722000017,
+      "MeanMs": 0.38585272255642533,
+      "Rows": 20779
+    },
+    {
+      "Query": "WITH counts AS ( SELECT queue, count(*) FILTER (WHERE state = $1) AS available, count(*) FILTER (WHERE state = $2) AS leased FROM jobs WHERE state IN ($3, $4) GROUP BY queue ) SELECT q.name, q.max_depth, coalesce(c.available, $5), coalesce(c.leased, $6), CASE WHEN q.paused THEN $7 ELSE coalesce(( SELECT extract($8 FROM now() - min(o.run_at))::float8 FROM unnest($9::smallint[]) AS p(priority) CROSS JOIN LATERAL ( SELECT j.run_at FROM jobs j WHERE j.queue = q.name AND j.state = $10 AND j.priority = p.priority AND j.run_at \u003c= now() ORDER BY j.run_at LIMIT $11) o), $12) END FROM queues q LEFT JOIN counts c ON c.queue = q.name",
+      "Calls": 43,
+      "TotalMs": 5276.390806999998,
+      "MeanMs": 122.7067629534884,
+      "Rows": 43043
+    },
+    {
+      "Query": "UPDATE jobs SET state = 'completed', finished_at = now(), lease_expires_at = NULL WHERE id = $1 AND state = 'leased' AND lease_token = $2 RETURNING queue",
+      "Calls": 20773,
+      "TotalMs": 5259.3457969999745,
+      "MeanMs": 0.25318181278582647,
+      "Rows": 20773
+    },
+    {
+      "Query": "WITH next AS ( SELECT j.id FROM jobs j JOIN queues q ON q.name = j.queue WHERE j.queue = $1 AND j.state = 'available' AND j.run_at \u003c= now() AND NOT q.paused ORDER BY j.priority, j.run_at, j.id LIMIT $2 FOR UPDATE OF j SKIP LOCKED ) UPDATE jobs j SET state = 'leased', attempts = j.attempts + 1, lease_token = gen_random_uuid(), lease_expires_at = now() + interval '1 millisecond' * coalesce($3::bigint, (SELECT visibility_timeout_ms FROM queues WHERE name = $1)) FROM next WHERE j.id = next.id RETURNING j.id, j.queue, j.kind, j.payload, j.priority, j.state, j.run_at, j.attempts, j.max_attempts, j.last_error, j.lease_token, j.lease_expires_at, j.idempotency_key, j.trace_context, j.created_at, j.finished_at, now()",
+      "Calls": 9510,
+      "TotalMs": 3521.693641000005,
+      "MeanMs": 0.37031478874868656,
+      "Rows": 20777
+    },
+    {
+      "Query": "SELECT pg_notify($1, $2)",
+      "Calls": 8027,
+      "TotalMs": 66.86405699999982,
+      "MeanMs": 0.00832989373364898,
+      "Rows": 8027
+    },
+    {
+      "Query": "commit",
+      "Calls": 20791,
+      "TotalMs": 28.679726999999957,
+      "MeanMs": 0.0013794298975518204,
+      "Rows": 0
+    },
+    {
+      "Query": "begin",
+      "Calls": 20792,
+      "TotalMs": 28.46085999999997,
+      "MeanMs": 0.0013688370527125807,
+      "Rows": 0
+    },
+    {
+      "Query": "SELECT EXISTS (SELECT 1 FROM queues WHERE name = $1)",
+      "Calls": 334,
+      "TotalMs": 15.652199,
+      "MeanMs": 0.04686287125748505,
+      "Rows": 334
+    },
+    {
+      "Query": "SELECT id, queue, attempts, max_attempts, coalesce(last_error, '') FROM jobs WHERE state = 'leased' AND lease_expires_at \u003c now() ORDER BY lease_expires_at LIMIT $1 FOR UPDATE SKIP LOCKED",
+      "Calls": 12,
+      "TotalMs": 0.6769879999999999,
+      "MeanMs": 0.05641566666666667,
+      "Rows": 0
+    },
+    {
+      "Query": "DELETE FROM jobs WHERE id IN ( SELECT id FROM jobs WHERE state IN ($3, $4) AND finished_at \u003c now() - interval $5 * $1::bigint LIMIT $2 FOR UPDATE SKIP LOCKED)",
+      "Calls": 1,
+      "TotalMs": 0.022994,
+      "MeanMs": 0.022994,
+      "Rows": 0
+    }
+  ],
+  "wait_samples": {
+    "CPU": 316,
+    "Client:ClientRead": 24,
+    "IO:WalInitSync": 2,
+    "IO:WalSync": 521,
+    "IO:WalWrite": 4,
+    "LWLock:BufferContent": 4,
+    "LWLock:WALWrite": 685
+  },
+  "pg_before": {
+    "WALBytes": 712775656,
+    "Jobs": {
+      "Inserts": 1167025,
+      "Updates": 313998,
+      "HOTUpdates": 0,
+      "Deletes": 0,
+      "LiveRows": 103110,
+      "DeadRows": 6543,
+      "Autovacuums": 3,
+      "Autoanalyzes": 4
+    }
+  },
+  "pg_after": {
+    "WALBytes": 738636896,
+    "Jobs": {
+      "Inserts": 1187782,
+      "Updates": 355541,
+      "HOTUpdates": 0,
+      "Deletes": 0,
+      "LiveRows": 124156,
+      "DeadRows": 11792,
+      "Autovacuums": 4,
+      "Autoanalyzes": 5
+    }
+  }
+}

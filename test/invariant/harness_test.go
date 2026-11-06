@@ -54,7 +54,8 @@ func startServer(t *testing.T, ctx context.Context, db *testpg.DB) (addr string,
 
 	m = metrics.New()
 	st := pgstore.New(db.Pool, backoff.Policy{Base: 100 * time.Millisecond, Cap: time.Second, Rand: rand.Float64})
-	srv := api.NewServer(st, n, discard, api.WithMetrics(m), api.WithPollInterval(100*time.Millisecond))
+	pub := notify.NewPublisher(n, db.Pool, notify.DefaultCoalesceWindow, discard)
+	srv := api.NewServer(st, pub, discard, api.WithMetrics(m), api.WithPollInterval(100*time.Millisecond))
 	bg.Add(2)
 	go func() {
 		defer bg.Done()
@@ -77,6 +78,7 @@ func startServer(t *testing.T, ctx context.Context, db *testpg.DB) (addr string,
 	t.Cleanup(func() {
 		srv.Shutdown()
 		gs.Stop()
+		pub.Close() // before the test closes db.Pool
 		cancel()
 		bg.Wait()
 	})

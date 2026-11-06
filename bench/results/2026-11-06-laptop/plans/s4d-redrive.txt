@@ -1,0 +1,93 @@
+2026-11-06 02:05:59.706 UTC [72] LOG:  duration: 15.076 ms  plan:
+	Query Text: 
+			WITH d AS (
+				SELECT id FROM jobs
+				WHERE queue = $1 AND state = 'dead'
+				ORDER BY finished_at, id
+				LIMIT $2
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE jobs j
+			SET state = 'available', attempts = 0, run_at = now(), finished_at = NULL
+			FROM d WHERE j.id = d.id
+	Query Parameters: $1 = 'backlog', $2 = '1000'
+	Update on jobs j  (cost=6.63..14.67 rows=0 width=0) (actual time=15.073..15.075 rows=0 loops=1)
+	  CTE d
+	    ->  Limit  (cost=0.42..6.20 rows=1 width=22) (actual time=0.036..1.267 rows=1000 loops=1)
+	          ->  LockRows  (cost=0.42..6.20 rows=1 width=22) (actual time=0.036..1.192 rows=1000 loops=1)
+	                ->  Index Scan using jobs_dead on jobs  (cost=0.42..6.19 rows=1 width=22) (actual time=0.030..0.663 rows=1000 loops=1)
+	                      Index Cond: (queue = 'backlog'::text)
+	                      Filter: (state = 'dead'::job_state)
+	  ->  Nested Loop  (cost=0.43..8.47 rows=1 width=62) (actual time=0.056..3.961 rows=1000 loops=1)
+	        ->  CTE Scan on d  (cost=0.00..0.02 rows=1 width=40) (actual time=0.041..1.843 rows=1000 loops=1)
+	        ->  Index Scan using jobs_pkey on jobs j  (cost=0.43..8.45 rows=1 width=14) (actual time=0.002..0.002 rows=1 loops=1000)
+	              Index Cond: (id = d.id)
+
+2026-11-06 02:05:59.707 UTC [72] LOG:  duration: 0.004 ms  plan:
+	Query Text: SELECT pg_notify($1, $2)
+	Query Parameters: $1 = 'tasklane_jobs', $2 = 'backlog'
+	Result  (cost=0.00..0.01 rows=1 width=4) (actual time=0.002..0.003 rows=1 loops=1)
+
+2026-11-06 02:06:00.555 UTC [69] LOG:  duration: 435.939 ms  plan:
+	Query Text: 
+			SELECT q.name, q.max_depth,
+				(SELECT count(*) FROM jobs j WHERE j.queue = q.name AND j.state = 'available'),
+				(SELECT count(*) FROM jobs j WHERE j.queue = q.name AND j.state = 'leased'),
+				CASE WHEN q.paused THEN 0 ELSE coalesce((
+					SELECT extract(epoch FROM now() - min(o.run_at))::float8
+					FROM unnest('{1,2,3,4}'::smallint[]) AS p(priority)
+					CROSS JOIN LATERAL (
+						SELECT j.run_at FROM jobs j
+						WHERE j.queue = q.name AND j.state = 'available' AND j.priority = p.priority AND j.run_at <= now()
+						ORDER BY j.run_at LIMIT 1) o), 0) END
+			FROM queues q
+	Seq Scan on queues q  (cost=0.00..32866365.53 rows=910 width=64) (actual time=430.303..435.923 rows=2 loops=1)
+	  SubPlan 1
+	    ->  Aggregate  (cost=36106.53..36106.54 rows=1 width=8) (actual time=133.994..133.994 rows=1 loops=2)
+	          ->  Index Only Scan using jobs_available on jobs j  (cost=0.42..34841.73 rows=505920 width=0) (actual time=0.535..107.166 rows=463502 loops=2)
+	                Index Cond: (queue = q.name)
+	                Heap Fetches: 39221
+	  SubPlan 2
+	    ->  Aggregate  (cost=8.14..8.15 rows=1 width=8) (actual time=0.032..0.032 rows=1 loops=2)
+	          ->  Index Scan using jobs_leased on jobs j_1  (cost=0.12..8.14 rows=1 width=0) (actual time=0.021..0.021 rows=1 loops=2)
+	                Filter: (queue = q.name)
+	                Rows Removed by Filter: 1
+	  SubPlan 3
+	    ->  Aggregate  (cost=2.15..2.17 rows=1 width=8) (actual time=0.625..0.625 rows=1 loops=2)
+	          ->  Nested Loop  (cost=0.43..2.14 rows=4 width=8) (actual time=0.603..0.613 rows=1 loops=2)
+	                ->  Function Scan on unnest p  (cost=0.00..0.04 rows=4 width=2) (actual time=0.005..0.006 rows=4 loops=2)
+	                ->  Limit  (cost=0.43..0.51 rows=1 width=8) (actual time=0.150..0.150 rows=0 loops=8)
+	                      ->  Index Only Scan using jobs_available on jobs j_2  (cost=0.43..21853.62 rows=250469 width=8) (actual time=0.148..0.148 rows=0 loops=8)
+	                            Index Cond: ((queue = q.name) AND (priority = p.priority) AND (run_at <= now()))
+	                            Heap Fetches: 1
+	JIT:
+	  Functions: 26
+	  Options: Inlining true, Optimization true, Expressions true, Deforming true
+	  Timing: Generation 1.127 ms (Deform 0.237 ms), Inlining 37.021 ms, Optimization 61.967 ms, Emission 67.684 ms, Total 167.799 ms
+
+2026-11-06 02:06:01.119 UTC [71] LOG:  duration: 0.023 ms  plan:
+	Query Text: SELECT id, queue, attempts, max_attempts, coalesce(last_error, '') FROM jobs
+			 WHERE state = 'leased' AND lease_expires_at < now()
+			 ORDER BY lease_expires_at
+			 LIMIT $1
+			 FOR UPDATE SKIP LOCKED
+	Query Parameters: $1 = '500'
+	Limit  (cost=0.13..8.16 rows=1 width=69) (actual time=0.021..0.022 rows=0 loops=1)
+	  ->  LockRows  (cost=0.13..8.16 rows=1 width=69) (actual time=0.020..0.020 rows=0 loops=1)
+	        ->  Index Scan using jobs_leased on jobs  (cost=0.13..8.15 rows=1 width=69) (actual time=0.020..0.020 rows=0 loops=1)
+	              Index Cond: (lease_expires_at < now())
+	              Filter: (state = 'leased'::job_state)
+
+2026-11-06 02:06:02.727 UTC [72] LOG:  duration: 0.043 ms  plan:
+	Query Text: SELECT EXISTS (SELECT 1 FROM queues WHERE name = $1)
+	Query Parameters: $1 = 'backlog'
+	Result  (cost=8.17..8.18 rows=1 width=1) (actual time=0.041..0.041 rows=1 loops=1)
+	  InitPlan 1
+	    ->  Index Only Scan using queues_pkey on queues  (cost=0.15..8.17 rows=1 width=0) (actual time=0.038..0.039 rows=1 loops=1)
+	          Index Cond: (name = $1)
+	          Heap Fetches: 1
+
+2026-11-06 02:06:03.391 UTC [6835] LOG:  duration: 1.930 ms  plan:
+	Query Text: SELECT pg_reload_conf()
+	Result  (cost=0.00..0.01 rows=1 width=1) (actual time=1.913..1.914 rows=1 loops=1)
+

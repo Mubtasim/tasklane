@@ -14,18 +14,39 @@ import (
 )
 
 const (
-	// depthRefreshInterval is how often each server recounts queue depths,
-	// and the retry-after hint a refused enqueue gets: the queue can't look
-	// any emptier before the next refresh.
+	// depthRefreshInterval is the shortest wait between depth recounts, and
+	// the retry-after hint a refused enqueue gets. A producer that retries
+	// after this long may be refused again until the next refresh, which is
+	// fine: it backs off and tries once more.
 	depthRefreshInterval = time.Second
+	// depthRefreshMax is the longest wait between recounts. It must stay
+	// below depthMaxStale, or the cache would go stale between two good
+	// refreshes and isFull would fail open on a healthy database.
+	depthRefreshMax = 5 * time.Second
+	// depthRefreshCostFactor is how many times longer than the last count we
+	// wait before the next one. The count is O(backlog). The gap between two
+	// successful refreshes is the wait plus the count itself, so for counts of
+	// about 100-500 ms (waits of 1-5 s) counting takes about 1/11, or 9%, of
+	// one Postgres backend's time. Shorter counts take less; longer ones take
+	// more, because the wait stops growing at depthRefreshMax (a 1 s count
+	// is 1/6 of the time).
+	depthRefreshCostFactor = 10
 	// depthMaxStale is how long the last good counts are trusted while
 	// refreshes fail.
 	depthMaxStale = 10 * time.Second
 )
 
+// nextDepthRefresh is how long to wait after a refresh that took the given
+// time: depthRefreshCostFactor times as long, clamped to
+// [depthRefreshInterval, depthRefreshMax].
+func nextDepthRefresh(took time.Duration) time.Duration {
+	return min(max(took*depthRefreshCostFactor, depthRefreshInterval), depthRefreshMax)
+}
+
 // depthCache answers "is this queue full?" without a COUNT on every Enqueue
 // (design §6, §15.3). The limit is soft: between refreshes a queue can
-// overshoot by about one second of traffic.
+// overshoot by up to one refresh interval of traffic (1-5 s, longer when the
+// count is slow).
 type depthCache struct {
 	mu          sync.Mutex
 	full        map[string]bool // queues at or above max_depth at the last good refresh
@@ -84,29 +105,38 @@ func queueFullError(queue string) error {
 }
 
 // refreshDepths recounts queue depths once and updates the backpressure
-// cache and the queue gauges.
-func (s *Server) refreshDepths(ctx context.Context) {
+// cache and the queue gauges. It reports whether the refresh succeeded.
+func (s *Server) refreshDepths(ctx context.Context) bool {
 	depths, err := s.depths.refresh(ctx, s.store)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Warn("refresh queue depths failed", "err", err)
 		}
-		return
+		return false
 	}
 	s.metrics.SetQueueStats(depths)
+	return true
 }
 
-// RunDepthRefresh recounts queue depths every second until ctx is
-// cancelled. Until it has run once, Enqueue refuses nothing.
+// RunDepthRefresh recounts queue depths until ctx is cancelled, the first
+// time immediately and then after nextDepthRefresh of the last count's
+// duration, so a huge backlog can't make counting eat the database. A failed
+// refresh waits only depthRefreshInterval so recovery is quick. Until it has
+// run once, Enqueue refuses nothing.
 func (s *Server) RunDepthRefresh(ctx context.Context) {
-	ticker := time.NewTicker(depthRefreshInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
-		s.refreshDepths(ctx)
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
+		start := time.Now()
+		wait := depthRefreshInterval
+		if s.refreshDepths(ctx) {
+			wait = nextDepthRefresh(time.Since(start))
+		}
+		timer.Reset(wait)
 	}
 }
