@@ -1031,7 +1031,7 @@ Decided for the user (routine): Postgres is not part of the chart (production us
 **Helm chart `deploy/k8s/tasklane/`** (the server only):
 
 - `Deployment`: 2 replicas, ports 7070 (gRPC), 8080 (HTTP), 9464 (metrics); `RollingUpdate` with `maxUnavailable: 0`, `maxSurge: 1`; liveness `GET /healthz`, readiness `GET /readyz` (period 2 s, failure threshold 2), a startup probe on `/healthz` so slow migrations don't trip liveness; `preStop` native `sleep` action of 5 s (the distroless image has no shell); `terminationGracePeriodSeconds: 40`; `runAsNonRoot`, `readOnlyRootFilesystem`, all capabilities dropped, no privilege escalation; resource requests and limits from values (defaults sized for the laptop: 100m/64Mi requested, 1 CPU/256Mi limit).
-- `Service` `tasklane-server` (ClusterIP) and `tasklane-headless` (`clusterIP: None`, `publishNotReadyAddresses: false`) for Envoy and Prometheus.
+- `Service` `tasklane-headless` (`clusterIP: None`, `publishNotReadyAddresses: false`) lists every ready server pod for Envoy and Prometheus. The client-facing `Service` is named after the release (`tasklane`) and points at Envoy, or at the servers when Envoy is off.
 - `PodDisruptionBudget`: `maxUnavailable: 1`.
 - `Secret` with `TASKLANE_DATABASE_URL` and `TASKLANE_API_KEYS`, or `existingSecret` to use one made elsewhere. No secret value is ever a plain `env` value.
 - Envoy (`envoy.enabled`, default true): a `Deployment` (2 replicas, its own PDB), a `ConfigMap` with the §17 configuration adapted to one `STRICT_DNS` cluster on `tasklane-headless` with `dns_refresh_rate: 2s` and `/readyz` health checks (2 s, unhealthy after 2), and the `Service` `tasklane` that clients use. With Envoy off, `tasklane` points straight at the pods.
