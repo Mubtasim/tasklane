@@ -202,3 +202,32 @@ func TestHeadlessServiceListsOnlyReadyServers(t *testing.T) {
 	}
 	require.ElementsMatch(t, []any{7070, 8080, 9464}, ports)
 }
+
+func TestEnvoyBalancesOverTheHeadlessService(t *testing.T) {
+	objs := render(t)
+	cfg, ok := dig(find(t, objs, "ConfigMap", "tasklane-envoy"), "data", "envoy.yaml").(string)
+	require.True(t, ok)
+	require.NotContains(t, cfg, "TASKLANE_HEADLESS", "placeholder replaced")
+	require.Equal(t, 2, strings.Count(cfg, "address: tasklane-headless.tasklane.svc.cluster.local"), "both clusters")
+	require.Equal(t, 2, strings.Count(cfg, "dns_refresh_rate: 2s"))
+	require.Contains(t, cfg, "path: /readyz")
+
+	d := find(t, objs, "Deployment", "tasklane-envoy")
+	require.Equal(t, 2, dig(d, "spec", "replicas"))
+	require.Equal(t, 0, dig(d, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
+	require.Equal(t, true, dig(d, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
+	require.NotEmpty(t, dig(d, "spec", "template", "metadata", "annotations", "checksum/config"))
+	find(t, objs, "PodDisruptionBudget", "tasklane-envoy")
+
+	svc := find(t, objs, "Service", "tasklane")
+	require.Equal(t, "envoy", dig(svc, "spec", "selector", "app.kubernetes.io/component"))
+}
+
+func TestWithoutEnvoyClientsReachTheServers(t *testing.T) {
+	objs := render(t, "--set", "envoy.enabled=false")
+	require.False(t, has(objs, "Deployment", "tasklane-envoy"))
+	require.False(t, has(objs, "ConfigMap", "tasklane-envoy"))
+	require.False(t, has(objs, "PodDisruptionBudget", "tasklane-envoy"))
+	svc := find(t, objs, "Service", "tasklane")
+	require.Equal(t, "server", dig(svc, "spec", "selector", "app.kubernetes.io/component"))
+}

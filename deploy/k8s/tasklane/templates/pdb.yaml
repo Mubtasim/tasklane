@@ -9,3 +9,17 @@ spec:
   selector:
     matchLabels:
       {{- include "tasklane.serverSelector" . | nindent 6 }}
+{{- if .Values.envoy.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-envoy
+  labels:
+    {{- include "tasklane.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "tasklane.envoySelector" . | nindent 6 }}
+{{- end }}
