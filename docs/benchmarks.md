@@ -11,6 +11,7 @@ The plan is [design §19](design.md#19-m5a-load-tests-tuning-and-benchmark-repor
 | `step1` | `2026-11-06-laptop-step1` | After tuning step 1 (S1, S2, and repeats for medians) |
 | `step2` | `2026-11-06-laptop-step2` | After tuning step 2 (S4, S6, the latency curve, a paired tracing check) |
 | `step3` | `2026-11-06-laptop-step3` | After tuning step 3 (S4) |
+| `wake0`, `wake1` | `2026-11-06-laptop-wake-before`, `-wake-after` | The double-wake fix: S2-idle and S2-trickle on `main`, then with the fix, three trickle runs each |
 
 Each directory has `results.csv` (one row per run), `details/<label>.json` (top queries from `pg_stat_statements`, sampled wait events, table counters) and, for S4, `plans/<label>.txt` (query plans from `auto_explain`).
 
@@ -210,7 +211,7 @@ Three steps, each its own commit, each followed by a rerun of the affected scena
 
 Sources: `base:s1-closed-b1`, `exp:base-s1-closed-b1-{b,c}`, `step1:s1-closed-b1`, `step1:rep-s1-closed-b1-{1,2,3}`; the full-cycle sources are under S2 in section 2.
 
-**A side effect.** A server now wakes its own leases twice: once in memory, then again when its own NOTIFY comes back about 5 ms later. At 5 jobs/s with 4 waiting long-polls, Postgres ran 1,597 lease queries per minute before step 1 and 2,523 after (`base:s2-trickle-w200`, `step1:s2-trickle-w200`), about 4.5 against 7.6 per job once the 240 per minute of idle re-checks are taken out, and its CPU rose from 22% to 31% of one CPU. Lease *requests* per job stayed at 1.0, so workers see no difference. It is small at this scale; the fix (a server ignoring its own notifications) is listed in section 7.
+**A side effect.** A server now wakes its own leases twice: once in memory, then again when its own NOTIFY comes back about 5 ms later. At 5 jobs/s with 4 waiting long-polls, Postgres ran 1,597 lease queries per minute before step 1 and 2,523 after (`base:s2-trickle-w200`, `step1:s2-trickle-w200`), about 4.5 against 7.6 per job once the 240 per minute of idle re-checks are taken out, and its CPU rose from 22% to 31% of one CPU. Lease *requests* per job stayed at 1.0, so workers see no difference. It is small at this scale; it was fixed after M5a (see [the follow-up below](#follow-up-a-server-skips-its-own-notifications-commit-0ebe906)).
 
 ### Step 2: count queue depths in one pass; JIT off (commit `34f5fbc`)
 
@@ -241,6 +242,25 @@ JIT was 243 ms of one 710 ms run of the old query (`base`: `plans/s4a-explain.tx
 | p99, 1,000 queues | 455 ms | **60 ms** |
 
 **The cost.** Backpressure is soft: a queue can go over `max_depth` by the traffic of one refresh interval. That interval used to be 1 s; with a slow count it is now up to 5 s.
+
+### Follow-up: a server skips its own notifications (commit `0ebe906`)
+
+**Problem.** Step 1's side effect: Postgres delivers a NOTIFY to every listener, including the sender's own. The sender had already woken its waiting leases in memory, so 5 ms later each was woken again, found nothing, and ran one wasted lease query.
+
+**Change.** The payload is now `<queue> <sender>`: the queue name, a space, and a random 16-character token each server makes when it starts. A listener skips notifications that carry its own token. A space is safe as the separator because queue names cannot contain one (and a NOTIFY payload cannot hold a NUL byte). An untagged payload, from a server older than the fix, still wakes the queue. The other way round, an older server reads `emails a1b2…` as an unknown queue and wakes no one, so during a rolling upgrade its leases find new jobs at the 1 s re-check, as for any lost notification.
+
+**Measured.** `SCENARIOS=s2t` on `main` and then on the fix, back to back; three trickle runs each, medians:
+
+| Measurement (`wake0` → `wake1`), 5 jobs/s, 200 slots | Before | After |
+|---|---|---|
+| Lease queries per minute | 2,528 | **1,597** (−37%) |
+| Postgres queries per second | 105.9 | **74.9** |
+| Postgres CPU | 17.4% of one CPU | **14.3%** |
+| Server CPU per job | 13.4 ms | 11.2 ms |
+| p99 enqueue-to-start | 28.3 ms | 27.8 ms (no change, as expected) |
+| Lease requests per job | 1.0 | 1.0 |
+
+Lease queries per minute are back to exactly the 1,597 measured before step 1 (`base:s2-trickle-w200`). With the 240 idle re-checks a minute taken out, that is 4.5 lease queries per job instead of 7.6. Idle cost is unchanged (241 vs 240 lease queries a minute, `wake1:s2-idle-w200`), as it should be: no enqueues, no notifications. The Postgres CPU before the fix is lower than in `step1` (17% vs 31%): another day's run on the same machine, so only the back-to-back pair is compared.
 
 ## 6. Capacity maths
 
@@ -285,7 +305,7 @@ Every question the earlier milestones left for the load test, with its answer.
 | JIT on short queries | **Fixed** (step 2, found during S4) | 243 ms of one 710 ms depth query |
 | Thundering herd: one NOTIFY waking every waiting worker | **Not needed at this scale** | 1.0 lease request per job at 5 jobs/s with 4 waiting long-polls; p99 31.5 ms. Each wake costs one lease query per waiting long-poll; that grows with the number of worker processes on a queue. |
 | `LeaseStream` (build only if the long-poll is a bottleneck) | **Deferred; trigger not hit** | About 1.0 lease request per job or less in every run (0.29–0.89 on the latency curve, 1.0 at 5 jobs/s); p99 61 ms at 80% load. Trigger: lease requests per job well above 1, or lease round trips showing up in p99. |
-| Server waking its own leases twice (found in step 1) | **Deferred** | 2,523 vs 1,597 lease queries per minute at 5 jobs/s. Trigger: lease queries in the top `pg_stat_statements` entries at low load. Fix: tag each NOTIFY with the sending server and skip its own. |
+| Server waking its own leases twice (found in step 1) | **Fixed** (follow-up after step 3) | Lease queries per minute at 5 jobs/s: 2,528 → 1,597 (medians of 3), Postgres CPU 17.4% → 14.3% of one CPU |
 | Delayed jobs scanned by every lease | **Deferred** | 10,000 delayed priority-1 jobs: lease mean 0.37 → 1.58 ms; p99 56–228 ms over three single runs. Trigger: the lease statement in the top `pg_stat_statements` entries, or many delayed high-priority jobs per queue. |
 | Redrive-all hash join and table scan (parked in M3a) | **Not needed** | 100,000 jobs in about 3 s; the batch plan uses index scans and a Nested Loop (`plans/s4d-redrive.txt`) |
 | HOT updates and `fillfactor = 70` | **Not needed** | 0 HOT updates in every run (0 of 41,903 updates in `base:s2-closed-w50`), as migration 0001 predicted: each state change also changes an indexed column, so spare page room cannot make updates HOT. 70 vs 100 was not compared. |

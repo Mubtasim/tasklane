@@ -668,7 +668,7 @@ Four parts: the evidence, the cause, the fix, and why the fix loses no jobs.
 
 **Numbers:** enqueue 747 → 1,048 jobs/s (+40%) and full cycle 392 → 433 jobs/s (+10%), medians of 3–4 runs; `Lock:object` 31–55% → 0%. What remains is the WAL flush: 72–83% of wait samples.
 
-**Fails halfway:** if the server dies after the commit but before the publish, workers on other servers find the job at their next re-check, within 1 s. A side effect showed up: the server now wakes its own leases twice (in memory, then from its own NOTIFY 5 ms later). At 5 jobs/s, lease queries went from 1,597 to 2,523 a minute. Small, and listed as a follow-up: tag each NOTIFY with its sender and skip your own.
+**Fails halfway:** if the server dies after the commit but before the publish, workers on other servers find the job at their next re-check, within 1 s. A side effect showed up: the server now wakes its own leases twice (in memory, then from its own NOTIFY 5 ms later). At 5 jobs/s, lease queries went from 1,597 to 2,523 a minute. Fixed right after M5a by tagging each NOTIFY with its sender and skipping your own (Q45).
 
 **Trade-off:** before, Postgres guaranteed "notify only on commit" for free. Now the code guarantees it by publishing after the commit returns, and other servers hear up to 5 ms later. In return, enqueue commits no longer queue behind one lock.
 
@@ -709,3 +709,22 @@ Three parts: what stayed fast, what didn't, and the adaptive refresh.
 **Fails halfway:** if a count fails, the next try comes after 1 s, and the server keeps its last good counts for up to 10 s, then fails open (refuses no enqueues) rather than refuse everything on old data.
 
 **Trade-off:** backpressure is soft by up to one refresh interval: a queue can overshoot `max_depth` by up to 5 s of traffic instead of 1 s when counts are slow. The alternative, a counter row updated on every enqueue and ack, would make every write lock one hot row (rejected in §14.3).
+
+## Q45. After moving NOTIFY out of the commit, each server woke its own waiting leases twice. Why, how did you fix it, and what happens during a rolling upgrade?
+
+Four parts: why it happened, the fix, the numbers, and the upgrade.
+
+**What:** Postgres delivers a NOTIFY to every connection that LISTENs on the channel, including the sender's own listener. The publishing server had already woken its own waiting leases in memory, so its own NOTIFY woke them a second time, about 5 ms later. Each wasted wake is one lease query per waiting long-poll that finds nothing.
+
+**How:**
+1. Each server makes a random 16-character token when it starts.
+2. The publisher sends `pg_notify('tasklane_jobs', '<queue> <token>')`.
+3. The listener splits the payload at the first space. Queue names cannot contain a space, so that split is unambiguous (a NUL byte can't be used: NOTIFY payloads can't hold one).
+4. If the token is its own, it skips the notification. Otherwise it wakes the subscribers of that queue. A payload without a space (an older server) also wakes the queue.
+5. Tests: one sends a notification with the listener's own token and expects no wake, then another server's token and expects a wake. An end-to-end test runs two listeners on Postgres: after one Publish, the other server is woken (so the NOTIFY was delivered), and the publisher's own lease was woken exactly once. Both tests fail with the skip turned off.
+
+**Numbers:** at 5 jobs/s with 200 worker slots, lease queries went from 2,528 to 1,597 a minute (medians of three back-to-back runs), exactly the number before step 1. Postgres ran 75 instead of 106 queries a second and used 14.3% of one CPU instead of 17.4%. p99 didn't move (28 ms), because workers never noticed the extra wakes: lease requests per job stayed at 1.0.
+
+**Fails halfway (rolling upgrade):** a new server still understands old untagged payloads. An old server reads `emails a1b2…` as a queue named that, which has no subscribers, so it wakes no one. Its waiting leases still find the jobs at their 1 s re-check. So mixing versions costs at most 1 s of extra latency on the old servers, for the length of the rollout, and loses nothing. That is the same guarantee as any lost notification.
+
+**Trade-off:** the payload format is now a small protocol between servers, so a later change has to stay readable by the previous version. A more compatible alternative would be a second channel just for tagged payloads, but the 1 s re-check already makes a mixed rollout safe, so one channel keeps it simple. Comparing the NOTIFY's sender process ID against our own isn't possible: the publisher sends through pooled connections, not through the listener's connection.

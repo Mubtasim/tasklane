@@ -129,6 +129,7 @@ Laptop, 2 cores / 4 threads, pinned: Postgres on one core (2 threads), the serve
 | Idle cost, 200 slots | **9.6 Postgres queries/s**, 5.8% of one CPU; server 0.45% | 4 waiting long-polls re-check once a second, plus depth refresh and reaper. |
 | Lease requests per job | about 1.0 or less (0.29–0.89 under load) | `LeaseStream` trigger not hit. |
 | The bottleneck found | `Lock:object` 31% of wait samples (55% enqueue-only) | NOTIFY's database-wide commit lock; fixed by notifying after commit. |
+| Double wake (after step 1) | lease queries at 5 jobs/s: 2,528 → **1,597**/min; Postgres CPU 17.4 → 14.3% | NOTIFY payload `<queue> <sender>`; a server skips its own (already woken in memory). |
 | 1M backlog | depth count ~440 ms; refresh every 10 × count (1–5 s): 26.3 → 5.2 s of Postgres time per minute, p99 233 → 61 ms | A count is O(backlog) even with partial indexes. |
 | 1,000 queues | depth query 50.8 s → 0.68 s (one grouped pass) | One subquery per queue was 1,000 counts. |
 | HOT updates | 0 of 41,903 | Every state change touches an indexed column. |
