@@ -666,7 +666,7 @@ Four parts: the evidence, the cause, the fix, and why the fix loses no jobs.
 5. **The fix (tuning step 1):** the store no longer notifies. After the commit, the API server wakes its own waiting leases in memory at once and sends one `pg_notify` per queue per 5 ms window for the other servers.
 6. **Why it's safe:** a NOTIFY is only a hint. Waiting leases also re-check the queue every second, because delayed jobs and retries become due without any notification. A rolled-back enqueue never reaches the publish step; a crash between commit and publish, or a failed NOTIFY, costs at most that one-second re-check. No job is lost, only up to a second of latency in a rare case.
 
-**Numbers:** enqueue 747 → 1,048 jobs/s (+40%) and full cycle 392 → 433 jobs/s (+10%), medians of 3–4 runs; `Lock:object` 31–55% → 0%. What remains is the WAL flush: 72–82% of wait samples.
+**Numbers:** enqueue 747 → 1,048 jobs/s (+40%) and full cycle 392 → 433 jobs/s (+10%), medians of 3–4 runs; `Lock:object` 31–55% → 0%. What remains is the WAL flush: 72–83% of wait samples.
 
 **Fails halfway:** if the server dies after the commit but before the publish, workers on other servers find the job at their next re-check, within 1 s. A side effect showed up: the server now wakes its own leases twice (in memory, then from its own NOTIFY 5 ms later). At 5 jobs/s, lease queries went from 1,597 to 2,523 a minute. Small, and listed as a follow-up: tag each NOTIFY with its sender and skip your own.
 

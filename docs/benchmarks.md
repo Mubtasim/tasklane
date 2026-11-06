@@ -190,7 +190,7 @@ Before tuning, the full cycle peaked at a median of 392 jobs/s with neither side
 3. **The lock belongs to NOTIFY.** Every `Enqueue` called `pg_notify` inside its transaction, to wake waiting workers. Postgres delivers notifications in commit order, so a transaction that sent one takes a database-wide lock at commit and keeps it until its commit is flushed to disk. The wait event for that lock is `Lock:object`. So enqueue commits went through one at a time, each waiting for the previous one's disk flush. The `pg_notify` call itself was cheap (0.009 ms mean in `pg_stat_statements`); the cost was the lock at commit.
 4. **More connections made it worse.** With a pool of 16 connections instead of 4, throughput did not rise (385 and 349 jobs/s against 532 and 392, `exp:exp-pool16-*`, `exp:exp-pool4-*`) and `Lock:object` grew to about 80% of samples. More connections just meant more of them queued on the same lock. So the pool was not the limit; one serial step was.
 
-The fix is tuning step 1. After it, `Lock:object` did not appear in any run's samples. What remains is the WAL: `LWLock:WALWrite` plus `IO:WalSync` were 72% of samples with enqueues alone (`step1:s1-closed-b1`) and 82% in the full cycle (`step1:s2-closed-w50`). Every commit waits for its WAL record to reach the SSD, and a job needs several commits (enqueue, its share of a lease, ack). That flush is now the floor; section 6 discusses what could move it.
+The fix is tuning step 1. After it, `Lock:object` did not appear in any run's samples. What remains is the WAL: `LWLock:WALWrite` plus `IO:WalSync` were 72% of samples with enqueues alone (`step1:s1-closed-b1`) and 83% in the full cycle (`step1:s2-closed-w50`). Every commit waits for its WAL record to reach the SSD, and a job needs several commits (enqueue, its share of a lease, ack). That flush is now the floor; section 6 discusses what could move it.
 
 ## 5. Tuning steps
 
@@ -284,7 +284,7 @@ Every question the earlier milestones left for the load test, with its answer.
 | Cost of many queues | **Fixed** (step 2) | 1,000 queues: 50.8 s → 0.68 s per depth query; p99 9,789 → 60 ms |
 | JIT on short queries | **Fixed** (step 2, found during S4) | 243 ms of one 710 ms depth query |
 | Thundering herd: one NOTIFY waking every waiting worker | **Not needed at this scale** | 1.0 lease request per job at 5 jobs/s with 4 waiting long-polls; p99 31.5 ms. Each wake costs one lease query per waiting long-poll; that grows with the number of worker processes on a queue. |
-| `LeaseStream` (build only if the long-poll is a bottleneck) | **Deferred; trigger not hit** | At most 1.0 lease request per job in every run (0.29–0.89 on the latency curve, 1.0 at 5 jobs/s); p99 61 ms at 80% load. Trigger: lease requests per job well above 1, or lease round trips showing up in p99. |
+| `LeaseStream` (build only if the long-poll is a bottleneck) | **Deferred; trigger not hit** | About 1.0 lease request per job or less in every run (0.29–0.89 on the latency curve, 1.0 at 5 jobs/s); p99 61 ms at 80% load. Trigger: lease requests per job well above 1, or lease round trips showing up in p99. |
 | Server waking its own leases twice (found in step 1) | **Deferred** | 2,523 vs 1,597 lease queries per minute at 5 jobs/s. Trigger: lease queries in the top `pg_stat_statements` entries at low load. Fix: tag each NOTIFY with the sending server and skip its own. |
 | Delayed jobs scanned by every lease | **Deferred** | 10,000 delayed priority-1 jobs: lease mean 0.37 → 1.58 ms; p99 56–228 ms over three single runs. Trigger: the lease statement in the top `pg_stat_statements` entries, or many delayed high-priority jobs per queue. |
 | Redrive-all hash join and table scan (parked in M3a) | **Not needed** | 100,000 jobs in about 3 s; the batch plan uses index scans and a Nested Loop (`plans/s4d-redrive.txt`) |
@@ -294,7 +294,8 @@ Every question the earlier milestones left for the load test, with its answer.
 | 200 worker slots | **Not needed** (a sizing finding) | 293 jobs/s vs 352 at 50 slots: Ack `UPDATE` 0.32 → 2.75 ms. Fewer, busier slots are faster here. |
 | Idle long-poll cost | **Not needed** | 9.6 Postgres queries/s, 5.8% of one CPU, with 200 idle slots |
 | Payload cost (JSON ↔ protobuf) | **Not needed** | 100 KB: 302 vs 395 jobs/s at 100 B; server CPU per job 0.95 → 2.16 ms. The test payload compresses well, so real WAL per job would be higher. |
-| Tracing cost, and trimming idle `Lease` traces | **Not needed; sample a ratio in production** | +38% server CPU per job at 100% sampling (paired runs); idle tracing +0.2 points of one CPU. Tracing-off overhead was not re-measured (M4c: +3.5%). |
+| Tracing cost at 100% sampling, and trimming idle `Lease` traces | **Not needed; sample a ratio in production** | +38% server CPU per job at 100% sampling (paired runs; +51% in the suite runs); idle traced server about 0.7% of one CPU (+0.2 points over untraced) |
+| Tracing-off overhead (the +3.5% of design §18) | **Deferred: not measured in M5a** | M4c micro-benchmark: +3.5%. Trigger: re-measure when skipping otelgrpc/otelpgx for a no-op provider (the M4c follow-up) is built. |
 | Two server copies vs one | **Deferred** to M5b (two replicas) or `PROFILE=vm` | Replaced here by capacity maths (section 6): one server CPU feeds about 2.2 Postgres CPUs |
 | `synchronous_commit = off` | **Deferred: discussed, not turned on** | Not measured; the trade-off is in section 6 |
 | PgBouncer | **Deferred** | Not tested. Trigger: connection count, with many server copies (M5b). |
