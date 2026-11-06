@@ -62,7 +62,8 @@ func (f *fakeExec) queues() []string {
 	defer f.mu.Unlock()
 	out := make([]string, 0, len(f.calls))
 	for _, c := range f.calls {
-		out = append(out, c.args[1].(string))
+		queue, _ := parsePayload(c.args[1].(string))
+		out = append(out, queue)
 	}
 	return out
 }
@@ -121,7 +122,7 @@ func TestPublishCoalescesWithinAWindow(t *testing.T) {
 	call := db.calls[0]
 	db.mu.Unlock()
 	require.Equal(t, "SELECT pg_notify($1, $2)", call.sql)
-	require.Equal(t, []any{pgstore.NotifyChannel, "q"}, call.args)
+	require.Equal(t, []any{pgstore.NotifyChannel, "q " + p.l.sender}, call.args, "the payload names the queue and the sender")
 }
 
 // A Publish that arrives while a send is in flight may come after that
@@ -218,4 +219,22 @@ func TestCloseWaitsForAnInFlightSend(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	require.Equal(t, 1, db.count(), "no send after Close")
 	p.Close() // a second Close is harmless
+}
+
+// End to end over Postgres: the publishing server wakes its own lease once
+// (in memory), not a second time when its NOTIFY comes back, while another
+// server still hears it.
+func TestPublishWakesItsOwnLeasesOnce(t *testing.T) {
+	self, other := startListener(t), startListener(t)
+	p := NewPublisher(self, testDB.Pool, time.Millisecond, quietLogger())
+	t.Cleanup(p.Close)
+	mine, unsubMine := self.Subscribe("q")
+	defer unsubMine()
+	theirs, unsubTheirs := other.Subscribe("q")
+	defer unsubTheirs()
+
+	p.Publish("q")
+	requireWoken(t, mine)   // in memory
+	requireWoken(t, theirs) // the NOTIFY has been delivered
+	requireNotWoken(t, mine)
 }
