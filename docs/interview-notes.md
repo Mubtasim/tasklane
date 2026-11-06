@@ -403,7 +403,7 @@ Three parts: why L4 fails for gRPC, what Envoy does, and proxy vs client-side.
 
 **Numbers:** with both servers up, about 16 and 17 requests/s each; after `docker compose kill tasklane-1`, `tasklane-2` took about 33 requests/s and the acked rate held at about 9.3–9.7 jobs/s. Envoy uses about 17 MiB.
 
-**Fails halfway:** a server is killed mid-request. New calls failed fast with `Unavailable` for about 14–18 s, most likely until two failed health checks and the 5 s DNS re-resolution dropped the dead host (not proven; keepalive and a `previous_hosts` retry rule didn't shorten it). The SDK retries. A Lease that reached the dead server isn't retried by the proxy, because it may have leased jobs; those wait out their visibility timeout.
+**Fails halfway:** a server is killed mid-request. New calls failed fast with `Unavailable` for about 14–18 s, most likely until two failed health checks and the 5 s DNS re-resolution dropped the dead host (not proven; keepalive and a `previous_hosts` retry rule didn't shorten it; M5b later added `previous_hosts` back for rolling restarts, see Q51 and design §20.3). The SDK retries. A Lease that reached the dead server isn't retried by the proxy, because it may have leased jobs; those wait out their visibility timeout.
 
 **Trade-off:** the proxy is one more hop and one more component that must stay up (in production you'd run several). Client-side balancing removes the hop but multiplies the work by the number of SDKs. A look-aside balancer (xDS) is the middle ground; not needed here.
 
@@ -765,7 +765,7 @@ Three parts: the race, the timeline, and the rollout.
 
 **Fails halfway:** if the drain overruns, the kubelet sends SIGKILL at 40 s. Jobs that were leased on that server are not lost: their lease expires after the visibility timeout and the reaper makes them available again. A worker whose Ack call failed retries it; Ack is idempotent (the same token gets success again), so a retry is safe, and a late Ack from an old lease is rejected by the fencing token.
 
-**Trade-off:** every pod deletion takes at least 5 s longer, and a full rollout of 2 servers takes about 25–30 s instead of a few seconds. A fixed sleep is a guess about how slow the rest of the cluster is: if DNS caching is longer than the sleep, the sleep alone isn't enough (Q51).
+**Trade-off:** every pod deletion takes at least 5 s longer, and a full rollout of 2 servers is slower: in the tests it ended about 25–30 s after the load started (that includes a 5 s warm-up). A fixed sleep is a guess about how slow the rest of the cluster is: if DNS caching is longer than the sleep, the sleep alone isn't enough (Q51).
 
 ## Q48. KEDA vs a plain HPA, and what does scale-to-zero cost?
 
@@ -781,7 +781,7 @@ Three parts: what each does, the cost, and when to keep one pod.
 
 **Numbers:** a 3,000-job burst, medians of 3 on the laptop: the first worker started 8 s after the burst (5–9 s), the queue was empty at 77 s with 5 pods (about 43 jobs/s, against the 45 estimated), and the workers were back to 0 31 s after that. A warm worker that is already long-polling starts a job in about 30 ms. So scale-to-zero costs the first job about 8 s: scrape (≤ 5 s) + poll (5 s) + pod start.
 
-**Fails halfway:** if Prometheus or the metric is gone, KEDA's Prometheus scaler reads the empty result as 0: it adds no workers and scales the running ones down, each draining first. Jobs wait in the queue but are not lost. A worker removed by a scale-down finishes or nacks its jobs within its 35 s grace period, so none waits for a lease timeout.
+**Fails halfway:** if Prometheus or the metric is gone, KEDA's Prometheus scaler by default reads the empty result as 0 (`ignoreNullValues` is true). So it is expected to add no workers and to scale the running ones down, each draining first; this was inferred from that default, not tested. Jobs wait in the queue but are not lost. A worker removed by a scale-down finishes or nacks its jobs within its 35 s grace period, so none waits for a lease timeout.
 
 **Trade-off:** scale to zero saves the pods' memory and CPU on a quiet queue, at the price of seconds of latency for the first job. Keep a minimum of 1 for queues where a job must start within a second (a password-reset email); use 0 for batch work and quiet queues.
 
@@ -799,7 +799,7 @@ Two parts: which jobs to count, and how to read a gauge that two servers export.
 
 **Numbers:** in the 3,000-job bursts, workers went back to 0 only after the queue was empty: 31 s later (median), from the 30 s HPA window and the 30 s KEDA cooldown. 5 pods drained about 43 jobs/s, about 8.6 per pod against the 9 estimated.
 
-**Fails halfway:** if one server stops reporting, `max` still takes the other server's value, so the signal stays right. If both stop, the result is empty and KEDA reads 0 (Q48). The gauge is refreshed every 1–5 s and scraped every 5 s, so the signal is up to about 10 s old; scale-down waits 30 s, which covers that.
+**Fails halfway:** if one server stops reporting, `max` still takes the other server's value, so the signal stays right. If both stop, the result is empty and KEDA by default reads 0 (Q48; not tested). The gauge is refreshed every 1–5 s and scraped every 5 s, so the signal is up to about 10 s old; scale-down waits 30 s, which covers that.
 
 **Trade-off:** counting running jobs keeps workers alive until the last job ends, so they scale down a little later. The other way, scaling on waiting jobs only, is cheaper on paper but kills workers in the middle of jobs. A per-pod target also ignores job length: with longer jobs, 50 per pod is more seconds of work, so the threshold should follow the job time.
 
@@ -815,7 +815,7 @@ Three parts: the rollout, the budget, and what neither covers.
 3. A rollout does not go through the Eviction API, so the PDB does not limit it; the rollout's own `maxUnavailable` does.
 4. **Not covered:** a node that crashes or loses power is an involuntary disruption. Only having replicas on other nodes helps there.
 
-**Numbers:** 2 replicas, PDB `maxUnavailable: 1`, rollout `maxUnavailable: 0` and `maxSurge: 1` (3 pods for a moment). A rolling restart of both servers took about 25–30 s and lost 0 requests. A node drain was not measured: the laptop cluster has one node.
+**Numbers:** 2 replicas, PDB `maxUnavailable: 1`, rollout `maxUnavailable: 0` and `maxSurge: 1` (3 pods for a moment). A rolling restart of both servers ended about 25–30 s after the load started (including a 5 s warm-up) and lost 0 requests. A node drain was not measured: the laptop cluster has one node.
 
 **Fails halfway:** with both pods on one node (the laptop), a drain cordons the node, evicts one server, and the replacement cannot start anywhere else. The second eviction would break the budget, so the drain keeps retrying it, forever unless `--timeout` is set. On a real cluster the replacement starts on another node and the drain goes on.
 

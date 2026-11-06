@@ -95,7 +95,7 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | Outlier ejection | 3 consecutive gateway errors → ejected for 10 s | Reacts to real traffic before the health check does. |
 | Connect timeout | 1 s (default 5 s) | A killed container's IP never answers. |
 | Proxy retries | 2, only `connect-failure`, `refused-stream`, `reset-before-request`; on another server (`previous_hosts`, since M5b) | A Lease that reached a server may have leased jobs, so it is never retried by the proxy. |
-| DNS re-resolution | every 5 s (`STRICT_DNS` default) | |
+| DNS re-resolution (Compose) | every 5 s (`STRICT_DNS` default) | The Compose setup. In Kubernetes the chart re-reads DNS every 2 s (table below). |
 | Failover after `kill tasklane-1` | ~14–18 s of fast `Unavailable` errors on new calls, then none | Most likely health checks (2 × 2 s) plus DNS re-resolution (5 s); not proven. The SDK retries, so throughput held. |
 
 ## Correctness tests
