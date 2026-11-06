@@ -102,10 +102,75 @@ down() {
   esac
 }
 
+OUT=${OUT:-deploy/k8s/out}
+
+loadgen() {
+  mkdir -p bench/bin "$OUT"
+  go build -o bench/bin/loadgen ./bench/loadgen
+  bench/bin/loadgen -addr 127.0.0.1:7070 -api-key "$API_KEY" "$@"
+}
+
+# load N: put N normal jobs into queue demo at once, then follow KEDA:
+# seconds until the first worker, until 3 workers, until the queue is empty,
+# and until the workers are back at 0. CHECK=1 enforces design §20.5's limits.
+load() {
+  local n=${1:-3000} start now first="" three="" empty="" zero="" peak=0 w d t
+  [[ $(workers) == 0 ]] || echo "note: $(workers) workers already running; first_worker will read 0" >&2
+  start=$(date +%s)
+  loadgen -mode fill -queue demo -kind normal -jobs "$n" -batch 100 -producers 4 >/dev/null
+  while true; do
+    now=$(date +%s); t=$((now - start))
+    w=$(workers); d=$(depth)
+    ((w > peak)) && peak=$w
+    [[ -z $first && $w -ge 1 ]] && first=$t
+    [[ -z $three && $w -ge 3 ]] && three=$t
+    [[ -z $empty && $d == 0 ]] && empty=$t
+    [[ -n $empty && -z $zero && $w == 0 ]] && zero=$t
+    printf '%4ss workers=%s jobs=%s\n' "$t" "$w" "$d"
+    [[ -n $zero ]] && break
+    ((t > 900)) && { echo "gave up after 15 minutes" >&2; break; }
+    sleep 1
+  done
+  local line="burst=$n first_worker=${first:-none}s three_workers=${three:-none}s peak_workers=$peak drained=${empty:-none}s back_to_zero=${zero:-none}s"
+  echo "$line" | tee -a "$OUT/load.txt"
+  if [[ ${CHECK:-0} == 1 ]]; then
+    [[ -n $three && $three -le 60 ]] || { echo "FAIL: 3 workers not within 60 s" >&2; exit 1; }
+    [[ -n $empty && $empty -le 300 ]] || { echo "FAIL: queue not empty within 5 minutes" >&2; exit 1; }
+    [[ -n $zero && $((zero - empty)) -le 120 ]] || { echo "FAIL: workers not back to 0 within 2 minutes" >&2; exit 1; }
+  fi
+}
+
+# restart: open load (RATE jobs/s, 20 worker slots inside loadgen, queue
+# restart so KEDA's workers stay out of it) while both servers are replaced.
+# Every send must succeed and every job in the window must start.
+restart() {
+  local rate=${RATE:-50} pid row
+  rm -f "$OUT/restart.csv"
+  loadgen -mode open -queue restart -rate "$rate" -workers 20 -warmup 5s -duration 60s -probes=false \
+    -scenario k8s -label restart -out "$OUT/restart.csv" &
+  pid=$!
+  sleep 15
+  log "rolling restart"
+  "${K[@]}" rollout restart deploy/tasklane-server
+  "${K[@]}" rollout status deploy/tasklane-server --timeout 3m
+  wait "$pid"
+  row=$(tail -1 "$OUT/restart.csv")
+  # Columns by name, so a new CSV column can't shift them.
+  read -r errors dropped valid < <(awk -F, -v row="$row" 'NR == 1 {
+      for (i = 1; i <= NF; i++) col[$i] = i
+      split(row, r, ",")
+      print r[col["errors"]], r[col["dropped"]], r[col["valid"]]
+    }' "$OUT/restart.csv")
+  echo "rolling restart at $rate jobs/s: errors=$errors dropped=$dropped valid=$valid" | tee -a "$OUT/restart.txt"
+  [[ $errors == 0 && $dropped == 0 && $valid == true ]] || { echo "FAIL: requests lost during the restart" >&2; exit 1; }
+}
+
 case ${1:-} in
 up) up ;;
 watch) watch_ ;;
 logs) logs ;;
+load) load "${2:-3000}" ;;
+restart) restart ;;
 down) down ;;
 *) sed -n '2,10p' "$0"; exit 2 ;;
 esac

@@ -1,0 +1,47 @@
+name: Kubernetes
+
+# The end-to-end test (design §20.5) takes 5-7 minutes, so it runs only when
+# the deployment, the image or the load generator changes.
+on:
+  pull_request:
+    paths: &paths
+      - "deploy/k8s/**"
+      - "Dockerfile"
+      - "bench/loadgen/**"
+      - ".github/workflows/k8s.yml"
+  push:
+    branches: [main]
+    paths: *paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k8s-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install kind, kubectl and helm
+        run: |
+          BIN="$RUNNER_TEMP/bin" deploy/k8s/tools.sh kind kubectl helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: deploy/k8s/e2e.sh
+        env:
+          CLUSTER: kind
+      - if: failure()
+        run: CLUSTER=kind deploy/k8s/demo.sh logs > k8s-logs.txt 2>&1
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: k8s-e2e-logs
+          path: |
+            k8s-logs.txt
+            deploy/k8s/out/

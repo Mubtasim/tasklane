@@ -1,0 +1,41 @@
+name: Kubernetes scaling
+
+# KEDA from 0 to N and back (design §20.5). It waits on KEDA's timers for
+# minutes, so it never blocks a merge: nightly and on demand.
+on:
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install kind, kubectl and helm
+        run: |
+          BIN="$RUNNER_TEMP/bin" deploy/k8s/tools.sh kind kubectl helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: deploy/k8s/demo.sh up
+        env:
+          CLUSTER: kind
+      - run: deploy/k8s/demo.sh load 3000
+        env:
+          CLUSTER: kind
+          CHECK: "1"
+      - if: always()
+        run: cat deploy/k8s/out/load.txt || true
+      - if: failure()
+        run: CLUSTER=kind deploy/k8s/demo.sh logs > k8s-logs.txt 2>&1
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: k8s-scale-logs
+          path: k8s-logs.txt

@@ -31,4 +31,5 @@ docker run --rm -v "$tmp:/cfg:ro" envoyproxy/envoy:v1.36.2 --mode validate -c /c
 
 bash -n deploy/k8s/tools.sh
 bash -n deploy/k8s/demo.sh
+bash -n deploy/k8s/e2e.sh
 echo "k8s static checks passed"
