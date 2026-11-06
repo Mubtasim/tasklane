@@ -1,0 +1,163 @@
+2026-11-06 02:03:07.017 UTC [71] LOG:  duration: 0.235 ms  plan:
+	Query Text: UPDATE jobs SET state = 'completed', finished_at = now(), lease_expires_at = NULL
+			 WHERE id = $1 AND state = 'leased' AND lease_token = $2
+			 RETURNING queue
+	Query Parameters: $1 = '1000001', $2 = '74d2e7f4-9d9d-4d85-8ed1-20a6ccb5112e'
+	Update on jobs  (cost=0.14..8.17 rows=1 width=26) (actual time=0.229..0.232 rows=1 loops=1)
+	  ->  Index Scan using jobs_leased on jobs  (cost=0.14..8.17 rows=1 width=26) (actual time=0.025..0.027 rows=1 loops=1)
+	        Filter: ((id = $1) AND (state = 'leased'::job_state) AND (lease_token = $2))
+
+2026-11-06 02:03:07.026 UTC [72] LOG:  duration: 0.138 ms  plan:
+	Query Text: 
+	WITH next AS (
+	    SELECT j.id FROM jobs j
+	    JOIN queues q ON q.name = j.queue
+	    WHERE j.queue = $1 AND j.state = 'available' AND j.run_at <= now() AND NOT q.paused
+	    ORDER BY j.priority, j.run_at, j.id
+	    LIMIT $2
+	    FOR UPDATE OF j SKIP LOCKED
+	)
+	UPDATE jobs j
+	SET state = 'leased',
+	    attempts = j.attempts + 1,
+	    lease_token = gen_random_uuid(),
+	    lease_expires_at = now() + interval '1 millisecond' *
+	        coalesce($3::bigint, (SELECT visibility_timeout_ms FROM queues WHERE name = $1))
+	FROM next
+	WHERE j.id = next.id
+	RETURNING j.id, j.queue, j.kind, j.payload, j.priority, j.state, j.run_at,
+		j.attempts, j.max_attempts, j.last_error, j.lease_token, j.lease_expires_at,
+		j.idempotency_key, j.trace_context, j.created_at, j.finished_at, now()
+	Query Parameters: $1 = 'bench', $2 = '48', $3 = '30000'
+	Update on jobs j  (cost=14.81..22.86 rows=1 width=70) (actual time=0.132..0.136 rows=1 loops=1)
+	  CTE next
+	    ->  Limit  (cost=0.58..14.39 rows=1 width=30) (actual time=0.042..0.045 rows=1 loops=1)
+	          ->  LockRows  (cost=0.58..14.39 rows=1 width=30) (actual time=0.042..0.044 rows=1 loops=1)
+	                ->  Nested Loop  (cost=0.58..14.38 rows=1 width=30) (actual time=0.037..0.040 rows=1 loops=1)
+	                      ->  Index Scan using jobs_available on jobs j_1  (cost=0.43..6.20 rows=1 width=32) (actual time=0.023..0.024 rows=1 loops=1)
+	                            Index Cond: ((queue = 'bench'::text) AND (run_at <= now()))
+	                            Filter: (state = 'available'::job_state)
+	                      ->  Index Scan using queues_pkey on queues q  (cost=0.15..8.17 rows=1 width=38) (actual time=0.013..0.014 rows=1 loops=1)
+	                            Index Cond: (name = 'bench'::text)
+	                            Filter: (NOT paused)
+	  ->  Nested Loop  (cost=0.42..8.47 rows=1 width=70) (actual time=0.074..0.077 rows=1 loops=1)
+	        ->  CTE Scan on next  (cost=0.00..0.02 rows=1 width=40) (actual time=0.047..0.050 rows=1 loops=1)
+	        ->  Index Scan using jobs_pkey on jobs j  (cost=0.42..8.44 rows=1 width=18) (actual time=0.011..0.011 rows=1 loops=1)
+	              Index Cond: (id = next.id)
+
+2026-11-06 02:03:07.040 UTC [69] LOG:  duration: 0.436 ms  plan:
+	Query Text: 
+	INSERT INTO jobs (queue, kind, payload, priority, run_at, max_attempts, idempotency_key, trace_context)
+	SELECT q.name, $2::text, $3::jsonb, $4::smallint, coalesce($5::timestamptz, now()),
+	       coalesce(nullif($6::int, 0), q.max_attempts), nullif($7::text, ''), nullif($8::text, '')
+	FROM queues q WHERE q.name = $1
+	ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+	RETURNING id
+	Query Parameters: $1 = 'bench', $2 = 'bench', $3 = '{"t": "1793930587037623372", "pad": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}', $4 = '3', $5 = NULL, $6 = '0', $7 = '', $8 = ''
+	Insert on jobs  (cost=0.15..8.18 rows=1 width=262) (actual time=0.286..0.291 rows=1 loops=1)
+	  Conflict Resolution: NOTHING
+	  Conflict Arbiter Indexes: jobs_idempotency
+	  Tuples Inserted: 1
+	  Conflicting Tuples: 0
+	  ->  Index Scan using queues_pkey on queues q  (cost=0.15..8.18 rows=1 width=262) (actual time=0.087..0.091 rows=1 loops=1)
+	        Index Cond: (name = $1)
+
+2026-11-06 02:03:07.079 UTC [71] LOG:  duration: 0.004 ms  plan:
+	Query Text: SELECT pg_notify($1, $2)
+	Query Parameters: $1 = 'tasklane_jobs', $2 = 'bench'
+	Result  (cost=0.00..0.01 rows=1 width=4) (actual time=0.002..0.003 rows=1 loops=1)
+
+2026-11-06 02:03:07.316 UTC [69] LOG:  duration: 0.075 ms  plan:
+	Query Text: SELECT EXISTS (SELECT 1 FROM queues WHERE name = $1)
+	Query Parameters: $1 = 'bench'
+	Result  (cost=8.17..8.18 rows=1 width=1) (actual time=0.071..0.071 rows=1 loops=1)
+	  InitPlan 1
+	    ->  Index Only Scan using queues_pkey on queues  (cost=0.15..8.17 rows=1 width=0) (actual time=0.068..0.068 rows=1 loops=1)
+	          Index Cond: (name = $1)
+	          Heap Fetches: 1
+
+2026-11-06 02:03:09.661 UTC [6096] LOG:  duration: 0.139 ms  plan:
+	Query Text: 
+				SELECT coalesce(wait_event_type || ':' || wait_event, 'CPU')
+				FROM pg_stat_activity
+				WHERE state = 'active' AND backend_type = 'client backend' AND pid <> pg_backend_pid()
+	Function Scan on pg_stat_get_activity s  (cost=0.00..2.01 rows=1 width=32) (actual time=0.130..0.135 rows=4 loops=1)
+	  Filter: ((state = 'active'::text) AND (backend_type = 'client backend'::text) AND (pid <> pg_backend_pid()))
+	  Rows Removed by Filter: 7
+
+2026-11-06 02:03:11.120 UTC [72] LOG:  duration: 0.038 ms  plan:
+	Query Text: SELECT id, queue, attempts, max_attempts, coalesce(last_error, '') FROM jobs
+			 WHERE state = 'leased' AND lease_expires_at < now()
+			 ORDER BY lease_expires_at
+			 LIMIT $1
+			 FOR UPDATE SKIP LOCKED
+	Query Parameters: $1 = '500'
+	Limit  (cost=0.15..8.18 rows=1 width=70) (actual time=0.035..0.036 rows=0 loops=1)
+	  ->  LockRows  (cost=0.15..8.18 rows=1 width=70) (actual time=0.033..0.033 rows=0 loops=1)
+	        ->  Index Scan using jobs_leased on jobs  (cost=0.15..8.17 rows=1 width=70) (actual time=0.032..0.033 rows=0 loops=1)
+	              Index Cond: (lease_expires_at < now())
+	              Filter: (state = 'leased'::job_state)
+
+2026-11-06 02:03:15.833 UTC [122] LOG:  duration: 710.241 ms  plan:
+	Query Text: 
+			SELECT q.name, q.max_depth,
+				(SELECT count(*) FROM jobs j WHERE j.queue = q.name AND j.state = 'available'),
+				(SELECT count(*) FROM jobs j WHERE j.queue = q.name AND j.state = 'leased'),
+				CASE WHEN q.paused THEN 0 ELSE coalesce((
+					SELECT extract(epoch FROM now() - min(o.run_at))::float8
+					FROM unnest('{1,2,3,4}'::smallint[]) AS p(priority)
+					CROSS JOIN LATERAL (
+						SELECT j.run_at FROM jobs j
+						WHERE j.queue = q.name AND j.state = 'available' AND j.priority = p.priority AND j.run_at <= now()
+						ORDER BY j.run_at LIMIT 1) o), 0) END
+			FROM queues q
+	Seq Scan on queues q  (cost=0.00..47320879.12 rows=910 width=64) (actual time=555.020..710.234 rows=2 loops=1)
+	  SubPlan 1
+	    ->  Aggregate  (cost=51990.70..51990.71 rows=1 width=8) (actual time=236.334..236.334 rows=1 loops=2)
+	          ->  Seq Scan on jobs j  (cost=0.00..49490.74 rows=999983 width=0) (actual time=77.596..203.966 rows=500000 loops=2)
+	                Filter: ((queue = q.name) AND (state = 'available'::job_state))
+	                Rows Removed by Filter: 501427
+	  SubPlan 2
+	    ->  Aggregate  (cost=8.16..8.17 rows=1 width=8) (actual time=0.054..0.054 rows=1 loops=2)
+	          ->  Index Scan using jobs_leased on jobs j_1  (cost=0.14..8.16 rows=1 width=0) (actual time=0.027..0.040 rows=0 loops=2)
+	                Filter: (queue = q.name)
+	                Rows Removed by Filter: 0
+	  SubPlan 3
+	    ->  Aggregate  (cost=2.04..2.06 rows=1 width=8) (actual time=0.054..0.054 rows=1 loops=2)
+	          ->  Nested Loop  (cost=0.43..2.03 rows=4 width=8) (actual time=0.045..0.048 rows=0 loops=2)
+	                ->  Function Scan on unnest p  (cost=0.00..0.04 rows=4 width=2) (actual time=0.005..0.005 rows=4 loops=2)
+	                ->  Limit  (cost=0.43..0.49 rows=1 width=8) (actual time=0.010..0.010 rows=0 loops=8)
+	                      ->  Index Only Scan using jobs_available on jobs j_2  (cost=0.43..58761.82 rows=999884 width=8) (actual time=0.008..0.008 rows=0 loops=8)
+	                            Index Cond: ((queue = q.name) AND (priority = p.priority) AND (run_at <= now()))
+	                            Heap Fetches: 1
+	JIT:
+	  Functions: 26
+	  Options: Inlining true, Optimization true, Expressions true, Deforming true
+	  Timing: Generation 5.622 ms (Deform 1.059 ms), Inlining 77.828 ms, Optimization 79.413 ms, Emission 80.137 ms, Total 243.000 ms
+
+2026-11-06 02:03:19.068 UTC [6096] LOG:  duration: 0.614 ms  plan:
+	Query Text: 
+			SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint,
+				n_tup_ins, n_tup_upd, n_tup_hot_upd, n_tup_del, n_live_tup, n_dead_tup,
+				autovacuum_count, autoanalyze_count
+			FROM pg_stat_user_tables WHERE relname = 'jobs'
+	Subquery Scan on pg_stat_all_tables  (cost=16.99..17.05 rows=1 width=72) (actual time=0.601..0.606 rows=1 loops=1)
+	  ->  GroupAggregate  (cost=16.99..17.03 rows=1 width=316) (actual time=0.592..0.595 rows=1 loops=1)
+	        Group Key: c.oid, n.nspname
+	        ->  Sort  (cost=16.99..17.00 rows=1 width=132) (actual time=0.526..0.529 rows=6 loops=1)
+	              Sort Key: c.oid, n.nspname
+	              Sort Method: quicksort  Memory: 25kB
+	              ->  Nested Loop  (cost=8.31..16.98 rows=1 width=132) (actual time=0.403..0.487 rows=6 loops=1)
+	                    Join Filter: (c.relnamespace = n.oid)
+	                    ->  Hash Right Join  (cost=8.31..15.90 rows=1 width=72) (actual time=0.340..0.384 rows=6 loops=1)
+	                          Hash Cond: (i.indrelid = c.oid)
+	                          ->  Seq Scan on pg_index i  (cost=0.00..7.05 rows=205 width=4) (actual time=0.079..0.208 rows=175 loops=1)
+	                          ->  Hash  (cost=8.30..8.30 rows=1 width=72) (actual time=0.123..0.124 rows=1 loops=1)
+	                                Buckets: 1024  Batches: 1  Memory Usage: 9kB
+	                                ->  Index Scan using pg_class_relname_nsp_index on pg_class c  (cost=0.27..8.30 rows=1 width=72) (actual time=0.099..0.101 rows=1 loops=1)
+	                                      Index Cond: (relname = 'jobs'::name)
+	                                      Filter: (relkind = ANY ('{r,t,m,p}'::"char"[]))
+	                    ->  Seq Scan on pg_namespace n  (cost=0.00..1.06 rows=2 width=68) (actual time=0.014..0.014 rows=1 loops=6)
+	                          Filter: ((nspname <> ALL ('{pg_catalog,information_schema}'::name[])) AND (nspname !~ '^pg_toast'::text))
+	                          Rows Removed by Filter: 2
+
