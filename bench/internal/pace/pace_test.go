@@ -29,6 +29,16 @@ func TestRunKeepsTheRate(t *testing.T) {
 	require.InDelta(t, 200, sent, 20)
 }
 
+func TestRunFiresNothingWhenCtxAlreadyDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var n atomic.Int64
+	sent, dropped := Run(ctx, time.Now(), 1000, 10, func(time.Time) { n.Add(1) })
+	require.Zero(t, sent)
+	require.Zero(t, dropped)
+	require.Zero(t, n.Load())
+}
+
 // A server that stalls for 300 ms must show up in p99: the sends planned
 // during the stall still go out on time, and each one's latency counts from
 // its planned time. A closed loop would record a single slow sample.

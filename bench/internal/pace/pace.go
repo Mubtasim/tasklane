@@ -44,7 +44,12 @@ func Run(ctx context.Context, start time.Time, rate float64, maxInFlight int, fi
 				return sent, dropped
 			case <-timer.C:
 			}
-		} else if ctx.Err() != nil {
+		}
+		// Checked on both paths: once ctx is done, no event is fired or
+		// counted as dropped. When the timer and ctx.Done are ready together,
+		// select may pick the timer, and a call that returned after cancel
+		// can free a semaphore slot.
+		if ctx.Err() != nil {
 			return sent, dropped
 		}
 		select {
