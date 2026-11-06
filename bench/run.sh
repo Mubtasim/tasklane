@@ -74,25 +74,80 @@ fill_() { taskset -c "$LOADGEN_CPUS" bench/bin/loadgen -mode fill -batch 100 "$@
 pct() { awk -v m="$1" -v p="$2" 'BEGIN { printf "%d", m * p / 100 }'; }
 
 # explain_on / explain_off bracket a window whose query plans are logged.
-explain_on()  { psql_ "ALTER SYSTEM SET auto_explain.log_min_duration = 0"; psql_ "ALTER SYSTEM SET auto_explain.log_analyze = on"; psql_ "SELECT pg_reload_conf()" >/dev/null; EXPLAIN_SINCE=$(date -u +%FT%TZ); }
-explain_off() { psql_ "ALTER SYSTEM RESET auto_explain.log_min_duration"; psql_ "ALTER SYSTEM RESET auto_explain.log_analyze"; psql_ "SELECT pg_reload_conf()" >/dev/null; "${COMPOSE[@]}" logs --no-log-prefix --since "$EXPLAIN_SINCE" postgres > "$OUT/plans/$1.log" 2>&1; }
+# sample_rate keeps the log volume down; explain_off keeps the raw capture in
+# plans/<label>.log (gitignored) and distils plans/<label>.txt: the first full
+# plan of each distinct query, small enough to commit.
+explain_reset() {
+  for k in log_min_duration log_analyze sample_rate; do
+    psql_ "ALTER SYSTEM RESET auto_explain.$k" >/dev/null 2>&1 || true
+  done
+  psql_ "SELECT pg_reload_conf()" >/dev/null 2>&1 || true
+}
+# explain_on [sample_rate]: the redrive makes only a handful of statements, so
+# it passes 1; the throughput windows run thousands and take the default.
+explain_on() {
+  psql_ "ALTER SYSTEM SET auto_explain.log_min_duration = 0"
+  psql_ "ALTER SYSTEM SET auto_explain.log_analyze = on"
+  psql_ "ALTER SYSTEM SET auto_explain.sample_rate = ${1:-0.05}"
+  psql_ "SELECT pg_reload_conf()" >/dev/null
+  EXPLAIN_SINCE=$(date -u +%FT%TZ)
+}
+explain_off() {
+  explain_reset
+  "${COMPOSE[@]}" logs --no-log-prefix --since "$EXPLAIN_SINCE" postgres > "$OUT/plans/$1.log" 2>&1
+  # A plan entry is a "LOG:  duration: ... plan:" line plus the tab-indented
+  # lines under it. Key: the first line of the query text, whitespace-folded.
+  awk '
+    function flush(   k, i, t) {
+      if (n == 0) return
+      for (i = 1; i <= n; i++) if (buf[i] ~ /Query Text:/) {
+        t = buf[i]; sub(/.*Query Text:[ \t]*/, "", t)
+        if (t == "" && i < n) t = buf[i + 1]
+        gsub(/[ \t]+/, " ", t); k = t; break
+      }
+      if (k != "" && !(k in seen)) { seen[k] = 1; for (i = 1; i <= n; i++) print buf[i]; print "" }
+      n = 0
+    }
+    /LOG:  duration: .* plan:/ { flush(); buf[++n] = $0; next }
+    n > 0 && /^[ \t]/ { buf[++n] = $0; next }
+    { flush() }
+    END { flush() }
+  ' "$OUT/plans/$1.log" > "$OUT/plans/$1.txt"
+}
+trap 'explain_reset' EXIT
+
+# fill_ and lg print a throughput; an empty one means the run failed, and
+# carrying on would compute rate 0 for the rest of the hour-long suite.
+need() { [[ -n $1 ]] || { echo "no throughput from: $2" >&2; exit 1; }; }
+
+# wait_ready: the server answers on its metrics port only once it is serving.
+wait_ready() {
+  for _ in $(seq 60); do
+    curl -fs -o /dev/null http://127.0.0.1:9464/metrics && return 0
+    sleep 0.5
+  done
+  echo "server not ready after 30 s" >&2; exit 1
+}
 
 go build -o bench/bin/loadgen ./bench/loadgen
 up postgres tasklane
+wait_ready
+# A previous aborted run may have left auto_explain on (ALTER SYSTEM persists).
+explain_reset
 
 BEST_W=${BEST_W:-50} M=${M:-0}
 for s in $SCENARIOS; do case $s in
 s1)
   log "S1 enqueue only"
   for b in 1 10 100; do
-    reset_db; m=$(lg s1 "s1-closed-b$b" -mode closed -batch "$b" -producers 16)
+    reset_db; m=$(lg s1 "s1-closed-b$b" -mode closed -batch "$b" -producers 16); need "$m" "s1-closed-b$b"
     reset_db; lg s1 "s1-open80-b$b" -mode open -batch "$b" -rate "$(pct "$m" 80)" >/dev/null
   done ;;
 s2)
   log "S2 full cycle"
   best=0
   for w in 1 10 50 200; do
-    reset_db; m=$(lg s2 "s2-closed-w$w" -mode closed -workers "$w")
+    reset_db; m=$(lg s2 "s2-closed-w$w" -mode closed -workers "$w"); need "$m" "s2-closed-w$w"
     if awk -v a="$m" -v b="$best" 'BEGIN { exit !(a > b) }'; then best=$m BEST_W=$w; fi
   done
   M=$best
@@ -102,33 +157,35 @@ s2)
 s3)
   log "S3 payload size"
   for size in 100 10000 100000; do
-    reset_db; m=$(lg s3 "s3-closed-p$size" -mode closed -workers "$BEST_W" -payload "$size")
+    reset_db; m=$(lg s3 "s3-closed-p$size" -mode closed -workers "$BEST_W" -payload "$size"); need "$m" "s3-closed-p$size"
     reset_db; lg s3 "s3-open80-p$size" -mode open -workers "$BEST_W" -payload "$size" -rate "$(pct "$m" 80)" >/dev/null
   done ;;
 s4)
   log "S4 big table"
   [[ $M == 0 ]] && { echo "S4 needs S2's maximum; run s2 first in the same invocation" >&2; exit 1; }
   reset_db
-  echo "filling $BACKLOG backlog jobs: $(fill_ -queue backlog -jobs "$BACKLOG" -producers 4) jobs/s"
+  r=$(fill_ -queue backlog -jobs "$BACKLOG" -producers 4); need "$r" "backlog fill"; echo "filled $BACKLOG backlog jobs: $r jobs/s"
   psql_ "VACUUM ANALYZE jobs"
   explain_on; lg s4 s4a-explain -mode open -workers "$BEST_W" -rate "$(pct "$M" 50)" -warmup 2s -duration 10s >/dev/null; explain_off s4a-explain
   lg s4 "s4b-open80-w$BEST_W" -mode open -workers "$BEST_W" -rate "$(pct "$M" 80)" >/dev/null
-  echo "delayed: $(fill_ -queue bench -jobs "$DELAYED" -priority 1 -delay 1h)"
+  r=$(fill_ -queue bench -jobs "$DELAYED" -priority 1 -delay 1h); need "$r" "delayed fill"; echo "delayed: $r jobs/s"
   explain_on; lg s4 s4c-explain -mode open -workers "$BEST_W" -rate "$(pct "$M" 50)" -warmup 2s -duration 10s >/dev/null; explain_off s4c-explain
   lg s4 "s4c-open80-w$BEST_W" -mode open -workers "$BEST_W" -rate "$(pct "$M" 80)" >/dev/null
   psql_ "UPDATE jobs SET state = 'dead', finished_at = now(), last_error = 'bench' WHERE id IN (SELECT id FROM jobs WHERE queue = 'backlog' AND state = 'available' LIMIT $DEAD)"
-  explain_on; taskset -c "$LOADGEN_CPUS" bench/bin/loadgen -mode redrive -queue backlog -scenario s4 -label s4d-redrive -out "$OUT/results.csv"; explain_off s4d-redrive
+  explain_on 1; taskset -c "$LOADGEN_CPUS" bench/bin/loadgen -mode redrive -queue backlog -scenario s4 -label s4d-redrive -out "$OUT/results.csv"; explain_off s4d-redrive
   reset_db
-  echo "queues: $(fill_ -queue q -queues "$QUEUES" -jobs $((QUEUES * 100)) -producers 4)"
+  r=$(fill_ -queue q -queues "$QUEUES" -jobs $((QUEUES * 100)) -producers 4); need "$r" "queues fill"; echo "queues: $r jobs/s"
   lg s4 "s4e-open80-w$BEST_W" -mode open -workers "$BEST_W" -rate "$(pct "$M" 80)" >/dev/null ;;
 s6)
   log "S6 tracing cost"
   [[ $M == 0 ]] && { echo "S6 needs S2's maximum; run s2 first in the same invocation" >&2; exit 1; }
   OTEL_ENDPOINT=http://jaeger:4317 "${COMPOSE[@]}" --profile tracing up -d --wait jaeger tasklane
+  wait_ready
   reset_db; lg s6 "s6-traced-open80-w$BEST_W" -mode open -workers "$BEST_W" -rate "$(pct "$M" 80)" >/dev/null
   reset_db; lg s6 s6-traced-idle-w200 -mode closed -producers 0 -workers 200 >/dev/null
   "${COMPOSE[@]}" --profile tracing stop jaeger
-  "${COMPOSE[@]}" up -d --wait tasklane ;;
+  "${COMPOSE[@]}" up -d --wait tasklane
+  wait_ready ;;
 *) echo "unknown scenario $s" >&2; exit 2 ;;
 esac; done
 

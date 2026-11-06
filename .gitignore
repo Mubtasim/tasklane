@@ -6,3 +6,4 @@ coverage.*
 test/chaos/out/
 bench/bin/
 bench/results/*-smoke/
+bench/results/*/plans/*.log
