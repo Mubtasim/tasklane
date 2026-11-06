@@ -2,6 +2,7 @@ package pgstore_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -89,4 +90,44 @@ func TestQueueDepthsPausedQueueHasNoOldestReady(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, depthsByName(after)["p"].OldestReady)
 	require.Equal(t, int64(1), depthsByName(after)["p"].Available)
+}
+
+func TestQueueDepthsWithManyQueues(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	const queues = 200
+	name := func(i int) string { return fmt.Sprintf("q%03d", i) }
+	for i := range queues {
+		mustQueue(t, s, store.Queue{Name: name(i)})
+		for range i % 7 {
+			mustEnqueue(t, s, store.NewJob{Queue: name(i), Kind: "k"})
+		}
+		if i%7 > 0 {
+			mustLeaseOne(t, s, name(i), time.Minute)
+		}
+	}
+	_, err := testPool.Exec(ctx, "UPDATE queues SET paused = true WHERE name = $1", name(1))
+	require.NoError(t, err)
+
+	depths, err := s.QueueDepths(ctx)
+	require.NoError(t, err)
+	require.Len(t, depths, queues)
+	byName := depthsByName(depths)
+	for i := range queues {
+		d := byName[name(i)]
+		jobs := int64(i % 7)
+		wantLeased := min(jobs, 1)
+		require.Equal(t, jobs-wantLeased, d.Available, name(i))
+		require.Equal(t, wantLeased, d.Leased, name(i))
+	}
+	require.Zero(t, byName[name(1)].OldestReady, "a paused queue has no oldest ready job")
+}
+
+// The counts must come from one grouped pass over jobs; a per-queue
+// correlated count scans the whole table once per queue.
+func TestQueueDepthsPlanGroupsJobsOnce(t *testing.T) {
+	newStore(t)
+	var plan string
+	require.NoError(t, testPool.QueryRow(context.Background(), "EXPLAIN (FORMAT JSON) "+pgstore.QueueDepthsSQL).Scan(&plan))
+	require.Contains(t, plan, `"Group Key"`, "the counts should be one GROUP BY queue pass")
 }
