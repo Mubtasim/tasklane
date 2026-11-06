@@ -1,0 +1,62 @@
+# Tasklane load test: Postgres and one server, each pinned to its own CPUs
+# (design.md §19.2). bench/run.sh sets the CPU sets per profile; the load
+# generator runs on the host, pinned with taskset. Not for the demo: no
+# Envoy, Prometheus or Grafana, which would compete for CPU.
+name: tasklane-bench
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    # Defaults except two preloaded extensions: pg_stat_statements (which
+    # queries cost the time) and auto_explain (real plans with real
+    # parameters; its default log_min_duration of -1 keeps it off until
+    # run.sh sets it with ALTER SYSTEM for S4. Do not pin it here with -c:
+    # a command-line setting beats ALTER SYSTEM and the reload would no-op).
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements,auto_explain
+    environment:
+      POSTGRES_USER: tasklane
+      POSTGRES_PASSWORD: tasklane
+      POSTGRES_DB: tasklane
+    cpuset: "${PG_CPUS:-0,2}"
+    volumes:
+      - ./initdb.sql:/docker-entrypoint-initdb.d/initdb.sql:ro
+    # 5433: the host's 5432 is often taken by another Postgres.
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tasklane -d tasklane"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  tasklane:
+    image: tasklane:dev
+    pull_policy: never
+    # Go sets GOMAXPROCS from the CPU affinity, so the server sees exactly
+    # its CPU set.
+    cpuset: "${SERVER_CPUS:-1}"
+    environment:
+      TASKLANE_DATABASE_URL: postgres://tasklane:tasklane@postgres:5432/tasklane?sslmode=disable${PG_POOL_PARAMS:-}
+      TASKLANE_API_KEYS: bench-key
+      # Empty means tracing off: internal/tracing.Enabled tests for != "".
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT:-}
+      OTEL_SERVICE_NAME: tasklane
+    ports:
+      - "127.0.0.1:7070:7070"
+      - "127.0.0.1:9464:9464"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # S6 only (--profile tracing). It shares the load generator's CPU so the
+  # server's core stays clean; S6 compares server CPU per job, not throughput.
+  jaeger:
+    image: jaegertracing/jaeger:2.23.0
+    profiles: [tracing]
+    command: ["--config", "/etc/jaeger/config.yaml"]
+    volumes:
+      - ../deploy/jaeger:/etc/jaeger:ro
+    cpuset: "${LOADGEN_CPUS:-3}"
