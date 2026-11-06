@@ -4,3 +4,5 @@
 coverage.*
 .env
 test/chaos/out/
+bench/bin/
+bench/results/*-smoke/
