@@ -21,11 +21,13 @@ import (
 	"github.com/mubtasim/tasklane/internal/testpg"
 )
 
-// One Postgres and one notify.Listener are shared by the package's tests.
-// Tests reset the tables first, so they must not run in parallel.
+// One Postgres and one notify.Listener, with its Publisher, are shared by the
+// package's tests. Tests reset the tables first, so they must not run in
+// parallel.
 var (
-	testDB       *testpg.DB
-	testListener *notify.Listener
+	testDB        *testpg.DB
+	testListener  *notify.Listener
+	testPublisher *notify.Publisher
 )
 
 func TestMain(m *testing.M) {
@@ -50,7 +52,9 @@ func TestMain(m *testing.M) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	testPublisher = notify.NewPublisher(testListener, testDB.Pool, notify.DefaultCoalesceWindow, slog.New(slog.DiscardHandler))
 	code := m.Run()
+	testPublisher.Close()
 	cancel()
 	<-done
 	testDB.Close()
@@ -72,7 +76,13 @@ func newEnv(t testing.TB, keys []string, opts ...Option) *env {
 	t.Helper()
 	require.NoError(t, testDB.Reset(context.Background()))
 	st := pgstore.New(testDB.Pool, backoff.Policy{Base: time.Second, Cap: time.Hour, Rand: func() float64 { return 0 }})
-	srv := NewServer(st, testListener, slog.New(slog.DiscardHandler), opts...)
+	srv := NewServer(st, testPublisher, slog.New(slog.DiscardHandler), opts...)
+	return serve(t, st, srv, keys)
+}
+
+// serve serves srv over an in-memory connection until the test ends.
+func serve(t testing.TB, st *pgstore.Store, srv *Server, keys []string) *env {
+	t.Helper()
 	gs := NewGRPCServer(srv, keys, slog.New(slog.DiscardHandler))
 
 	lis := bufconn.Listen(1 << 20)
@@ -89,4 +99,36 @@ func newEnv(t testing.TB, keys []string, opts ...Option) *env {
 		gs.Stop()
 	})
 	return &env{client: tasklanev1.NewTasklaneServiceClient(conn), conn: conn, store: st, server: srv, keys: keys, lis: lis}
+}
+
+// newPeer serves a second API server on the same database, with its own
+// notify.Listener and Publisher, as another replica would run. Unlike newEnv
+// it doesn't reset the database.
+func newPeer(t testing.TB, opts ...Option) *env {
+	t.Helper()
+	l, err := notify.New(testDB.DSN, slog.New(slog.DiscardHandler))
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = l.Run(ctx) // always nil once ctx is done
+	}()
+	pub := notify.NewPublisher(l, testDB.Pool, notify.DefaultCoalesceWindow, slog.New(slog.DiscardHandler))
+	// Registered first, so it runs after serve's cleanup has stopped the
+	// server: no Publish can race the Close.
+	t.Cleanup(func() {
+		pub.Close()
+		cancel()
+		<-done
+	})
+	require.Eventually(t, l.Listening, 5*time.Second, 10*time.Millisecond)
+	st := pgstore.New(testDB.Pool, backoff.Policy{Base: time.Second, Cap: time.Hour, Rand: func() float64 { return 0 }})
+	return serve(t, st, NewServer(st, pub, slog.New(slog.DiscardHandler), opts...), nil)
+}
+
+// withNotifier replaces the server's Notifier, so a test can see what it
+// publishes.
+func withNotifier(n Notifier) Option {
+	return func(s *Server) { s.notifier = n }
 }

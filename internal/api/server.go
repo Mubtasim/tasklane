@@ -55,10 +55,12 @@ func detach(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), storeWriteTimeout)
 }
 
-// Notifier wakes waiting leases when a queue gets new jobs; *notify.Listener
-// implements it.
+// Notifier wakes waiting leases when a queue gets new jobs; *notify.Publisher
+// implements it. Publish is called after the store write has committed, and
+// only when it made jobs runnable; it must not block.
 type Notifier interface {
 	Subscribe(queue string) (<-chan struct{}, func())
+	Publish(queue string)
 }
 
 type Server struct {
@@ -110,6 +112,15 @@ func NewServer(st store.Store, n Notifier, log *slog.Logger, opts ...Option) *Se
 	}
 	s.tracer = s.tp.Tracer("github.com/mubtasim/tasklane/internal/api")
 	return s
+}
+
+// publish tells waiting leases that queue has new runnable jobs. Callers run
+// it only after the store write has committed and only when that write made
+// jobs runnable, so a rolled-back or idempotent write wakes no one.
+func (s *Server) publish(queue string) {
+	if s.notifier != nil {
+		s.notifier.Publish(queue)
+	}
 }
 
 // parentTraceparent is the traceparent a job enqueued in this call stores
@@ -199,6 +210,7 @@ func (s *Server) Enqueue(ctx context.Context, req *tasklanev1.EnqueueRequest) (*
 	}
 	annotate(ctx, attribute.String("messaging.message.id", strconv.FormatInt(res[0].ID, 10)))
 	if res[0].Created {
+		s.publish(req.GetQueue())
 		s.metrics.Enqueued(req.GetQueue(), 1)
 	}
 	return &tasklanev1.EnqueueResponse{JobId: res[0].ID, Created: res[0].Created}, nil
@@ -238,6 +250,9 @@ func (s *Server) EnqueueBatch(ctx context.Context, req *tasklanev1.EnqueueBatchR
 		if r.Created {
 			created++
 		}
+	}
+	if created > 0 {
+		s.publish(req.GetQueue()) // a batch has one queue
 	}
 	s.metrics.Enqueued(req.GetQueue(), created)
 	return out, nil

@@ -57,8 +57,8 @@ func (s *Store) ListDeadJobs(ctx context.Context, queue string, after *store.Dea
 // other. There are two statements, chosen here, so neither plan depends on a
 // NULL check: "all" walks jobs_dead (queue, finished_at, id) oldest death
 // first, and redriven rows leave that partial index, so every batch starts at
-// the front; "by ids" looks the ids up in the primary key. The NOTIFY is part
-// of the transaction, so waiting leases hear it only once the jobs are visible.
+// the front; "by ids" looks the ids up in the primary key. It sends no
+// NOTIFY; the API server publishes after the commit when n > 0.
 func (s *Store) RedriveDead(ctx context.Context, queue string, ids []int64, limit int) (int, error) {
 	if limit < 1 {
 		return 0, fmt.Errorf("%w: limit must be positive, got %d", store.ErrInvalid, limit)
@@ -99,9 +99,6 @@ func (s *Store) RedriveDead(ctx context.Context, queue string, ids []int64, limi
 	n := int(tag.RowsAffected())
 	if n == 0 {
 		return 0, queueExists(ctx, tx, queue)
-	}
-	if _, err := tx.Exec(ctx, "SELECT pg_notify($1, $2)", NotifyChannel, queue); err != nil {
-		return 0, err
 	}
 	return n, tx.Commit(ctx)
 }

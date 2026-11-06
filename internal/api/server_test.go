@@ -217,6 +217,33 @@ func TestLongPollWakesOnEnqueue(t *testing.T) {
 	require.Less(t, time.Since(<-enqueued), time.Second, "woken by the notification, not by a timeout")
 }
 
+// A lease waiting on one server is woken by an enqueue through another: the
+// enqueuing server's Publisher sends a NOTIFY after the commit, and the
+// waiting server's Listener hears it. The 1 min poll interval rules out the
+// periodic re-check.
+func TestLongPollWakesOnEnqueueFromAnotherServer(t *testing.T) {
+	a := newEnv(t, nil, WithPollInterval(time.Minute))
+	b := newPeer(t, WithPollInterval(time.Minute))
+	a.mustQueue(t, "emails")
+
+	enqueued := make(chan time.Time, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() { <-done }) // no t.Error after the test has ended
+	go func() {
+		defer close(done)
+		time.Sleep(300 * time.Millisecond) // let the lease start waiting
+		enqueued <- time.Now()
+		if _, err := b.client.Enqueue(context.Background(), &tasklanev1.EnqueueRequest{Queue: "emails", Job: &tasklanev1.JobSpec{Kind: "welcome"}}); err != nil {
+			t.Error(err) // require/FailNow must not be called from a goroutine
+		}
+	}()
+
+	res, err := a.client.Lease(context.Background(), &tasklanev1.LeaseRequest{Queue: "emails", Wait: durationpb.New(10 * time.Second)})
+	require.NoError(t, err)
+	require.Len(t, res.GetJobs(), 1)
+	require.Less(t, time.Since(<-enqueued), time.Second, "woken by the other server's NOTIFY, not by a timeout")
+}
+
 // Delayed jobs become due without a notification; the periodic re-check
 // finds them.
 func TestLongPollRechecksForDelayedJobs(t *testing.T) {

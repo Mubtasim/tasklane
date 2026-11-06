@@ -213,6 +213,8 @@ The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY
 
 **Long-polling.** `Lease` with `wait > 0` returns as soon as jobs are available or when `wait` elapses (empty result). Servers `LISTEN` on the Postgres channel `tasklane_jobs`; `Enqueue` sends `pg_notify('tasklane_jobs', queue)` once per distinct queue inside its transaction, so the notification is delivered only on commit. Waiting leases for that queue wake immediately. Because delayed jobs and retries become due without any notification, waiting leases also re-check every second.
 
+*Changed in M5a:* `Enqueue` no longer notifies inside its transaction. NOTIFY takes a database-wide lock held until the commit is flushed, so enqueue commits waited in line behind it. The API server now publishes after the commit, waking its own waiting leases in memory at once and sending one `pg_notify` per queue per 5 ms window for the other servers. A crash between commit and publish costs at most the one-second re-check. See §19.5 for the measurements.
+
 Each server holds one dedicated `LISTEN` connection. If it drops, the server reconnects with backoff and wakes every waiting lease once LISTEN is re-established, since notifications sent in the meantime are lost.
 
 **Leasing from an unknown queue** returns `NOT_FOUND` (an empty result means "nothing runnable right now").
@@ -325,7 +327,7 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M5d | Jan 2027 | C# SDK (NuGet) |
 | M5e | mid-Jan 2027 | v1.0.0: image on GHCR, release notes, blog post |
 
-Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.
+Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor. *Changed in M5a:* neither sends NOTIFY inside its transaction any more; the API server publishes after the commit (see §6 and §19.5).
 
 **`LeaseStream` deferred (decided 2026-11-01).** A stream would replace one `Lease` request per batch with a credit message on an open call. That saves little: requests are already multiplexed over one HTTP/2 connection, each batch still needs the same Postgres transaction, and a batch of k jobs already costs k Acks besides its Lease. A waiting stream re-checks the queue once a second just like a waiting long-poll, and long-polls already ask only for free slots. Against that, a stream adds per-stream credit state, reconnects and a reconnect signal on shutdown, keepalives to detect half-open connections, a stream auth interceptor, no HTTP/JSON support, and stickiness: a stream is one request, so even a gRPC-aware load balancer pins it to one server copy. The M5 load test measures lease requests per job and p99 enqueue-to-start latency; `LeaseStream` is built only if the long-poll shows up as a bottleneck there.
 
@@ -501,7 +503,7 @@ FROM d WHERE j.id = d.id;
 
 All-mode orders by `(finished_at, id)` on `jobs_dead`, so every batch starts at the front of the partial index (redriven rows leave it); ids-mode looks up the primary key. They are two statements so neither plan depends on a NULL check.
 
-The same transaction sends `pg_notify('tasklane_jobs', queue)` when it changed at least one row. `all` repeats batches until one updates nothing or the request is cancelled; the response counts every committed batch.
+The same transaction sends `pg_notify('tasklane_jobs', queue)` when it changed at least one row. *Changed in M5a:* the API server publishes after each batch that redrove at least one job, instead of the transaction notifying (see §6 and §19.5). `all` repeats batches until one updates nothing or the request is cancelled; the response counts every committed batch.
 
 - Not atomic, by choice: one transaction over 200,000 rows would hold locks for seconds, write a burst of WAL and leave bloat, and a timeout would undo everything. If the server stops halfway, the committed batches stay redriven and calling `all` again finishes the rest.
 - `last_error` is kept, so the operator still sees why the job died until it fails again.

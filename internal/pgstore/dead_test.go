@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mubtasim/tasklane/internal/store"
@@ -166,37 +165,19 @@ func TestRedriveDeadErrors(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrInvalid)
 }
 
-// A redrive makes jobs runnable, so it must NOTIFY like Enqueue, and only
-// when it changed something.
-func TestRedriveDeadNotifiesOnlyWhenItRedrove(t *testing.T) {
+// Like Enqueue, RedriveDead sends no NOTIFY; the API server publishes when it
+// redrove something.
+func TestRedriveDeadSendsNoNotify(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	mustQueue(t, s, store.Queue{Name: "emails"})
-	conn, err := pgx.Connect(ctx, testDB.DSN)
-	require.NoError(t, err)
-	defer conn.Close(ctx)
-	_, err = conn.Exec(ctx, "LISTEN tasklane_jobs")
-	require.NoError(t, err)
-
-	_, err = s.RedriveDead(ctx, "emails", nil, 1000)
-	require.NoError(t, err)
-	quiet, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	_, err = conn.WaitForNotification(quiet)
-	cancel()
-	require.Error(t, err, "no notification when nothing was redriven")
-
 	bury(t, mustEnqueue(t, s, store.NewJob{Queue: "emails", Kind: "k"}), time.Now())
-	// mustEnqueue itself notified; drain that first.
-	wait, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	_, err = conn.WaitForNotification(wait)
-	require.NoError(t, err)
+	conn := listen(t)
 
-	_, err = s.RedriveDead(ctx, "emails", nil, 1000)
+	n, err := s.RedriveDead(ctx, "emails", nil, 1000)
 	require.NoError(t, err)
-	n, err := conn.WaitForNotification(wait)
-	require.NoError(t, err)
-	require.Equal(t, "emails", n.Payload)
+	require.Equal(t, 1, n)
+	requireNoNotification(t, conn)
 }
 
 func TestRedriveDeadAllTakesOldestDeathsFirst(t *testing.T) {

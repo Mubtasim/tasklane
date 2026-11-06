@@ -109,7 +109,13 @@ func run(log *slog.Logger) error {
 		pruner.Run(bgCtx, st, pruner.Config{Interval: cfg.PruneInterval, Retention: cfg.Retention, DeadRetention: cfg.DeadRetention, Metrics: m}, log)
 	})
 
-	srv := api.NewServer(st, listener, log, api.WithMetrics(m), api.WithTracerProvider(tp))
+	// The publisher sends NOTIFY through the pool, so it is closed before the
+	// pool is: this defer runs before the pool.Close deferred above. It runs
+	// after the servers have drained, and a detached write that finishes
+	// later only wakes this server's own leases.
+	publisher := notify.NewPublisher(listener, pool, notify.DefaultCoalesceWindow, log)
+	defer publisher.Close()
+	srv := api.NewServer(st, publisher, log, api.WithMetrics(m), api.WithTracerProvider(tp))
 	background.Go(func() { srv.RunDepthRefresh(bgCtx) })
 	grpcServer := api.NewGRPCServer(srv, cfg.APIKeys, log)
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)

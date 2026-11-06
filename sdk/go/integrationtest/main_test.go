@@ -28,9 +28,10 @@ import (
 // One Postgres and one notify.Listener are shared by the package's tests.
 // Tests reset the tables first, so they must not run in parallel.
 var (
-	testDB       *testpg.DB
-	testListener *notify.Listener
-	discard      = slog.New(slog.DiscardHandler)
+	testDB        *testpg.DB
+	testListener  *notify.Listener
+	testPublisher *notify.Publisher
+	discard       = slog.New(slog.DiscardHandler)
 )
 
 func TestMain(m *testing.M) {
@@ -55,7 +56,9 @@ func TestMain(m *testing.M) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	testPublisher = notify.NewPublisher(testListener, testDB.Pool, notify.DefaultCoalesceWindow, discard)
 	code := m.Run()
+	testPublisher.Close()
 	cancel()
 	<-done
 	testDB.Close()
@@ -84,7 +87,7 @@ func newEnvWith(t *testing.T, serverTP, clientTP trace.TracerProvider) *env {
 	if serverTP != nil {
 		opts = append(opts, api.WithTracerProvider(serverTP))
 	}
-	srv := api.NewServer(st, testListener, discard, opts...)
+	srv := api.NewServer(st, testPublisher, discard, opts...)
 	gs := api.NewGRPCServer(srv, nil, discard)
 	lis := bufconn.Listen(1 << 20)
 	go func() { _ = gs.Serve(lis) }()
