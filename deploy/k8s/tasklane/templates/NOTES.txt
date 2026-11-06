@@ -1,0 +1,3 @@
+Tasklane is starting: {{ .Values.replicaCount }} servers{{ if .Values.envoy.enabled }} behind Envoy{{ end }}.
+Clients connect to {{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local:7070 (gRPC) or :8080 (HTTP).
+Prometheus can scrape every server through {{ include "tasklane.headless" . }}:9464.

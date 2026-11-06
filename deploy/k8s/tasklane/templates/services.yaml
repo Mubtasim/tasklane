@@ -1,0 +1,46 @@
+# Every ready server pod by its own address: Envoy balances over these and
+# Prometheus scrapes each one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-headless
+  labels:
+    {{- include "tasklane.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: false
+  selector:
+    {{- include "tasklane.serverSelector" . | nindent 4 }}
+  ports:
+    - { name: grpc, port: 7070, targetPort: grpc }
+    - { name: http, port: 8080, targetPort: http }
+    - { name: metrics, port: 9464, targetPort: metrics }
+---
+# The address clients use.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "tasklane.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- if .Values.envoy.enabled }}
+    {{- include "tasklane.envoySelector" . | nindent 4 }}
+    {{- else }}
+    {{- include "tasklane.serverSelector" . | nindent 4 }}
+    {{- end }}
+  ports:
+    - name: grpc
+      port: 7070
+      targetPort: 7070
+      {{- with .Values.service.nodePorts.grpc }}
+      nodePort: {{ . }}
+      {{- end }}
+    - name: http
+      port: 8080
+      targetPort: 8080
+      {{- with .Values.service.nodePorts.http }}
+      nodePort: {{ . }}
+      {{- end }}

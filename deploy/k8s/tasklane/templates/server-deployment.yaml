@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-server
+  labels:
+    {{- include "tasklane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # A new pod must be ready before an old one stops, so a deploy never runs
+  # below replicaCount ready servers.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "tasklane.serverSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tasklane.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      annotations:
+        # Roll the pods when the chart-made Secret changes.
+        checksum/secret: {{ include (print $.Template.BasePath "/server-secret.yaml") . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.drain.terminationGracePeriodSeconds }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: tasklane
+          image: {{ include "tasklane.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: grpc, containerPort: 7070 }
+            - { name: http, containerPort: 8080 }
+            - { name: metrics, containerPort: 9464 }
+          envFrom:
+            - secretRef:
+                name: {{ include "tasklane.secretName" . }}
+          {{- with .Values.env }}
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          # Migrations run before the server listens; give them a minute.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 1
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 2
+            failureThreshold: 2
+          lifecycle:
+            # Endpoints drop this pod at the same moment SIGTERM would
+            # arrive; keep serving while Envoy and kube-proxy catch up. The
+            # native sleep action needs no shell (the image is distroless).
+            preStop:
+              sleep:
+                seconds: {{ .Values.drain.preStopSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
