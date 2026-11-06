@@ -3,6 +3,7 @@ module github.com/mubtasim/tasklane
 go 1.27.2
 
 require (
+	github.com/HdrHistogram/hdrhistogram-go v1.1.2
 	github.com/exaring/otelpgx v0.13.0
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.32.0
