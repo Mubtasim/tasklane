@@ -728,3 +728,116 @@ Four parts: why it happened, the fix, the numbers, and the upgrade.
 **Fails halfway (rolling upgrade):** a new server still understands old untagged payloads. An old server reads `emails a1b2…` as a queue named that, which has no subscribers, so it wakes no one. Its waiting leases still find the jobs at their 1 s re-check. So mixing versions costs at most 1 s of extra latency on the old servers, for the length of the rollout, and loses nothing. That is the same guarantee as any lost notification.
 
 **Trade-off:** the payload format is now a small protocol between servers, so a later change has to stay readable by the previous version. A more compatible alternative would be a second channel just for tagged payloads, but the 1 s re-check already makes a mixed rollout safe, so one channel keeps it simple. Comparing the NOTIFY's sender process ID against our own isn't possible: the publisher sends through pooled connections, not through the listener's connection.
+
+## Q46. Why does gRPC need a layer-7 balancer in Kubernetes, and what did you choose?
+
+Three parts: why a Service isn't enough, what Envoy does, and the alternatives.
+
+**What:** a Kubernetes Service balances connections, and gRPC sends all of a client's calls over one long-lived HTTP/2 connection. So one pod gets all of that client's calls, and a new pod gets none until the client reconnects. Tasklane runs Envoy in the cluster, which picks a server pod for every request.
+
+**How:**
+1. A Service's ClusterIP is handled by kube-proxy, which picks a pod once per TCP connection. After that, every call on the connection goes to the same pod.
+2. gRPC multiplexes every call as a stream on that one connection, and a client keeps it for hours. Long-poll Leases make it worse: each holds a request open for up to 30 s.
+3. Envoy ends the client's HTTP/2 connection and opens its own to every server pod. For each request it picks the pod with the fewest requests in flight (`least_request`).
+4. It finds the pods through the headless Service `tasklane-headless`, whose DNS name lists every ready server pod. Envoy re-reads it every 2 s and health-checks `/readyz` on each pod every 2 s.
+5. Clients use the Service `tasklane`, which points at 2 Envoy pods. Both Envoy and the servers have a disruption budget.
+
+**Numbers:** 2 servers, 2 Envoys; DNS re-read every 2 s; health checks every 2 s, down after 2 failures. In the Compose demo the same Envoy setup split traffic about 16 and 17 requests/s across two servers and used about 17 MiB. In Kubernetes a rolling restart of both servers at 50 jobs/s lost 0 requests in 3 runs.
+
+**Fails halfway:** if an Envoy pod dies, the client connections it held are dropped. Clients reconnect and the Service sends them to the other Envoy. SDK workers retry their Lease with backoff; a producer retries an Enqueue itself, with the same idempotency key so it can't create the job twice. The disruption budget keeps a voluntary eviction from taking both Envoys at once.
+
+**Trade-off:** one more hop and one more component to run. The alternatives: client-side `round_robin` over the headless Service (every SDK must do it, new pods are seen only after a DNS refresh, which can lag about 30 s with CoreDNS's cache on kind, and plain HTTP clients get nothing), or a service mesh (a proxy next to every pod, about 300–500 MB on the laptop; an estimate, not measured). One shared Envoy covers gRPC and HTTP clients for about the cost of one small pod.
+
+## Q47. A pod is deleted: why can requests fail, and how does the chart prevent it?
+
+Three parts: the race, the timeline, and the rollout.
+
+**What:** Kubernetes sends SIGTERM and removes the pod from the endpoints at the same time. Everything that routes traffic (kube-proxy, Envoy's DNS view) learns about the removal a little later. A server that stopped serving at SIGTERM would refuse requests that are still on their way to it.
+
+**How:**
+1. **0 s:** the pod is marked terminating. A `preStop` hook sleeps 5 s while the server keeps serving normally. The endpoints drop the pod, and Envoy stops sending to it at its next DNS read, every 2 s (plus the DNS cache time, see Q51).
+2. **5 s:** SIGTERM. The server's existing drain marks itself not ready, ends waiting long-polls (the SDK retries them through Envoy on the other server), and gives HTTP up to 10 s, gRPC up to 10 s and metrics up to 2 s.
+3. **≤ 27 s:** the server exits. The grace period is 40 s, so there are 13 s spare. A chart test asserts preStop + drain < grace.
+4. A rollout uses `maxUnavailable: 0` and `maxSurge: 1`: a new pod must pass `/readyz` before an old one stops, so there are always 2 ready servers.
+5. Envoy drops a pod as soon as DNS drops it, and retries a failed connect on another server (Q51).
+
+**Numbers:** a rolling restart of both servers under 50 jobs/s: 0 failed sends, 0 dropped, valid, in 3 runs out of 3, and again in the end-to-end test. Before the Envoy fix of Q51, the same test lost 170 and 123 sends.
+
+**Fails halfway:** if the drain overruns, the kubelet sends SIGKILL at 40 s. Jobs that were leased on that server are not lost: their lease expires after the visibility timeout and the reaper makes them available again. A worker whose Ack call failed retries it; Ack is idempotent (the same token gets success again), so a retry is safe, and a late Ack from an old lease is rejected by the fencing token.
+
+**Trade-off:** every pod deletion takes at least 5 s longer, and a full rollout of 2 servers takes about 25–30 s instead of a few seconds. A fixed sleep is a guess about how slow the rest of the cluster is: if DNS caching is longer than the sleep, the sleep alone isn't enough (Q51).
+
+## Q48. KEDA vs a plain HPA, and what does scale-to-zero cost?
+
+Three parts: what each does, the cost, and when to keep one pod.
+
+**What:** a HorizontalPodAutoscaler scales on CPU, memory or custom metrics, but never below 1 pod. KEDA adds the step between 0 and 1 (activation) and feeds the HPA an external metric for 1 to N. Tasklane's demo workers scale from 0 to 5 on queue depth.
+
+**How:**
+1. KEDA polls Prometheus every 5 s for the waiting plus running jobs in queue `demo` (Q49).
+2. With 0 pods, any job (`activationThreshold: 0`) makes KEDA set the Deployment to 1.
+3. From 1 to N, KEDA creates an HPA with a target of 50 jobs per pod, capped at 5 pods. A 3,000-job burst asks for 60 pods, so the HPA jumps straight to 5.
+4. Scale-down: the HPA waits out a 30 s stabilization window before going down to 1; KEDA goes to 0 after a 30 s cooldown with no jobs.
+
+**Numbers:** a 3,000-job burst, medians of 3 on the laptop: the first worker started 8 s after the burst (5–9 s), the queue was empty at 77 s with 5 pods (about 43 jobs/s, against the 45 estimated), and the workers were back to 0 31 s after that. A warm worker that is already long-polling starts a job in about 30 ms. So scale-to-zero costs the first job about 8 s: scrape (≤ 5 s) + poll (5 s) + pod start.
+
+**Fails halfway:** if Prometheus or the metric is gone, KEDA's Prometheus scaler reads the empty result as 0: it adds no workers and scales the running ones down, each draining first. Jobs wait in the queue but are not lost. A worker removed by a scale-down finishes or nacks its jobs within its 35 s grace period, so none waits for a lease timeout.
+
+**Trade-off:** scale to zero saves the pods' memory and CPU on a quiet queue, at the price of seconds of latency for the first job. Keep a minimum of 1 for queues where a job must start within a second (a password-reset email); use 0 for batch work and quiet queues.
+
+## Q49. Why does the scaling signal count leased jobs, and why `max by (state)`?
+
+Two parts: which jobs to count, and how to read a gauge that two servers export.
+
+**What:** the signal is `sum(max by (state) (tasklane_queue_depth{queue="demo", state=~"available|leased"}))`: waiting plus running jobs, each counted once.
+
+**How:**
+1. **Count leased jobs:** with only `available`, a burst that the workers have fully leased reads 0 while 50 jobs are still running. KEDA would then scale to 0 mid-job. Each removed worker drains (it finishes or nacks its jobs within 27 s), so work is delayed, and the nacked jobs run again.
+2. **`max by (state)`:** both servers read the same Postgres and export the same gauge. `sum` would count every job twice. `max by (state)` keeps one value per state, then `sum` adds available and leased.
+3. **Threshold:** 50 jobs per pod. A pod runs 10 jobs at once and a demo job takes about 1.1 s, so a pod does about 9 jobs/s, and 50 jobs is about 5 s of work per pod.
+4. A chart test checks that the query names only metrics the server really exports.
+
+**Numbers:** in the 3,000-job bursts, workers went back to 0 only after the queue was empty: 31 s later (median), from the 30 s HPA window and the 30 s KEDA cooldown. 5 pods drained about 43 jobs/s, about 8.6 per pod against the 9 estimated.
+
+**Fails halfway:** if one server stops reporting, `max` still takes the other server's value, so the signal stays right. If both stop, the result is empty and KEDA reads 0 (Q48). The gauge is refreshed every 1–5 s and scraped every 5 s, so the signal is up to about 10 s old; scale-down waits 30 s, which covers that.
+
+**Trade-off:** counting running jobs keeps workers alive until the last job ends, so they scale down a little later. The other way, scaling on waiting jobs only, is cheaper on paper but kills workers in the middle of jobs. A per-pod target also ignores job length: with longer jobs, 50 per pod is more seconds of work, so the threshold should follow the job time.
+
+## Q50. PodDisruptionBudget vs `maxUnavailable` in a rollout: which protects what?
+
+Three parts: the rollout, the budget, and what neither covers.
+
+**What:** `maxUnavailable` in the Deployment strategy limits the Deployment's own rollouts. A PodDisruptionBudget limits voluntary evictions started by someone else: a node drain, a cluster upgrade, the cluster autoscaler. Neither protects against a node crash.
+
+**How:**
+1. **Rollout:** the server Deployment has `maxUnavailable: 0`, `maxSurge: 1`. To replace pods it starts a third one, waits for its `/readyz`, then stops an old one, so 2 servers are always ready.
+2. **Budget:** the chart has a PDB with `maxUnavailable: 1` for the servers and one for Envoy. `kubectl drain` evicts through the Eviction API, which refuses an eviction that would break the budget, so a drain removes one server at a time and waits until a replacement is ready.
+3. A rollout does not go through the Eviction API, so the PDB does not limit it; the rollout's own `maxUnavailable` does.
+4. **Not covered:** a node that crashes or loses power is an involuntary disruption. Only having replicas on other nodes helps there.
+
+**Numbers:** 2 replicas, PDB `maxUnavailable: 1`, rollout `maxUnavailable: 0` and `maxSurge: 1` (3 pods for a moment). A rolling restart of both servers took about 25–30 s and lost 0 requests. A node drain was not measured: the laptop cluster has one node.
+
+**Fails halfway:** with both pods on one node (the laptop), a drain cordons the node, evicts one server, and the replacement cannot start anywhere else. The second eviction would break the budget, so the drain keeps retrying it, forever unless `--timeout` is set. On a real cluster the replacement starts on another node and the drain goes on.
+
+**Trade-off:** a budget can block maintenance: with `minAvailable` equal to the replica count, no drain can ever finish. `maxUnavailable: 1` with 2 replicas lets maintenance proceed but leaves one server during a drain. The chart sets no anti-affinity or topology spread, so on a multi-node cluster both servers can still land on one node; add a spread constraint so a node crash takes only one.
+
+## Q51. The rolling-restart test lost requests: why, how did you find it, and what fixed it?
+
+Four parts: the symptom, how the cause was found, the two fixes, and the numbers.
+
+**What:** the first rolling restarts under 50 jobs/s lost 4–6% of sends. The test on my own project found it, not a user. Envoy kept sending requests to a server pod that had already exited, because by default it keeps a host that left DNS while the host still passes health checks.
+
+**How:**
+1. **Symptom:** every failure was the same: `Unavailable: upstream connect error or disconnect/reset before headers. reset reason: connection timeout`, which is Envoy's 1 s connect timeout. A connect to an IP that no longer exists gets no reply, so it times out instead of failing fast.
+2. **Finding the cause:** I ran a restart with an observer that polled the pods and the headless EndpointSlice every 0.3 s, and lined up its timeline with loadgen's errors. The old pod's endpoint was already `ready=false, terminating=true` (out of DNS) when the pod started terminating. The pod completed 5.3 s later, right after the 5 s preStop, because its drain had nothing left to do. The first failed send came less than a second after that.
+3. **Cause:** Envoy's default `ignore_health_on_host_removal: false`. The pod passed `/readyz` for the whole preStop, so Envoy kept it after DNS dropped it, until two health checks failed 2–4 s after it exited. All 3 tries of a request could hit the same dead pod, or the other old pod, which died about 1.5 s later. The design assumed the next DNS refresh stops traffic; it doesn't, by default.
+4. **Fix 1:** `ignore_health_on_host_removal: true`: drop a pod as soon as DNS stops listing it, even if its last health check passed.
+5. **Why some still failed:** CoreDNS caches answers for 5 s on k3s. With Envoy's 2 s refresh, a gone pod can stay in Envoy's view about 7 s, longer than the 5 s preStop.
+6. **Fix 2:** the retry host predicate `previous_hosts`: a retried connect goes to a different server. Retries still apply only to requests that never reached a server, so a Lease that did is never retried by the proxy.
+7. A chart test asserts both settings, so they can't silently go away.
+
+**Numbers:** before: 170 and 123 failed sends out of about 3,000 (50 jobs/s for 60 s). Fix 1 alone: 10, 0, 0 (the 10 were also connect timeouts, about 6 s after the delete). Fix 1 and 2: 0, 0, 0, and 0 again in the end-to-end test. No timing was changed: preStop 5 s, grace 40 s, connect timeout 1 s, 2 retries.
+
+**Fails halfway:** if all 3 tries land on gone pods (only 2 servers, both old pods replaced about 1.5 s apart), the client gets `Unavailable`: SDK workers retry with backoff, and a producer retries the Enqueue with the same idempotency key. On kind, CI's cluster, CoreDNS caches for 30 s, so the window is longer; the retry on another server, the health checks (a gone pod is marked down 2–4 s after it exits) and outlier detection cover it, but that was not run locally. If CI shows connect timeouts there, the next lever is a longer preStop.
+
+**Trade-off:** trusting DNS over health checks means a pod that drops out of DNS for a moment, for example a readiness blip, loses traffic at once, even though it still works. The other fix, a preStop longer than DNS cache plus refresh, would cost every pod deletion 30 s or more on kind. Dropping on removal plus retrying elsewhere keeps the preStop at 5 s.

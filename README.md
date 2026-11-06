@@ -6,10 +6,11 @@ A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
 
-**Status:** early development (milestone M5a: load tests and tuning). Not ready for production use.
+**Status:** early development (milestone M5b: Kubernetes deployment and autoscaling). Not ready for production use.
 
 - Design: [docs/design.md](docs/design.md)
 - Benchmarks: [docs/benchmarks.md](docs/benchmarks.md). On a 2-core laptop with pinned CPUs, one server and one PostgreSQL complete about 430 jobs/s (enqueue, lease, ack; median of 4 runs), with p99 enqueue-to-start of 61 ms at 80% of that. The limit there is PostgreSQL's per-commit disk flush, not CPU.
+- Kubernetes: a Helm chart for the server, Envoy for per-request gRPC balancing, and demo workers that KEDA scales from zero on queue depth (see [Kubernetes](#kubernetes)).
 
 ## Running the server
 
@@ -196,6 +197,21 @@ OTEL_TRACES_SAMPLER_ARG=0.1
 ```
 
 With the parent-based sampler the producer decides once and everyone else follows its `sampled` flag, so a trace is whole or absent. The server samples root spans at 100% unless `OTEL_TRACES_SAMPLER` is set, so every call from a client that sends no `traceparent` (`tasklane-watch`, curl, a worker without OpenTelemetry) becomes a sampled root trace; in production set a ratio (`parentbased_traceidratio` plus `OTEL_TRACES_SAMPLER_ARG`). Without `OTEL_EXPORTER_OTLP_ENDPOINT` the server creates no spans and exports nothing.
+
+## Kubernetes
+
+A Helm chart (`deploy/k8s/tasklane/`) runs the server: 2 pods behind Envoy, which balances each gRPC request rather than each connection; probes on `/healthz` and `/readyz`; a 5 s `preStop` wait so a pod keeps serving while it is removed from the endpoints; a disruption budget; non-root, read-only pods. Postgres is not part of the chart: set `databaseURL` or `existingSecret`.
+
+The demo runs everything in a local k3d cluster (about 0.9 GB of RAM: `docker stats` on the idle k3s container, which holds every pod, KEDA and Postgres included) and scales the demo workers from zero with KEDA, on waiting plus running jobs read from Prometheus:
+
+    deploy/k8s/tools.sh kubectl helm k3d   # pinned binaries in ~/.local/bin
+    deploy/k8s/demo.sh up
+    deploy/k8s/demo.sh watch               # second terminal
+    deploy/k8s/demo.sh load 3000           # a burst of 3,000 jobs
+    deploy/k8s/demo.sh restart             # replace both servers under load
+    deploy/k8s/demo.sh down
+
+Measured on the laptop (medians of 3): the first worker started 8 s after a 3,000-job burst, 5 workers had drained it 77 s after the burst, and they were back to 0 31 s later. A rolling restart of both servers at 50 jobs/s lost no requests (0 failed sends in 3 runs). That took a fix: Envoy kept sending to a pod that had already exited, until two settings made it drop a pod as soon as DNS drops it and retry a failed connect on another server. CI checks the chart on every pull request, runs the end-to-end test on kind when the deployment changes and on every push to `main`, and the scaling test nightly. Design: [§20](docs/design.md#20-m5b-kubernetes-deployment-and-autoscaling).
 
 ## Correctness
 
