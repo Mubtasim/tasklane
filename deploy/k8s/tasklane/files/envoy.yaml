@@ -2,7 +2,9 @@
 # every request, not every connection: gRPC sends all of a client's calls over
 # one HTTP/2 connection, so the Service's connection-level balancing would pin
 # each client to one pod. TASKLANE_HEADLESS is the headless Service's DNS
-# name; it resolves to every ready server pod, re-read every 2 s.
+# name; it resolves to every ready server pod. Envoy asks every 2 s, but the
+# cluster DNS caches the answer (CoreDNS ttl: 5 s on k3s, 30 s on kind and
+# kubeadm), so a removed pod can stay in the answer that long.
 static_resources:
   listeners:
     - name: grpc
@@ -94,8 +96,17 @@ static_resources:
       # left DNS until it fails health checks, but a terminating pod passes
       # /readyz through its 5 s preStop and then exits at once: Envoy kept
       # sending to the gone IP for 2-4 s (connect timeouts, 4-6% failed sends
-      # in a rolling restart). DNS drops it within 2 s, inside the preStop.
+      # in a rolling restart). DNS drops it after the CoreDNS cache expires
+      # (5 s on k3s, inside the preStop; up to 30 s on kind). Until then the
+      # health checks mark the exited pod down 2-4 s after it exits, and the
+      # previous_hosts retry sends a failed connect to another server.
       ignore_health_on_host_removal: true
+      # Never route to a host that failed its health checks. With Envoy's
+      # default 50% panic threshold, two exited old pods plus two new ones
+      # not yet checked would read as "under half healthy", and Envoy would
+      # spread requests over all four, dead ones included.
+      common_lb_config: &lbconfig
+        healthy_panic_threshold: { value: 0 }
       health_checks: &readyz
         - timeout: 1s
           interval: 2s
@@ -119,5 +130,6 @@ static_resources:
           - lb_endpoints:
               - endpoint: { address: { socket_address: { address: TASKLANE_HEADLESS, port_value: 8080 } } }
       ignore_health_on_host_removal: true
+      common_lb_config: *lbconfig
       health_checks: *readyz
       outlier_detection: *outliers

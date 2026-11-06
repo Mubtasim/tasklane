@@ -3,6 +3,10 @@
 
 replicaCount: 2
 
+# No image is published yet: ghcr.io/mubtasim/tasklane arrives with v1.0.0
+# (milestone M5e). Until then build and push your own (docker build -t
+# <registry>/tasklane:<tag> .) and set repository and tag. The local demo
+# loads tasklane:dev into the cluster instead (demo/values.yaml).
 image:
   repository: ghcr.io/mubtasim/tasklane
   tag: ""  # defaults to the chart's appVersion
@@ -10,7 +14,9 @@ image:
 
 # The server's secrets. Either set them here (the chart makes a Secret) or
 # name an existing Secret with the keys TASKLANE_DATABASE_URL and
-# TASKLANE_API_KEYS.
+# TASKLANE_API_KEYS. The pods carry a hash of the chart-made Secret, so
+# changing these values rolls them; an existingSecret is not hashed, so
+# after rotating it run kubectl rollout restart deploy/<release>-server.
 databaseURL: ""
 apiKeys: ""  # comma-separated; empty turns authentication off
 existingSecret: ""
@@ -23,8 +29,9 @@ resources:
   limits: { cpu: "1", memory: 256Mi }
 
 # Shutdown (design §20.3): keep serving for preStopSeconds while endpoints
-# drop this pod, then the server's own drain (at most 22 s), all inside the
-# grace period.
+# drop this pod, then the server's own drain (at most 24 s: HTTP 10, gRPC 10,
+# metrics 2, trace flush 2), so the pod exits within 29 s, inside the grace
+# period.
 drain:
   preStopSeconds: 5
   terminationGracePeriodSeconds: 40

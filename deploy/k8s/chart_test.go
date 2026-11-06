@@ -114,8 +114,8 @@ func serverContainer(t *testing.T, objs []obj) obj {
 }
 
 // The server's own drain (cmd/tasklane/main.go): HTTP 10 s + gRPC 10 s +
-// metrics 2 s.
-const serverDrainBudget = 22
+// metrics 2 s + the final trace flush 2 s.
+const serverDrainBudget = 24
 
 func TestServerDrainFitsTheGracePeriod(t *testing.T) {
 	objs := render(t)
@@ -142,6 +142,9 @@ func TestServerProbes(t *testing.T) {
 	require.Equal(t, "/readyz", dig(c, "readinessProbe", "httpGet", "path"))
 	require.Equal(t, 2, dig(c, "readinessProbe", "periodSeconds"))
 	require.Equal(t, 2, dig(c, "readinessProbe", "failureThreshold"))
+	// /readyz waits up to 2 s for the database (internal/api/gateway.go); a
+	// shorter probe timeout would mark every pod unready on a slow ping.
+	require.Equal(t, 2, dig(c, "readinessProbe", "timeoutSeconds"))
 }
 
 func TestServerRunsLockedDown(t *testing.T) {
@@ -149,6 +152,7 @@ func TestServerRunsLockedDown(t *testing.T) {
 	pod := dig(find(t, objs, "Deployment", "tasklane-server"), "spec", "template", "spec")
 	require.Equal(t, true, dig(pod, "securityContext", "runAsNonRoot"))
 	require.Equal(t, false, dig(pod, "automountServiceAccountToken"))
+	require.Equal(t, false, dig(pod, "enableServiceLinks"))
 	c := serverContainer(t, objs)
 	require.Equal(t, true, dig(c, "securityContext", "readOnlyRootFilesystem"))
 	require.Equal(t, false, dig(c, "securityContext", "allowPrivilegeEscalation"))
@@ -184,7 +188,8 @@ func TestServerPDBMatchesThePods(t *testing.T) {
 	objs := render(t)
 	pdb := find(t, objs, "PodDisruptionBudget", "tasklane-server")
 	require.Equal(t, 1, dig(pdb, "spec", "maxUnavailable"))
-	sel := dig(pdb, "spec", "selector", "matchLabels").(obj)
+	sel, _ := dig(pdb, "spec", "selector", "matchLabels").(obj)
+	require.NotEmpty(t, sel, "an empty selector would match every pod")
 	labels := dig(find(t, objs, "Deployment", "tasklane-server"), "spec", "template", "metadata", "labels").(obj)
 	for k, v := range sel {
 		require.Equal(t, v, labels[k], "PDB selector %s", k)
@@ -214,6 +219,19 @@ func TestEnvoyBalancesOverTheHeadlessService(t *testing.T) {
 	// The rolling restart lost 4-6% of sends without these (design §20.3).
 	require.Equal(t, 2, strings.Count(cfg, "ignore_health_on_host_removal: true"), "both clusters")
 	require.Equal(t, 2, strings.Count(cfg, "envoy.retry_host_predicates.previous_hosts"), "both routes")
+	// Two dead old pods and two unchecked new ones must not trip panic
+	// routing, which would send requests to the dead pods too.
+	var parsed obj
+	require.NoError(t, yaml.Unmarshal([]byte(cfg), &parsed))
+	clusters, _ := dig(parsed, "static_resources", "clusters").([]any)
+	require.Len(t, clusters, 2)
+	for _, c := range clusters {
+		require.Equal(t, 0, dig(c, "common_lb_config", "healthy_panic_threshold", "value"), "cluster %v", dig(c, "name"))
+	}
+	// Retry only requests that never reached a server (design §17.4): a
+	// Lease that did may already hold jobs.
+	require.Equal(t, 2, strings.Count(cfg, "retry_on: connect-failure,refused-stream,reset-before-request"), "both routes")
+	require.Equal(t, 2, strings.Count(cfg, "retry_on:"), "no other retry policy")
 
 	d := find(t, objs, "Deployment", "tasklane-envoy")
 	require.Equal(t, 2, dig(d, "spec", "replicas"))

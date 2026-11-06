@@ -23,11 +23,17 @@ spec:
         {{- include "tasklane.labels" . | nindent 8 }}
         app.kubernetes.io/component: server
       annotations:
-        # Roll the pods when the chart-made Secret changes.
+        # Roll the pods when the chart-made Secret changes: a hash of the
+        # rendered Secret, so the values are not readable from it. With
+        # existingSecret nothing is rendered and the hash never changes;
+        # restart the Deployment after rotating that Secret.
         checksum/secret: {{ include (print $.Template.BasePath "/server-secret.yaml") . | sha256sum }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.drain.terminationGracePeriodSeconds }}
       automountServiceAccountToken: false
+      # No *_SERVICE_HOST / *_PORT variables for every Service in the
+      # namespace: the server reads only TASKLANE_* and OTEL_*.
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -63,6 +69,9 @@ spec:
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 2
+            # /readyz waits up to 2 s for a database ping. With the default
+            # 1 s, a slow database would mark every pod unready at once.
+            timeoutSeconds: 2
             failureThreshold: 2
           lifecycle:
             # Endpoints drop this pod at the same moment SIGTERM would
