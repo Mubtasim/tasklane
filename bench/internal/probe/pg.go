@@ -67,17 +67,23 @@ func ResetStatements(ctx context.Context, db Querier) error {
 	return nil
 }
 
+// ownQueries excludes the load generator's own probes (pg_stat_activity
+// sampling, TakePG's table and WAL reads, the statistics queries themselves)
+// from the totals: they run every 100 ms and would otherwise inflate the
+// queries-per-second figure, badly so in idle runs.
+const ownQueries = `query NOT LIKE '%pg\_stat\_%' AND query NOT LIKE '%pg\_current\_wal\_lsn%'`
+
 // TopStatements returns the n statements with the most total execution time
 // since the last reset, and the calls of all statements (queries per second
 // = totalCalls / window).
 func TopStatements(ctx context.Context, db Querier, n int) ([]Statement, int64, error) {
 	var total int64
-	if err := db.QueryRow(ctx, `SELECT coalesce(sum(calls), 0)::bigint FROM pg_stat_statements`).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, `SELECT coalesce(sum(calls), 0)::bigint FROM pg_stat_statements WHERE `+ownQueries).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("pg_stat_statements: %w", err)
 	}
 	rows, err := db.Query(ctx, `
 		SELECT query, calls, total_exec_time, mean_exec_time, rows
-		FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT $1`, n)
+		FROM pg_stat_statements WHERE `+ownQueries+` ORDER BY total_exec_time DESC LIMIT $1`, n)
 	if err != nil {
 		return nil, 0, fmt.Errorf("pg_stat_statements: %w", err)
 	}

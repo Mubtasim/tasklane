@@ -131,9 +131,18 @@ func measured(ctx context.Context, cfg Config, client *tasklane.Client) error {
 
 	stopProd()
 	<-prodDone
-	// Jobs enqueued just before the window ended are acked within a
-	// moment; give them a second before stopping the workers.
-	sleepCtx(ctx, time.Second)
+	// Jobs enqueued just before the window ended are acked within a moment;
+	// give them a second before stopping the workers. An open run with
+	// workers publishes latency percentiles, so it waits (up to 10 s) for
+	// every in-window job to start instead: a job that never starts leaves
+	// no sample, which would bias p99 low. Closed runs are exempt, since
+	// their producers outpace workers by design and their latency is unused.
+	var notStarted int64
+	if cfg.Mode == "open" && cfg.Workers > 0 {
+		notStarted = l.drain(ctx, 10*time.Second)
+	} else {
+		sleepCtx(ctx, time.Second)
+	}
 	stopWork()
 	waitWorkers()
 	if ctx.Err() != nil {
@@ -141,6 +150,7 @@ func measured(ctx context.Context, cfg Config, client *tasklane.Client) error {
 	}
 
 	c := l.counts()
+	c.notStarted = notStarted
 	win := after.at.Sub(before.at)
 	jobs := c.acked
 	if cfg.Workers == 0 {

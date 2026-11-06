@@ -27,6 +27,9 @@ func (w window) contains(t time.Time) bool {
 // (one per batch); errors and dropped too.
 type counts struct {
 	sends, errors, dropped, enqueued, acked int64
+	// notStarted is how many in-window jobs no handler had started when the
+	// run stopped waiting; only open runs with workers measure it.
+	notStarted int64
 }
 
 // load drives one run: producers enqueue, workers ack, and both record into
@@ -37,8 +40,11 @@ type load struct {
 	win    atomic.Pointer[window]
 
 	sends, errors, dropped, enqueued, acked atomic.Int64
-	e2s, enq                                *stats.Recorder
-	firstErr                                sync.Once
+	// started counts in-window jobs whose handler began; open runs drain
+	// until it reaches enqueued.
+	started  atomic.Int64
+	e2s, enq *stats.Recorder
+	firstErr sync.Once
 }
 
 func newLoad(cfg Config, client *tasklane.Client) *load {
@@ -48,7 +54,7 @@ func newLoad(cfg Config, client *tasklane.Client) *load {
 }
 
 func (l *load) counts() counts {
-	return counts{l.sends.Load(), l.errors.Load(), l.dropped.Load(), l.enqueued.Load(), l.acked.Load()}
+	return counts{l.sends.Load(), l.errors.Load(), l.dropped.Load(), l.enqueued.Load(), l.acked.Load(), 0}
 }
 
 // startWorkers runs the worker slots until ctx is done; wait returns once
@@ -70,6 +76,7 @@ func (l *load) startWorkers(ctx context.Context) (wait func()) {
 			now := time.Now()
 			if at, ok := scheduledTime(j.Payload); ok && l.win.Load().contains(at) {
 				l.e2s.Record(now.Sub(at))
+				l.started.Add(1)
 			}
 			return nil
 		})
@@ -190,4 +197,16 @@ func queueName(cfg Config, i int64) string {
 		return cfg.Queue
 	}
 	return fmt.Sprintf("%s-%04d", cfg.Queue, i%int64(cfg.Queues))
+}
+
+// drain waits until every job enqueued in the window has started, for at
+// most limit, and returns how many never did. Without it the slowest jobs of a
+// backlogged run would produce no latency sample, and p99 would come out
+// too low while the row looked valid.
+func (l *load) drain(ctx context.Context, limit time.Duration) int64 {
+	deadline := time.Now().Add(limit)
+	for l.started.Load() < l.enqueued.Load() && time.Now().Before(deadline) && ctx.Err() == nil {
+		sleepCtx(ctx, 100*time.Millisecond)
+	}
+	return max(l.enqueued.Load()-l.started.Load(), 0)
 }

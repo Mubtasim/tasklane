@@ -29,6 +29,9 @@ func TestVerdict(t *testing.T) {
 	ok, reason = verdict(counts{}, []string{"cgroup-server: no such file"})
 	require.False(t, ok)
 	require.Contains(t, reason, "cgroup-server")
+	ok, reason = verdict(counts{sends: 10, notStarted: 7}, nil)
+	require.False(t, ok)
+	require.Contains(t, reason, "7 in-window jobs never started")
 	ok, _ = verdict(counts{}, nil)
 	require.True(t, ok, "an idle run with no sends is valid")
 }

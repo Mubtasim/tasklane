@@ -71,6 +71,9 @@ func verdict(c counts, problems []string) (bool, string) {
 	if c.dropped > 0 {
 		reasons = append(reasons, fmt.Sprintf("%d sends dropped (load generator saturated)", c.dropped))
 	}
+	if c.notStarted > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d in-window jobs never started", c.notStarted))
+	}
 	reasons = append(reasons, problems...)
 	return len(reasons) == 0, strings.Join(reasons, "; ")
 }
