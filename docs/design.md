@@ -319,7 +319,11 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M4a | mid-Dec | CI, Prometheus metrics, Grafana dashboard, alert rules (§16) |
 | M4b | end of Dec | Invariant and chaos tests, two server copies behind Envoy (§17) |
 | M4c | end of Dec | Tracing with OpenTelemetry and Jaeger, exemplars in Grafana (§18) |
-| M5 | mid-Jan 2027 | TS and C# SDKs, Kubernetes deployment (Helm chart with probes, KEDA autoscaling of workers on queue depth), load tests and benchmark report, v1.0.0 release and a blog post |
+| M5a | Nov 2026 | Load tests, tuning and benchmark report (§19) |
+| M5b | Dec | Kubernetes deployment: Helm chart with probes, SIGTERM drain, KEDA autoscaling of workers on queue depth, k3d demo |
+| M5c | Dec | TypeScript SDK (npm) |
+| M5d | Jan 2027 | C# SDK (NuGet) |
+| M5e | mid-Jan 2027 | v1.0.0: image on GHCR, release notes, blog post |
 
 Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor.
 
@@ -880,3 +884,97 @@ The standard OpenTelemetry environment variables configure everything; there are
 - `docs/cheatsheet.md`: spans per job, demo span rate, Jaeger memory.
 
 Out of scope: tail sampling and the OpenTelemetry Collector; span metrics; tracing the reaper, pruner and depth refresh; tracing in the TypeScript and C# SDKs (M5, same pattern); trace-to-logs links in Grafana.
+
+## 19. M5a: load tests, tuning and benchmark report
+
+Decided 2026-11-06. This section is the M5a spec. It refines the load-test plan in §10. M5 is split into five parts, each with its own spec and pull request: M5a load test, M5b Kubernetes, M5c TypeScript SDK, M5d C# SDK, M5e v1.0.0. The load test comes first because it can still change the server, and two SDKs are about to copy the protocol.
+
+### 19.1 Decisions
+
+| # | Question | Choice | Why |
+|---|---|---|---|
+| 1 | Where each part runs | Pinned CPU sets on one laptop (`cpuset`), with a `PROFILE=vm` layout for bigger machines | Unpinned, the load generator steals CPU from the server and runs vary by more than a tuning step gains. Pinned numbers are small but repeatable, so before/after comparisons mean something. CPU per job turns them into numbers for any machine. |
+| 2 | Load model | Closed first (find the maximum M), then open at 50%, 80% and 95% of M | A closed model finds the maximum throughput but hides latency: when the server slows, the producers slow with it and the slow moments are never recorded (coordinated omission). An open model sends on a fixed schedule and measures from the scheduled time, so its p99 is honest. |
+| 3 | Fixing inside M5a | Evidence first: measure every parked check, fix only what limits throughput or p99, at most 3 tuning steps | Each fix gets a before/after measurement. Checks that don't matter at this scale get their number and a reason instead of a fix. |
+| 4 | Two server copies vs one (§10 scenario 5) | Replaced by capacity maths from CPU per job | With pinned CPUs, two copies would share the server's one thread and show no gain, which would be a false result. Server and Postgres CPU per job tell how many servers saturate one Postgres. The real two-copy test moves to M5b (two replicas) or `PROFILE=vm`. |
+
+Routine choices: one Go program in `bench/loadgen` with `fill`, `closed` and `open` modes; workers use the real Go SDK, so SDK costs are measured too; handlers do nothing, so the test measures the queue and not job code; charts come from a matplotlib script run in a Python container.
+
+### 19.2 Layout
+
+The development laptop has 2 physical cores with hyper-threading: CPUs 0 and 2 are core 0, CPUs 1 and 3 are core 1.
+
+| CPUs | Runs |
+|---|---|
+| 0, 2 (all of core 0) | Postgres |
+| 1 | Tasklane server |
+| 3 | Load generator (producers and workers) |
+
+The server and the load generator share core 1 through hyper-threading, so each gets roughly 60–65% of a core when both are busy; the report says so. Prometheus, Grafana and Jaeger are off during runs, except Jaeger in S6, which runs on CPU 3.
+
+Files:
+
+- `bench/loadgen/`: the load generator. Writes one CSV row per run.
+- `bench/compose.bench.yml`: Postgres (with `pg_stat_statements`) and the server, with CPU sets per profile.
+- `bench/run.sh`: runs the scenarios in order; `PROFILE=laptop|vm`; results go to `bench/results/<date>/`.
+- `bench/plot/`: turns the CSV files into the charts in `docs/benchmarks.md`.
+
+### 19.3 What is measured
+
+| Number | How |
+|---|---|
+| Enqueue-to-start latency (p50, p99, p99.9) | The producer writes the job's scheduled send time into the payload; the worker records handler start minus that time in an HDR histogram. Producers and workers share one clock. Measuring from the scheduled time, not the actual send, is what prevents coordinated omission. |
+| Throughput | Acked jobs ÷ measured window. Each run has 10 s of warm-up (not counted) and 60 s measured. |
+| CPU per job, server and Postgres | The container's cgroup `cpu.stat` (`usage_usec`) before and after the window, divided by jobs. |
+| Postgres internals | `pg_stat_statements` (queries by total time), `pg_stat_user_tables` (HOT updates, dead rows, autovacuum runs), WAL bytes from the `pg_current_wal_lsn()` difference, wait events sampled from `pg_stat_activity`. |
+| Lease requests per job | The server's RPC counters from `/metrics`, scraped at the end of a run. |
+
+A full suite is about 30 runs (about 80 s each) plus the 1-million-job preload, about 1 hour. Tuning reruns repeat only the affected scenarios.
+
+### 19.4 Scenarios
+
+Every run starts from an empty jobs table (`TRUNCATE` plus `VACUUM ANALYZE`), except S4. Worker slots are split into SDK workers of at most 50 slots (`MaxLeaseJobs`), so 200 slots are 4 workers, like 4 processes.
+
+| # | Scenario | Runs | Answers |
+|---|---|---|---|
+| S1 | Enqueue only, no workers; batch size 1, 10, 100 | Closed with 16 requests in flight → maximum; open at 80% → enqueue RPC p99 | What batching buys: one transaction per batch instead of per job |
+| S2 | Full cycle; 1, 10, 50, 200 worker slots | Closed → M per slot count; for the best slot count, open at 50%, 80%, 95% of M | Main throughput, the latency-near-capacity curve, lease requests per job and p99 enqueue-to-start (the `LeaseStream` trigger, §13) |
+| S2-idle | 200 slots, no jobs, 60 s | One run | Idle long-poll cost: Postgres queries per second and CPU with nothing to do |
+| S2-trickle | 200 slots, open at 5 jobs/s | One run | Thundering herd (does one NOTIFY wake all four workers' waiting requests?) and the NOTIFY commit lock (wait events) |
+| S3 | Payload 100 B, 10 KB, 100 KB at the best slot count | Closed → maximum; open at 80% | WAL bytes per job, JSON ↔ protobuf conversion CPU, where large payloads start to hurt |
+| S4 | 1 million jobs preloaded with batched enqueues | (a) `EXPLAIN ANALYZE` of the per-second depth and stats queries; (b) full cycle on top of the backlog vs an empty table; (c) plus 10,000 delayed high-priority jobs; (d) redrive-all of 100,000 dead jobs; (e) 1,000 queues | Whether the `available` count is O(backlog) and scans sequentially, whether delayed jobs are scanned on every lease, the redrive-all hash join, the cost of many queues |
+| S5 | Capacity maths, no extra runs | From S2's CPU per job | How many server copies saturate one Postgres core; replaces §10 scenario 5 |
+| S6 | Tracing cost: S2 at 80%, tracing off vs on | Jaeger on CPU 3; compare server CPU per job, not throughput | The +3.5% with tracing off (§18), and whether idle long-poll `Lease` traces (about 30 sets of Postgres spans per 30 s poll) need trimming |
+
+HOT ratio, dead-row growth and autovacuum are read from `pg_stat_user_tables` after S2 and S4; they decide whether a fillfactor step is worth it.
+
+Not load questions, so handled differently:
+
+- The payload size limit (`ResourceExhausted`) vs the depth limit (429) over HTTP: one integration test in M5a.
+- int64 IDs encoded as JSON strings: documented in M5c, where the TypeScript SDK needs it.
+
+### 19.5 Tuning
+
+After the first full suite, rank the bottlenecks by evidence (top `pg_stat_statements` entries, CPU per job, wait events). Fix at most three. Each fix is its own commit and is followed by a rerun of the affected scenarios. `synchronous_commit = off` is discussed in the report as a durability trade-off, not turned on.
+
+### 19.6 Report
+
+`docs/benchmarks.md`:
+
+1. Hardware and CPU layout, with the hyper-threading caveat.
+2. A results table per scenario.
+3. Charts: throughput vs worker slots; p99 enqueue-to-start vs load (50/80/95%); batch-size gains; payload cost.
+4. The bottleneck found, with its evidence.
+5. Each tuning step with before/after numbers.
+6. Capacity maths with the formula written out, so readers can use their own CPU-per-job numbers.
+7. A verdict for every parked check: fixed; not needed at this scale (with the number); or deferred (with the trigger).
+8. How to reproduce: `bench/run.sh`, and `PROFILE=vm` for bigger machines.
+
+### 19.7 Testing and failure handling
+
+- Unit tests for the open-model scheduler: it keeps the schedule when sends are slow, and a stalled fake server shows up in p99 (the coordinated-omission test).
+- Unit tests for the CSV and statistics code and the cgroup CPU reader.
+- CI builds `bench/` and runs these tests and the new 429-vs-`ResourceExhausted` test. The full suite stays manual: it takes an hour and needs pinned CPUs.
+- A run with a server crash or more than 1% failed RPCs is marked `invalid` in its CSV row; the suite continues. A broken run never becomes a data point silently.
+
+Out of scope: Kubernetes and the real two-replica test (M5b); the TypeScript and C# SDKs (M5c, M5d); `LeaseStream` (built only if S2 hits the trigger); PgBouncer; turning on `synchronous_commit = off`.
