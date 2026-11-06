@@ -86,11 +86,15 @@ func ensureQueues(ctx context.Context, cfg Config, client *tasklane.Client) erro
 // then stop producers first and workers after, so jobs enqueued at the end
 // of the window still get picked up and counted.
 func measured(ctx context.Context, cfg Config, client *tasklane.Client) error {
-	pool, err := pgxpool.New(ctx, cfg.PGURL)
-	if err != nil {
-		return err
+	var pool *pgxpool.Pool
+	if cfg.Probes {
+		var err error
+		pool, err = pgxpool.New(ctx, cfg.PGURL)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
 	}
-	defer pool.Close()
 
 	l := newLoad(cfg, client)
 	workCtx, stopWork := context.WithCancel(ctx)
@@ -111,22 +115,35 @@ func measured(ctx context.Context, cfg Config, client *tasklane.Client) error {
 
 	sleepCtx(ctx, cfg.Warmup)
 	var problems []string
-	if err := probe.ResetStatements(ctx, pool); err != nil {
-		problems = append(problems, err.Error())
+	if cfg.Probes {
+		if err := probe.ResetStatements(ctx, pool); err != nil {
+			problems = append(problems, err.Error())
+		}
 	}
 	before := take(ctx, cfg, pool)
 	l.win.Store(&window{start: before.at, end: before.at.Add(cfg.Duration)})
 	waitCtx, stopWaits := context.WithCancel(ctx)
 	waitsc := make(chan map[string]int, 1)
-	go func() { waitsc <- probe.SampleWaits(waitCtx, pool, 100*time.Millisecond) }()
+	go func() {
+		if !cfg.Probes {
+			waitsc <- nil
+			return
+		}
+		waitsc <- probe.SampleWaits(waitCtx, pool, 100*time.Millisecond)
+	}()
 
 	sleepCtx(ctx, cfg.Duration)
 	after := take(ctx, cfg, pool)
 	stopWaits()
 	waits := <-waitsc
-	top, calls, err := probe.TopStatements(ctx, pool, 10)
-	if err != nil {
-		problems = append(problems, err.Error())
+	var top []probe.Statement
+	var calls int64
+	if cfg.Probes {
+		var err error
+		top, calls, err = probe.TopStatements(ctx, pool, 10)
+		if err != nil {
+			problems = append(problems, err.Error())
+		}
 	}
 
 	stopProd()

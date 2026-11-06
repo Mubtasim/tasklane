@@ -24,6 +24,8 @@ type Config struct {
 	Jobs                      int
 	Priority                  int
 	Delay                     time.Duration
+	Kind                      string
+	Probes                    bool
 }
 
 func parseConfig(args []string) (Config, error) {
@@ -52,6 +54,8 @@ func parseConfig(args []string) (Config, error) {
 	fs.IntVar(&c.Jobs, "jobs", 0, "fill: number of jobs")
 	fs.IntVar(&c.Priority, "priority", 3, "fill: priority 1 (critical) to 4 (low)")
 	fs.DurationVar(&c.Delay, "delay", 0, "fill: run_at = now + delay")
+	fs.StringVar(&c.Kind, "kind", "bench", "job kind to enqueue and handle")
+	fs.BoolVar(&c.Probes, "probes", true, "read server metrics, cgroups and Postgres statistics (off: only send and receive)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -89,6 +93,9 @@ func (c Config) validate() error {
 	}
 	if c.Queues < 1 || c.Producers < 0 || c.Workers < 0 || c.Payload < 0 {
 		return errors.New("-queues must be ≥ 1; counts and sizes must not be negative")
+	}
+	if c.Kind == "" {
+		return errors.New("-kind must not be empty")
 	}
 	return nil
 }
