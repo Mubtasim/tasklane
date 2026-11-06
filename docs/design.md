@@ -1009,7 +1009,7 @@ Decided 2026-11-06. This section is the M5b spec. It deploys the server to Kuber
 | 3 | Minimum worker count | 0 (scale to zero) | Nothing runs on an empty queue; plain HPA cannot do this. Cost: the first job after a quiet spell waits for scrape (≤ 5 s) + KEDA poll (5 s) + pod start (2–5 s), about 5–15 s instead of about 30 ms. The chart's own default does not apply here: workers are the user's application, so the minimum lives in the demo's `ScaledObject`. |
 | 4 | Testing in CI | Static checks on every PR; a kind end-to-end job on PRs that touch `deploy/k8s/**` or the Dockerfile; the scaling test nightly and on demand | Static checks catch bad fields in seconds. The end-to-end job proves the pods start, serve and restart without errors, but takes 5–7 minutes, so it runs only when the deployment changes. The scaling test waits on KEDA's timers for minutes and can flake on timing, so it never blocks a merge (like the chaos test, §17). |
 
-Decided for the user (routine): Postgres is not part of the chart (production uses a managed database; the chart takes a URL, the demo brings its own Postgres); migrations stay at server start (the advisory lock of §4 already serialises two pods starting together); the servers do not autoscale (M5a: Postgres is the limit, one server CPU feeds about 2.2 Postgres CPUs, §19.8), so they run a fixed 2 replicas with a PodDisruptionBudget; Grafana and Jaeger stay in the Compose demo (saves about 600 MB); the two-servers throughput measurement deferred from M5a stays deferred (unpinned pods on one laptop would give a false number); k3d, kubectl, helm and kind are single pinned binaries, no sudo.
+Decided for the user (routine): Postgres is not part of the chart (production uses a managed database; the chart takes a URL, the demo brings its own Postgres); migrations stay at server start (`pgstore.Migrate` takes a Postgres advisory lock, so two pods starting together apply migrations one at a time); the servers do not autoscale (M5a: Postgres is the limit, one server CPU feeds about 2.2 Postgres CPUs, §19.8), so they run a fixed 2 replicas with a PodDisruptionBudget; Grafana and Jaeger stay in the Compose demo (saves about 600 MB); the two-servers throughput measurement deferred from M5a stays deferred (unpinned pods on one laptop would give a false number); k3d, kubectl, helm and kind are single pinned binaries, no sudo.
 
 ### 20.2 Layout
 
@@ -1048,7 +1048,7 @@ When a pod is deleted, Kubernetes sends SIGTERM and removes the pod from Service
 | Time | Server pod | Rest of the cluster |
 |---|---|---|
 | 0 | Marked terminating; `preStop` sleeps 5 s while serving normally | Endpoints drop the pod; Envoy's next DNS refresh (≤ 2 s) stops new requests to it |
-| 5 s | SIGTERM: the existing drain (§6): not ready, end long-polls, HTTP ≤ 10 s, gRPC ≤ 10 s, metrics ≤ 2 s | Ended long-polls are retried by the SDK through Envoy on the other server |
+| 5 s | SIGTERM: the existing drain (§7, `cmd/tasklane`): not ready, end long-polls, HTTP ≤ 10 s, gRPC ≤ 10 s, metrics ≤ 2 s | Ended long-polls are retried by the SDK through Envoy on the other server |
 | ≤ 27 s | Exits | |
 | 40 s | Hard kill (grace period), 13 s spare | |
 
