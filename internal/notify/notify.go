@@ -1,15 +1,27 @@
 // Package notify wakes long-polling leases when jobs are enqueued. One
 // Listener per server holds a dedicated Postgres connection that LISTENs on
-// pgstore.NotifyChannel and fans each notification (payload: the queue name)
-// out to the subscribers of that queue.
+// pgstore.NotifyChannel and fans each notification out to the subscribers of
+// its queue.
+//
+// The payload is "<queue> <sender>": the queue name, a space, and the
+// sending server's random token. Queue names cannot contain a space, and a
+// NOTIFY payload cannot contain a NUL byte, so a space is the separator. A
+// server skips notifications carrying its own token: Publisher has already
+// woken its leases in memory. A payload without a space (servers before the
+// tag) wakes the queue as before. Older servers read a tagged payload as an
+// unknown queue name and wake no one; their leases find the jobs at the next
+// 1 s re-check, so a rolling upgrade costs at most that.
 package notify
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
+	mrand "math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +52,9 @@ type Listener struct {
 	cfg   *pgx.ConnConfig // parsed once in New; each connection uses a copy
 	log   *slog.Logger
 	retry backoff.Policy // delay between reconnect attempts
+	// sender tags this server's notifications so it can skip its own: 16
+	// random hex characters, new on every start.
+	sender string
 
 	listening atomic.Bool
 	pid       atomic.Uint32 // backend PID of the LISTEN connection; 0 when down
@@ -59,11 +74,14 @@ func New(connString string, log *slog.Logger) (*Listener, error) {
 		cfg.ConnectTimeout = ConnectTimeout
 	}
 	cfg.RuntimeParams["application_name"] = ApplicationName
+	var token [8]byte
+	_, _ = rand.Read(token[:]) // never fails: crypto/rand panics instead
 	return &Listener{
-		cfg:   cfg,
-		log:   log,
-		retry: backoff.Policy{Base: 100 * time.Millisecond, Cap: 5 * time.Second, Rand: rand.Float64},
-		subs:  map[string]map[chan struct{}]struct{}{},
+		cfg:    cfg,
+		sender: hex.EncodeToString(token[:]),
+		log:    log,
+		retry:  backoff.Policy{Base: 100 * time.Millisecond, Cap: 5 * time.Second, Rand: mrand.Float64},
+		subs:   map[string]map[chan struct{}]struct{}{},
 	}, nil
 }
 
@@ -159,8 +177,22 @@ func (l *Listener) listen(ctx context.Context, connected func()) error {
 			}
 			continue
 		}
-		l.wake(n.Payload)
+		queue, sender := parsePayload(n.Payload)
+		if sender == l.sender {
+			continue // Publisher woke this server's leases already
+		}
+		l.wake(queue)
 	}
+}
+
+// payload builds a notification for queue sent by sender.
+func payload(queue, sender string) string { return queue + " " + sender }
+
+// parsePayload splits a notification into its queue and sender; the sender
+// is empty for an untagged payload from an older server.
+func parsePayload(p string) (queue, sender string) {
+	queue, sender, _ = strings.Cut(p, " ")
+	return queue, sender
 }
 
 // wake signals every subscriber of queue without blocking: a subscriber whose

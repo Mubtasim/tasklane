@@ -39,7 +39,8 @@ type Execer interface {
 //     leases to find the job at their next periodic re-check (1 s), as for
 //     any lost notification.
 //   - This server's own waiting leases are woken in memory at once, without
-//     a round trip.
+//     a round trip. Its own NOTIFY carries its sender token, so its Listener
+//     skips it instead of waking them a second time.
 //   - Other servers hear the NOTIFY at most one window later.
 type Publisher struct {
 	l      *Listener
@@ -93,7 +94,7 @@ func (p *Publisher) send(queue string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 	defer cancel()
-	if _, err := p.db.Exec(ctx, "SELECT pg_notify($1, $2)", pgstore.NotifyChannel, queue); err != nil {
+	if _, err := p.db.Exec(ctx, "SELECT pg_notify($1, $2)", pgstore.NotifyChannel, payload(queue, p.l.sender)); err != nil {
 		p.log.Warn("notify: send failed; other servers' leases will find the jobs at their next re-check", "queue", queue, "err", err)
 	}
 }

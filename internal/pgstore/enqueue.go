@@ -30,8 +30,9 @@ RETURNING id`
 const MaxEnqueueBatch = 1000
 
 // NotifyChannel is the Postgres channel that wakes long-polling leases. The
-// payload is the queue name. The store doesn't send on it; notify.Publisher
-// does, after the write has committed.
+// payload is the queue name, a space, and the sending server's token (see
+// package notify). The store doesn't send on it; notify.Publisher does, after
+// the write has committed.
 const NotifyChannel = "tasklane_jobs"
 
 func (s *Store) Enqueue(ctx context.Context, jobs []store.NewJob) ([]store.EnqueueResult, error) {

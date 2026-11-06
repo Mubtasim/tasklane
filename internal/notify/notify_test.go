@@ -57,9 +57,11 @@ func startListener(t *testing.T) *Listener {
 
 func (l *Listener) backendPID() uint32 { return l.pid.Load() }
 
-func notifyQueue(t *testing.T, queue string) {
+// notifyQueue sends payload as is: a bare queue name, as servers before the
+// sender tag sent, or "<queue> <sender>".
+func notifyQueue(t *testing.T, payload string) {
 	t.Helper()
-	_, err := testDB.Pool.Exec(context.Background(), "SELECT pg_notify($1, $2)", pgstore.NotifyChannel, queue)
+	_, err := testDB.Pool.Exec(context.Background(), "SELECT pg_notify($1, $2)", pgstore.NotifyChannel, payload)
 	require.NoError(t, err)
 }
 
@@ -131,6 +133,50 @@ func TestNotifyWakesOnlySubscribersOfThatQueue(t *testing.T) {
 	notifyQueue(t, "emails")
 	requireWoken(t, emails)
 	requireNotWoken(t, sms)
+}
+
+func TestNewGivesEachListenerItsOwnSender(t *testing.T) {
+	a, err := New("", quietLogger())
+	require.NoError(t, err)
+	b, err := New("", quietLogger())
+	require.NoError(t, err)
+	require.Len(t, a.sender, 16)
+	require.NotEqual(t, a.sender, b.sender)
+}
+
+// The publishing server has already woken its own leases in memory, so its
+// own NOTIFY coming back must not wake them again.
+func TestListenerSkipsItsOwnNotifications(t *testing.T) {
+	l := startListener(t)
+	ch, unsubscribe := l.Subscribe("emails")
+	defer unsubscribe()
+
+	notifyQueue(t, "emails "+l.sender)
+	requireNotWoken(t, ch)
+
+	notifyQueue(t, "emails 0123456789abcdef") // another server's
+	requireWoken(t, ch)
+}
+
+// During a rolling upgrade, older servers still send the bare queue name.
+func TestListenerWakesOnAnUntaggedNotification(t *testing.T) {
+	l := startListener(t)
+	ch, unsubscribe := l.Subscribe("emails")
+	defer unsubscribe()
+
+	notifyQueue(t, "emails")
+	requireWoken(t, ch)
+}
+
+func TestParsePayload(t *testing.T) {
+	for payload, want := range map[string][2]string{
+		"emails":                  {"emails", ""},
+		"emails 0123456789abcdef": {"emails", "0123456789abcdef"},
+		"a.b-c_d x":               {"a.b-c_d", "x"},
+	} {
+		queue, sender := parsePayload(payload)
+		require.Equal(t, want, [2]string{queue, sender}, payload)
+	}
 }
 
 func TestReconnectsAfterConnectionLoss(t *testing.T) {
