@@ -78,7 +78,8 @@ func run(log *slog.Logger) error {
 	// JIT compilation pays off only for long analytic queries; for Tasklane's
 	// short statements it was 243 ms of one 710 ms depth query (the query's
 	// mean was 610 ms), so it is off unless the URL sets it. The setting is
-	// sent as a connection startup parameter; to keep JIT, put `jit=on` in
+	// sent as a connection startup parameter, so it overrides `ALTER ROLE` and
+	// `ALTER DATABASE` settings of jit; to keep JIT, put `jit=on` in
 	// TASKLANE_DATABASE_URL (for example `?jit=on`).
 	if _, ok := poolCfg.ConnConfig.RuntimeParams["jit"]; !ok {
 		poolCfg.ConnConfig.RuntimeParams["jit"] = "off"
