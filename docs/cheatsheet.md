@@ -114,6 +114,27 @@ The numbers worth knowing by heart, and why each one is what it is. Read it befo
 | The counter bug | ~1 run in 60 failed rule 5; 0 in 180 after the fix | A cancelled client could make a committed write look failed. |
 | `storeWriteTimeout` | 5 s | Store writes run detached from the client; below the 10 s graceful-stop budget. |
 
+## Load test (M5a)
+
+Laptop, 2 cores / 4 threads, pinned: Postgres on one core (2 threads), the server on 1 thread, the load generator on the other thread of the server's core. Full report: `docs/benchmarks.md`.
+
+| What | Value | Why |
+|---|---|---|
+| Max full cycle (enqueue → lease → ack) | **433 jobs/s** (median of 4; 392 before tuning) | Runs vary ±20%, so medians. Limit: the per-commit WAL flush, not CPU. |
+| Max enqueue | 1,048 jobs/s one per call (747 before); 5,934 jobs/s in batches of 100 | Batching: 100 jobs share one transaction and one commit. |
+| CPU per job at 80% load | server **1.29 ms**, Postgres **2.87 ms** | Portable number: `max jobs/s ≈ CPUs × 1000 / CPU ms per job`. |
+| CPU ceilings here | server 1 × 1000 / 1.29 ≈ 775 jobs/s; Postgres 2 × 1000 / 2.87 ≈ 697 jobs/s | Both above the measured 433, so waits, not CPU, set the limit. |
+| Servers per Postgres | 2.87 / 1.29 ≈ 2.2 Postgres CPUs per server CPU | 8-vCPU Postgres: ≈ 2,790 jobs/s CPU ceiling, needs ≈ 4 server CPUs (arithmetic). |
+| p99 enqueue-to-start at 50 / 80 / 95% | 34 / **61** / 97 ms at 216 / 346 / 411 jobs/s | Before tuning: 837 ms at 95% (334 jobs/s). |
+| Idle cost, 200 slots | **9.6 Postgres queries/s**, 5.8% of one CPU; server 0.45% | 4 waiting long-polls re-check once a second, plus depth refresh and reaper. |
+| Lease requests per job | at most 1.0 (0.29–0.89 under load) | `LeaseStream` trigger not hit. |
+| The bottleneck found | `Lock:object` 31% of wait samples (55% enqueue-only) | NOTIFY's database-wide commit lock; fixed by notifying after commit. |
+| 1M backlog | depth count ~440 ms; refresh every 10 × count (1–5 s): 26.3 → 5.2 s of Postgres time per minute, p99 233 → 61 ms | A count is O(backlog) even with partial indexes. |
+| 1,000 queues | depth query 50.8 s → 0.68 s (one grouped pass) | One subquery per queue was 1,000 counts. |
+| HOT updates | 0 of 41,903 | Every state change touches an indexed column. |
+| Tracing at 100% | +38% server CPU per job | Sample a ratio in production. |
+| 200 slots vs 50 | 293 vs 352 jobs/s | Ack `UPDATE` 0.32 → 2.75 ms: more slots, more contention. |
+
 ## Replication and Raft (phase 2)
 
 Phase 2 replaces the single PostgreSQL behind the `Store` interface with `RaftStore`: a small purpose-built database (the jobs and queues in memory, a log and snapshots on disk) that runs as several copies kept identical by the Raft consensus algorithm (design §12). Raft itself stores nothing; it only makes every copy apply the same changes in the same order.

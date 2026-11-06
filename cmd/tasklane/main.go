@@ -76,8 +76,8 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("database config: %w", err)
 	}
 	// JIT compilation pays off only for long analytic queries; for Tasklane's
-	// short statements it was 243 ms of a 610 ms depth query, so it is off
-	// unless the URL sets it.
+	// short statements it was 243 ms of one 710 ms depth query (the query's
+	// mean was 610 ms), so it is off unless the URL sets it.
 	if _, ok := poolCfg.ConnConfig.RuntimeParams["jit"]; !ok {
 		poolCfg.ConnConfig.RuntimeParams["jit"] = "off"
 	}

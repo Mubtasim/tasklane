@@ -6,9 +6,10 @@ A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
 
-**Status:** early development (milestone M4b: invariant and chaos tests, two servers behind Envoy). Not ready for production use.
+**Status:** early development (milestone M5a: load tests and tuning). Not ready for production use.
 
 - Design: [docs/design.md](docs/design.md)
+- Benchmarks: [docs/benchmarks.md](docs/benchmarks.md). On a 2-core laptop with pinned CPUs, one server and one PostgreSQL complete about 430 jobs/s (enqueue, lease, ack; median of 4 runs), with p99 enqueue-to-start of 61 ms at 80% of that. The limit there is PostgreSQL's per-commit disk flush, not CPU.
 
 ## Running the server
 
@@ -132,7 +133,7 @@ curl -H "$H" -d '{"kind":"normal","run_at":"2030-01-01T00:00:00Z"}' localhost:80
 curl -H "$H" -d '{}' localhost:8080/v1/jobs/<job_id>:cancel
 ```
 
-Backpressure: a queue refuses enqueues once its available and leased jobs reach `max_depth` (HTTP 429 with `Retry-After`, `tasklane.ErrQueueFull` in the Go SDK). The limit is soft: each server recounts once a second. To see it, run a second producer into a small queue that no worker reads:
+Backpressure: a queue refuses enqueues once its available and leased jobs reach `max_depth` (HTTP 429 with `Retry-After`, `tasklane.ErrQueueFull` in the Go SDK). The limit is soft: each server recounts every 1–5 s (longer when counting is slow, for example with a million-job backlog). To see it, run a second producer into a small queue that no worker reads:
 
 ```bash
 TASKLANE_API_KEY=demo-key DEMO_QUEUE=bp DEMO_MAX_DEPTH=50 go run ./examples/demo/producer

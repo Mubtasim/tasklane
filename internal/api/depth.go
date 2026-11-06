@@ -24,9 +24,12 @@ const (
 	// refreshes and isFull would fail open on a healthy database.
 	depthRefreshMax = 5 * time.Second
 	// depthRefreshCostFactor is how many times longer than the last count we
-	// wait before the next one. The count is O(backlog), so waiting 10x its
-	// duration caps counting at about 1/11, or 9%, of one Postgres backend's
-	// time whatever the backlog.
+	// wait before the next one. The count is O(backlog). The gap between two
+	// successful refreshes is the wait plus the count itself, so for counts of
+	// about 100-500 ms (waits of 1-5 s) counting takes about 1/11, or 9%, of
+	// one Postgres backend's time. Shorter counts take less; longer ones take
+	// more, because the wait stops growing at depthRefreshMax (a 1 s count
+	// is 1/6 of the time).
 	depthRefreshCostFactor = 10
 	// depthMaxStale is how long the last good counts are trusted while
 	// refreshes fail.
@@ -42,7 +45,8 @@ func nextDepthRefresh(took time.Duration) time.Duration {
 
 // depthCache answers "is this queue full?" without a COUNT on every Enqueue
 // (design §6, §15.3). The limit is soft: between refreshes a queue can
-// overshoot by about one second of traffic.
+// overshoot by up to one refresh interval of traffic (1-5 s, longer when the
+// count is slow).
 type depthCache struct {
 	mu          sync.Mutex
 	full        map[string]bool // queues at or above max_depth at the last good refresh

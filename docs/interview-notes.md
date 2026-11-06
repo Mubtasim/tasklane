@@ -214,6 +214,8 @@ Three parts: the bad query, why it was quadratic, and how the plan proved the fi
 
 **Trade-off:** two statements instead of one is a little more code; the alternative was a plan that depends on a NULL check. Still open, parked for the M5 load test: at 200,000 rows the outer `UPDATE` joined the CTE with a Hash Join and a Seq Scan on `jobs` (the planner's cost choice), which would be a table scan per batch on a large table.
 
+*Measured in M5a:* with a 1-million-row table, redriving 100,000 dead jobs took about 3 s (30,000–34,000 jobs/s), and the logged batch plan used index scans and a Nested Loop: one batch of 1,000 took 16 ms (`docs/benchmarks.md`, S4). The Hash Join did not appear.
+
 ## Q19. Tasklane's queue limit is "soft". What does that mean, why not a hard limit, and why does it stop refusing after 10 s of stale data?
 
 Three parts: soft vs hard, how the soft one works, and fail-open.
@@ -440,6 +442,8 @@ Three parts: where the work really happens, what each copy adds, and what would 
 
 **Numbers:** no measurement with more than two servers yet: the M5 load test compares two against one. One relevant number: the depth refresh's available count ran as a Seq Scan taking 443 ms on a fresh, never-analyzed 12,000-job table (parked for M5). Repeated by five servers every second, that would be over 2 s of database time per second, but only until autovacuum's ANALYZE gives the planner statistics and it switches to the index; it is not the steady state. The point is that every per-server query is multiplied by the number of copies.
 
+*Measured in M5a:* the load test replaced the two-copy run with capacity maths (two copies on one pinned CPU would show nothing). Server CPU per job was 1.29 ms and Postgres 2.87 ms, so one server CPU keeps about 2.2 Postgres CPUs busy (Q40). The depth count did become a real cost, with a large backlog rather than missing statistics: about 440 ms per count with 1 million available jobs (Q44).
+
 **Fails halfway:** adding copies during an overload makes it worse: more connections and more repeated loops on the database that is already the bottleneck.
 
 **Trade-off:** more copies still buy availability (one can die, as the demo shows) and rolling deploys; they just don't buy throughput. Scaling the database means giving up a single source of truth or adding a consensus layer.
@@ -592,3 +596,116 @@ Two parts: what is attached, and what it lets you do.
 **Fails halfway:** an application that sets a different global propagator (B3 only) still gets Tasklane's W3C inside the library; its own calls use B3. The two never mix because each side picks its format.
 
 **Trade-off:** the library ignores the application's choice of propagation format for its own calls. That is deliberate: a job's stored trace context has to be readable by every SDK and every future reader, so the format must be part of the data, not the environment.
+
+## Q39. What is coordinated omission, and why does the Tasklane load test use an open model for latency?
+
+Three parts: what goes wrong in a closed test, how the open model fixes it, and the numbers that show the difference.
+
+**What:** in a closed test each client waits for its reply before sending the next request, so when the server stalls the clients stop sending, and the requests that *would* have waited are never made or measured. The test "coordinates" with the server and omits its worst moments, so the p99 looks better than users would see.
+
+**How:**
+1. **Closed model:** a fixed number of clients (16 producers, 50 worker slots), each sending as soon as the last call returns. It finds the maximum throughput M, but its latency is not honest.
+2. **Open model:** jobs are sent on a fixed schedule, for example 346 jobs/s, whether or not the server keeps up. Real producers behave like this: users don't wait for your queue before clicking.
+3. **Measure from the planned time:** the producer writes each job's *scheduled* send time into its payload, and the worker measures handler start minus that time. If a send itself is late because the system is slow, that lateness is counted too. Measuring from the actual send time would bring coordinated omission back.
+4. **Test it:** a unit test stalls a fake server and checks that the stall shows up in p99.
+5. So the suite runs closed first (find M), then open at 50%, 80% and 95% of M for latency.
+
+**Numbers** (`docs/benchmarks.md`): before tuning, the closed run at 352 jobs/s reported p99 123 ms, while the open run at a *lower* 334 jobs/s reported p99 837 ms. After step 1, a closed run at 480 jobs/s reported p99 103 ms, while an open run at 455 jobs/s reported 2,281 ms. Same system, same hour: the closed numbers hid the queueing.
+
+**Fails halfway:** if the load generator itself falls behind (here it shares a physical core with the server), the sends drift from the schedule. Measuring from the planned time still counts that delay, so it can only make latency look worse, never better; the report checks the achieved rate against the offered rate.
+
+**Trade-off:** an open test needs a rate to aim at, and a wrong M wrecks it: open runs set from one high closed sample (480 jobs/s) were in fact at 88% and 105% of the median M and showed p99 over 2 s. So M must be a median of several runs.
+
+## Q40. Why pin each part of the load test to its own CPUs, and why is CPU per job a better number to report than jobs per second?
+
+Three parts: why pinning, why CPU per job, and how to turn it into capacity.
+
+**What:** pinning makes runs repeatable enough to compare before and after; CPU per job is the cost of one job in milliseconds of CPU, which carries over to other machines, while jobs/s only describes this laptop's bottleneck.
+
+**How:**
+1. **Pinning:** without it the load generator steals CPU from the server and runs vary by more than a tuning step gains. The laptop has 2 cores with 2 threads each: Postgres gets core 0 (both threads), the server one thread of core 1, the load generator the other.
+2. **CPU per job:** read each container's cgroup CPU time (`cpu.stat`, `usage_usec`) before and after the 60 s window and divide by the jobs done.
+3. **Why it travels:** jobs/s is set by whatever limits first. Here that was the SSD's flush time per commit, which a different disk changes completely. CPU per job is the work the code does per job, which stays roughly the same on any x86 machine.
+4. **Capacity:** `max jobs/s ≈ CPUs × 1000 / CPU ms per job`, once for the server and once for Postgres. The smaller one is the CPU ceiling.
+
+**Numbers:** at 80% load after tuning, the server used 1.29 ms per job and Postgres 2.87 ms. Server ceiling: 1 × 1000 / 1.29 ≈ 775 jobs/s; Postgres: 2 × 1000 / 2.87 ≈ 697 jobs/s. The measured maximum was 433 jobs/s (median), below both, because commits waited on the WAL flush. Ratio 2.87 / 1.29 ≈ 2.2: one server CPU keeps about 2.2 Postgres CPUs busy. An 8-vCPU Postgres would have a CPU ceiling of about 8 × 1000 / 2.87 ≈ 2,790 jobs/s and need about 2,790 × 1.29 / 1000 ≈ 4 server CPUs (arithmetic, not measured). Even pinned, closed runs varied ±20% (352, 532, 392 jobs/s).
+
+**Fails halfway:** CPU per job is not a constant. It depends on load: Postgres used 4.52 ms per job at 50% load and 2.22 ms at 95%, because fixed costs (idle re-checks, the depth refresh) are spread over fewer or more jobs and leases carry more jobs when busy. And hyper-threads are not full cores: the server and the load generator share one core, and Postgres's "2 CPUs" are one core, so the ceilings above are optimistic.
+
+**Trade-off:** pinned runs on a small machine give small absolute numbers that look unimpressive; in return, a +10% change can be told apart from noise. Unpinned runs give bigger numbers that nobody can reproduce.
+
+## Q41. How do you read a latency-vs-load curve, and what does Little's law say near saturation?
+
+Three parts: the shape of the curve, Little's law, and what Tasklane's curve showed.
+
+**What:** latency stays flat while the system has spare capacity, then rises steeply as load approaches the maximum (the "knee"), because jobs start waiting behind each other. You run below the knee.
+
+**How:**
+1. **Little's law:** jobs in the system = arrival rate × time each spends in it (L = λ × W). It holds for any stable system, with no assumption about the distribution.
+2. **Why the knee:** at utilization ρ (load ÷ capacity), the time spent waiting in a simple single-server queue grows like ρ / (1 − ρ): about 1 at 50%, 4 at 80% and 19 at 95% (in units of the service time). The last few percent of capacity cost the most latency.
+3. **Past capacity:** if arrivals exceed throughput, the backlog grows every second (by λ − μ jobs) and so does waiting time; there is no stable latency to report.
+4. **Reading a real curve:** measure at several loads (here 50, 80 and 95% of M), use p99, not the mean, and set the operating point where p99 is still within the latency your producers accept, typically about 70–80%.
+
+**Numbers:** after tuning, p99 was 34, 61 and 97 ms at 216, 346 and 411 jobs/s (50, 80 and 95% of M = 433), and p50 7.7, 11.7 and 16.4 ms. Using p50 as a rough stand-in for the mean (the mean was not recorded), Little's law gives about 346 × 0.0117 ≈ 4 jobs between enqueue and start at 80% load. Before tuning, p99 went from 47 ms at 281 jobs/s to 837 ms at 334 jobs/s: that curve hit its knee between 80% and 95%. Open runs at 88% and 105% of the median M had p99 of about 2.3 s.
+
+**Fails halfway:** M is noisy (±20% run to run), so "95% of M" may really be 85% or 105%. Near the knee that difference is a 10× change in p99, which is why M is a median of several runs.
+
+**Trade-off:** running near the knee uses hardware fully but turns any burst into a long tail; headroom costs idle capacity most of the time. A queue makes this softer than an API, because jobs can wait, but the backlog still has to drain (Q31).
+
+## Q42. What was Tasklane's bottleneck under load, how did the evidence point to it, and why is moving NOTIFY after the commit safe?
+
+Four parts: the evidence, the cause, the fix, and why the fix loses no jobs.
+
+**What:** every `Enqueue` called `pg_notify` inside its transaction. Postgres makes such a transaction take a database-wide lock at commit and hold it until its commit is flushed, so enqueue commits went through one at a time.
+
+**How:**
+1. **CPU was not full:** at the peak (50 slots, closed) the server used 56% of its one CPU and Postgres 87% of one CPU out of two. So something was waiting.
+2. **Wait events said what:** `Lock:object` 31% of Postgres's samples in the full cycle, 55% with enqueues alone; the rest mostly WAL (`IO:WalSync`, `LWLock:WALWrite`).
+3. **More connections made it worse:** a pool of 16 instead of 4 gave no more throughput, and `Lock:object` rose to about 80%. A serial lock behaves exactly like that: more waiters, same rate.
+4. **Why NOTIFY locks:** Postgres delivers notifications in commit order, so at commit a notifying transaction locks the notification queue for the whole database until the commit is done, including its disk flush. Commits could not share a flush any more. The `pg_notify` call itself cost 0.009 ms; the cost was the lock.
+5. **The fix (tuning step 1):** the store no longer notifies. After the commit, the API server wakes its own waiting leases in memory at once and sends one `pg_notify` per queue per 5 ms window for the other servers.
+6. **Why it's safe:** a NOTIFY is only a hint. Waiting leases also re-check the queue every second, because delayed jobs and retries become due without any notification. A rolled-back enqueue never reaches the publish step; a crash between commit and publish, or a failed NOTIFY, costs at most that one-second re-check. No job is lost, only up to a second of latency in a rare case.
+
+**Numbers:** enqueue 747 → 1,048 jobs/s (+40%) and full cycle 392 → 433 jobs/s (+10%), medians of 3–4 runs; `Lock:object` 31–55% → 0%. What remains is the WAL flush: 72–82% of wait samples.
+
+**Fails halfway:** if the server dies after the commit but before the publish, workers on other servers find the job at their next re-check, within 1 s. A side effect showed up: the server now wakes its own leases twice (in memory, then from its own NOTIFY 5 ms later). At 5 jobs/s, lease queries went from 1,597 to 2,523 a minute. Small, and listed as a follow-up: tag each NOTIFY with its sender and skip your own.
+
+**Trade-off:** before, Postgres guaranteed "notify only on commit" for free. Now the code guarantees it by publishing after the commit returns, and other servers hear up to 5 ms later. In return, enqueue commits no longer queue behind one lock.
+
+## Q43. What are HOT updates, what did the load test measure, and why doesn't fillfactor help Tasklane?
+
+Three parts: what HOT is, the measured ratio, and what that means for fillfactor and autovacuum.
+
+**What:** a HOT (heap-only tuple) update is a Postgres update that changes no indexed column and fits the new row version on the same page, so no index needs a new entry. It is much cheaper than a normal update.
+
+**How:**
+1. Postgres never updates a row in place: it writes a new version and marks the old one dead. Normally every index gets an entry for the new version.
+2. If no indexed column changed and the page has room, the new version is chained from the old one on the same page and the indexes are left alone: that's HOT.
+3. `fillfactor = 70` leaves 30% of each page empty at insert time, so later updates find room on the same page. It is the usual way to get more HOT updates.
+4. Tasklane's updates change indexed columns on purpose. Lease sets `state = 'leased'` and `lease_expires_at`; Ack sets `state = 'completed'` and `finished_at`. `state` decides which partial index a row is in, and the time columns are indexed. So no update can be HOT, whatever the free space.
+5. The dead versions are cleaned by autovacuum, so the real questions are whether autovacuum keeps up and how big the table gets.
+
+**Numbers:** 0 HOT updates in every run; for example 0 of 41,903 updates in the baseline 50-slot run, as the 0001 migration predicted. On the small table, autovacuum ran once per 60 s window and dead rows ended a window at most around 45,000. With a 1-million-row backlog, no autovacuum ran in the window and dead rows grew by about 41,000 a minute; the default trigger (20% of the table) is about 200,000 dead rows, so about 5 minutes (arithmetic).
+
+**Fails halfway:** if autovacuum falls behind, dead rows pile up, the table and indexes grow, and every scan reads more pages. With a big standing backlog the fix is a lower `autovacuum_vacuum_scale_factor` for the `jobs` table only.
+
+**Trade-off:** the partial indexes that make leasing fast are exactly what rules out HOT. Removing them would allow HOT updates but make every lease slower. The free space from `fillfactor = 70` mostly sits unused for HOT here; 70 against 100 was not measured, so the setting stayed.
+
+## Q44. What did the 1-million-job backlog show about partial indexes, and how do you bound a cost that grows with the backlog?
+
+Three parts: what stayed fast, what didn't, and the adaptive refresh.
+
+**What:** partial indexes keep the lease fast with any backlog, because a lease reads only the front of its own queue. They don't make a *count* cheap: counting a million rows visits a million rows. Tasklane counts every queue's depth for backpressure, so that count was the cost to bound.
+
+**How:**
+1. **Lease:** the `jobs_available` partial index is ordered by queue, priority, run time. A lease reads the first k entries of its queue with `LIMIT` and `SKIP LOCKED`, so its cost does not depend on the backlog.
+2. **Oldest ready age:** one `LIMIT 1` per priority on the same index: also constant.
+3. **Count:** `count(*)` must visit every available row, and with most of the table available Postgres chose a sequential scan. So each count is O(backlog).
+4. **Step 2:** count all queues in one grouped pass instead of one subquery per queue, and turn off JIT, which compiled the query to machine code for no gain.
+5. **Step 3 (adaptive refresh interval):** after each count, wait 10 times as long as it took, clamped to 1–5 s. The gap between counts is the wait plus the count, so for counts of about 100–500 ms counting takes about 1/11 (9%) of one Postgres backend. A 20 ms count every 1 s is 2%. Above 500 ms the 5 s cap wins and the share rises again (a 1 s count would be 1/6); the cap exists because the server stops trusting counts older than 10 s.
+
+**Numbers:** with the 1M backlog in another queue, the lease query took 0.31 ms on average against 0.24 ms on an empty table, and p99 was 46 ms against 47 ms. The count took 610 ms (JIT was 243 ms of one 710 ms run), then about 440 ms after step 2, once a second: 26.3 s of Postgres time per minute, p99 233 ms. After step 3: 12 counts a minute instead of 60, 5.2 s of Postgres time, p99 61 ms. With 1,000 queues, step 2 took the depth query from 50.8 s to 0.68 s. One weak spot remains: 10,000 delayed priority-1 jobs made each lease slower (0.37 → 1.58 ms), because the index puts them first and the lease steps over them.
+
+**Fails halfway:** if a count fails, the next try comes after 1 s, and the server keeps its last good counts for up to 10 s, then fails open (refuses no enqueues) rather than refuse everything on old data.
+
+**Trade-off:** backpressure is soft by up to one refresh interval: a queue can overshoot `max_depth` by up to 5 s of traffic instead of 1 s when counts are slow. The alternative, a counter row updated on every enqueue and ack, would make every write lock one hot row (rejected in §14.3).

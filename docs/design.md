@@ -57,7 +57,7 @@ Key concepts used throughout this document:
                                      PostgreSQL
 ```
 
-**Approach: stateless servers, Postgres is the source of truth.** Every lease is a single transaction using `SELECT … FOR UPDATE SKIP LOCKED`. Servers hold no job state in memory, so any copy can serve any request and a crashed server loses nothing. Idle workers don't poll in a tight loop: servers `LISTEN` on a Postgres channel, the enqueue path sends `NOTIFY`, and waiting long-polls and streams are woken.
+**Approach: stateless servers, Postgres is the source of truth.** Every lease is a single transaction using `SELECT … FOR UPDATE SKIP LOCKED`. Servers hold no job state in memory, so any copy can serve any request and a crashed server loses nothing. Idle workers don't poll in a tight loop: servers `LISTEN` on a Postgres channel, the server sends `NOTIFY` after a write that made jobs runnable has committed, and waiting long-polls and streams are woken.
 
 **Alternatives considered**
 - *Single leader with in-memory queues, Postgres only for persistence.* Much higher throughput, but it needs leader election and failover in v1. That is the Raft phase's job, so it is deferred rather than rejected (see §12).
@@ -213,7 +213,7 @@ The proto `priority` field is an enum with `PRIORITY_UNSPECIFIED = 0`, `PRIORITY
 
 **Long-polling.** `Lease` with `wait > 0` returns as soon as jobs are available or when `wait` elapses (empty result). Servers `LISTEN` on the Postgres channel `tasklane_jobs`; `Enqueue` sends `pg_notify('tasklane_jobs', queue)` once per distinct queue inside its transaction, so the notification is delivered only on commit. Waiting leases for that queue wake immediately. Because delayed jobs and retries become due without any notification, waiting leases also re-check every second.
 
-*Changed in M5a:* `Enqueue` no longer notifies inside its transaction. NOTIFY takes a database-wide lock held until the commit is flushed, so enqueue commits waited in line behind it. The API server now publishes after the commit, waking its own waiting leases in memory at once and sending one `pg_notify` per queue per 5 ms window for the other servers. A crash between commit and publish costs at most the one-second re-check. See §19.5 for the measurements.
+*Changed in M5a:* `Enqueue` no longer notifies inside its transaction. NOTIFY takes a database-wide lock held until the commit is flushed, so enqueue commits waited in line behind it. The API server now publishes after the commit, waking its own waiting leases in memory at once and sending one `pg_notify` per queue per 5 ms window for the other servers. A crash between commit and publish costs at most the one-second re-check. See §19.8 for the measurements.
 
 Each server holds one dedicated `LISTEN` connection. If it drops, the server reconnects with backoff and wakes every waiting lease once LISTEN is re-established, since notifications sent in the meantime are lost.
 
@@ -240,7 +240,7 @@ Queue names are 1–128 characters from [A-Za-z0-9._-], so they are safe in URL 
 The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) and, as proto3 JSON requires, encodes 64-bit integers as strings. grpc-gateway's default for `FAILED_PRECONDITION` is 400; Tasklane overrides it to 409 to match this table.
 
 **Backpressure**
-- *Producer side:* `Enqueue` checks the queue's depth (`available + leased`) against `max_depth`. To avoid a `COUNT(*)` on every call, each server refreshes each queue's depth once a second (one count over the partial indexes) and checks against that cached value, so the limit is soft (it can overshoot by about one second of traffic). The docs state this.
+- *Producer side:* `Enqueue` checks the queue's depth (`available + leased`) against `max_depth`. To avoid a `COUNT(*)` on every call, each server refreshes each queue's depth once a second (one count over the partial indexes) and checks against that cached value, so the limit is soft (it can overshoot by about one second of traffic). The docs state this. *Changed in M5a:* the refresh now waits 10 times as long as the last count took, between 1 and 5 s (§15.3), so the overshoot is up to one refresh interval of traffic.
 - *Worker side:* each `Lease` asks for at most the worker's free slots (§14.2), so a slow worker is never flooded. `LeaseStream`, if it is built (§13), is credit-based. The server never sends more jobs than the worker has granted credits for, so a slow worker is never flooded.
 
 **Auth:** a static API key per client, sent as `authorization: Bearer <key>` (gRPC metadata or HTTP header; the scheme is case-insensitive) and configured with `TASKLANE_API_KEYS` (comma-separated). With no keys configured, auth is disabled and the server logs a warning at startup. mTLS or OAuth are recommended for real deployments and are out of scope for v1.
@@ -294,6 +294,8 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 - **Measured:** jobs/sec, p50/p99 enqueue-to-start latency, Postgres CPU, WAL rate and table bloat.
 - **Report** (`docs/benchmarks.md`): hardware, numbers, the bottleneck found, each tuning step (batching, fillfactor, autovacuum, pool size, `synchronous_commit` trade-off discussion) with before/after charts.
 
+*Done in M5a:* §19 refined this plan (scenario 5 became capacity maths) and §19.8 has the results; the full report is [`docs/benchmarks.md`](benchmarks.md).
+
 ## 11. Packaging and distribution
 
 - Apache-2.0 license.
@@ -327,7 +329,7 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M5d | Jan 2027 | C# SDK (NuGet) |
 | M5e | mid-Jan 2027 | v1.0.0: image on GHCR, release notes, blog post |
 
-Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor. *Changed in M5a:* neither sends NOTIFY inside its transaction any more; the API server publishes after the commit (see §6 and §19.5).
+Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor. *Changed in M5a:* neither sends NOTIFY inside its transaction any more; the API server publishes after the commit (see §6 and §19.8).
 
 **`LeaseStream` deferred (decided 2026-11-01).** A stream would replace one `Lease` request per batch with a credit message on an open call. That saves little: requests are already multiplexed over one HTTP/2 connection, each batch still needs the same Postgres transaction, and a batch of k jobs already costs k Acks besides its Lease. A waiting stream re-checks the queue once a second just like a waiting long-poll, and long-polls already ask only for free slots. Against that, a stream adds per-stream credit state, reconnects and a reconnect signal on shutdown, keepalives to detect half-open connections, a stream auth interceptor, no HTTP/JSON support, and stickiness: a stream is one request, so even a gRPC-aware load balancer pins it to one server copy. The M5 load test measures lease requests per job and p99 enqueue-to-start latency; `LeaseStream` is built only if the long-poll shows up as a bottleneck there.
 
@@ -455,7 +457,7 @@ Three new unary RPCs, so the existing unary auth interceptor covers them:
 - **Cancel** works only while the job is `available`. Cancelling an already-cancelled job returns it with success, so a retried cancel is harmless. A leased, completed or dead job is `FAILED_PRECONDITION` (409) with the current state in the message; an unknown job is `NOT_FOUND`.
 - **Redrive** with both `ids` and `all`, or neither, is `INVALID_ARGUMENT`. IDs that are not dead are skipped and counted, not errors, so a retried redrive is harmless.
 - **Page tokens** are opaque to clients: the last row's `(finished_at, id)`, base64-encoded. A token that does not decode is `INVALID_ARGUMENT`.
-- **Enqueue over `max_depth`** (and `EnqueueBatch`, refused whole) is `RESOURCE_EXHAUSTED` (429) with a 1 s retry-after hint, the depth refresh interval (§15.3). This is the only change to an existing RPC. The depth check runs before the store, so while a queue is full an enqueue retry that carries an existing idempotency key also gets 429. A cancelled job keeps its idempotency key until it is pruned (the retention window), so re-enqueueing with that key returns the cancelled job. Any API key may call the admin RPCs (no roles in v1; see §12).
+- **Enqueue over `max_depth`** (and `EnqueueBatch`, refused whole) is `RESOURCE_EXHAUSTED` (429) with a 1 s retry-after hint, the depth refresh interval (§15.3; since M5a, its shortest value). This is the only change to an existing RPC. The depth check runs before the store, so while a queue is full an enqueue retry that carries an existing idempotency key also gets 429. A cancelled job keeps its idempotency key until it is pruned (the retention window), so re-enqueueing with that key returns the cancelled job. Any API key may call the admin RPCs (no roles in v1; see §12).
 
 **Go SDK:** `Client.CancelJob`, `Client.ListDeadJobs`, `Client.RedriveJobs` (by IDs) and `Client.RedriveAll`. `Enqueue` and `EnqueueBatch` return `ErrQueueFull` (matched with `errors.Is`, carrying the retry-after) on 429 and do not retry it: a full queue is a signal for the producer's owner, like every other producer error (§14.1).
 
@@ -503,7 +505,7 @@ FROM d WHERE j.id = d.id;
 
 All-mode orders by `(finished_at, id)` on `jobs_dead`, so every batch starts at the front of the partial index (redriven rows leave it); ids-mode looks up the primary key. They are two statements so neither plan depends on a NULL check.
 
-The same transaction sends `pg_notify('tasklane_jobs', queue)` when it changed at least one row. *Changed in M5a:* the API server publishes after each batch that redrove at least one job, instead of the transaction notifying (see §6 and §19.5). `all` repeats batches until one updates nothing or the request is cancelled; the response counts every committed batch.
+The same transaction sends `pg_notify('tasklane_jobs', queue)` when it changed at least one row. *Changed in M5a:* the API server publishes after each batch that redrove at least one job, instead of the transaction notifying (see §6 and §19.8). `all` repeats batches until one updates nothing or the request is cancelled; the response counts every committed batch.
 
 - Not atomic, by choice: one transaction over 200,000 rows would hold locks for seconds, write a burst of WAL and leave bloat, and a timeout would undo everything. If the server stops halfway, the committed batches stay redriven and calling `all` again finishes the rest.
 - `last_error` is kept, so the operator still sees why the job died until it fails again.
@@ -538,7 +540,7 @@ The available count is an index-only range on `jobs_available`, which starts wit
 ### 15.3 Server loops and configuration
 
 - **Pruner** (`internal/pruner`): every server, every `TASKLANE_PRUNE_INTERVAL`. One pass deletes batch after batch until a batch is short, so a large backlog clears in one pass without one large transaction, and logs the rows deleted. Started and stopped with the server, like the reaper.
-- **Depth cache** (`internal/api`): one goroutine refreshes `map[queue]depth` every second; `Enqueue` refuses when the cached depth is at or above `max_depth`, so the limit is soft (it can overshoot by about one second of traffic). A queue missing from the map has depth 0. If refreshes fail, the last good values are used for up to 10 s, then the cache **fails open** and stops refusing: refusing all enqueues on unknown data would turn a short database blip into a producer outage, and while the database is down `Enqueue` fails with `UNAVAILABLE` anyway.
+- **Depth cache** (`internal/api`): one goroutine refreshes `map[queue]depth` every second; `Enqueue` refuses when the cached depth is at or above `max_depth`, so the limit is soft (it can overshoot by about one second of traffic). A queue missing from the map has depth 0. *Changed in M5a:* the count is O(backlog) (a Seq Scan once most rows are available), so with 1 million available jobs it took about 440 ms and a refresh every second used about 44% of one Postgres backend. The next refresh now waits 10 times as long as the last one took, clamped to 1–5 s, and a failed refresh retries after 1 s. The overshoot is therefore up to one refresh interval of traffic, and the gauges below (§16.2) refresh at the same pace. Numbers in §19.8 and `docs/benchmarks.md`. If refreshes fail, the last good values are used for up to 10 s, then the cache **fails open** and stops refusing: refusing all enqueues on unknown data would turn a short database blip into a producer outage, and while the database is down `Enqueue` fails with `UNAVAILABLE` anyway.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -556,7 +558,7 @@ Dead jobs expire like messages in an SQS dead-letter queue. The docs say so; M4'
 
 ### 15.5 Testing
 
-- **pgstore integration tests:** every cancel outcome; Cancel racing Lease over many rounds (exactly one wins each time); keyset paging with equal `finished_at` values; redrive by IDs with skips, redrive all across several batches, `NOTIFY` delivered only on commit; pruner retention boundaries for both rules; the reaper message.
+- **pgstore integration tests:** every cancel outcome; Cancel racing Lease over many rounds (exactly one wins each time); keyset paging with equal `finished_at` values; redrive by IDs with skips, redrive all across several batches, no `NOTIFY` from the store (since M5a the API server publishes after the commit; its tests are in `internal/api` and `internal/notify`); pruner retention boundaries for both rules; the reaper message.
 - **API tests:** error mapping (409, 404, 400, 429 with retry-after), the page-token round trip and a malformed token.
 - **Depth cache unit tests** with a fake clock: refresh, stale values, fail-open after 10 s, unknown queue.
 - **SDK tests** (`bufconn`): the three methods and `ErrQueueFull`.
@@ -980,3 +982,13 @@ After the first full suite, rank the bottlenecks by evidence (top `pg_stat_state
 - A run with a server crash or more than 1% failed RPCs is marked `invalid` in its CSV row; the suite continues. A broken run never becomes a data point silently.
 
 Out of scope: Kubernetes and the real two-replica test (M5b); the TypeScript and C# SDKs (M5c, M5d); `LeaseStream` (built only if S2 hits the trigger); PgBouncer; turning on `synchronous_commit = off`.
+
+### 19.8 Results
+
+Measured 2026-11-06 on the laptop layout (§19.2); the full report, with every source run, is [`docs/benchmarks.md`](benchmarks.md). Before tuning, the full cycle peaked at a median of 392 jobs/s with neither CPU full: Postgres spent 31% of its wait samples on `Lock:object` (55% with enqueues alone), the database-wide lock that a transaction which called NOTIFY holds until its commit is flushed, so enqueue commits went one at a time. Three tuning steps followed. Step 1 sends NOTIFY after the commit, once per queue per 5 ms, and wakes the server's own leases in memory: enqueue 747 → 1,048 jobs/s, full cycle 392 → 433 jobs/s (medians), `Lock:object` gone; the per-commit WAL flush (70–80% of wait samples) is now the floor. Step 2 counts all queue depths in one grouped pass and turns JIT off: with 1,000 queues the depth query went from 50.8 s to 0.68 s. Step 3 waits 10 times the last count's duration (1–5 s) between depth refreshes: with 1 million available jobs, counting fell from 26.3 s to 5.2 s of Postgres time per minute and p99 enqueue-to-start from 233 to 61 ms. After tuning, p99 is 34, 61 and 97 ms at 50, 80 and 95% of the median maximum (216, 346 and 411 jobs/s). CPU per job at 80%: server 1.29 ms, Postgres 2.87 ms.
+
+Verdicts for the parked checks:
+
+- **Fixed:** the NOTIFY commit lock (step 1); the O(backlog) depth count, now bounded in cost though each count is still O(backlog) (steps 2–3); the cost of many queues (step 2); JIT on short queries (step 2).
+- **Not needed at this scale:** thundering herd (1.0 lease request per job at 5 jobs/s, p99 31.5 ms); redrive-all (100,000 jobs in about 3 s; the batch plan uses index scans); HOT updates and fillfactor (0 HOT updates of 41,903, as §4 predicted; spare page room can't help updates that change indexed columns); connection pool size (16 connections were no faster than 4 and raised `Lock:object` to about 80%); idle long-poll cost (9.6 Postgres queries/s, 5.8% of one CPU, with 200 idle slots); payload size (100 KB: 302 against 395 jobs/s at 100 B); trimming idle `Lease` traces (+0.2 points of one CPU). Tracing at 100% costs +38% server CPU per job, so production should sample a ratio.
+- **Deferred, with trigger:** `LeaseStream`: trigger not hit, at most 1.0 lease request per job in every run (0.29–0.89 under steady open load) and p99 61 ms at 80%; build it if lease requests per job rise well above 1 or lease round trips show in p99. Delayed jobs slowing each lease (10,000 delayed priority-1 jobs: lease query 0.37 → 1.58 ms mean): when the lease statement reaches the top of `pg_stat_statements`. A server waking its own leases twice after step 1 (lease queries at 5 jobs/s: 1,597 → 2,523 per minute): when lease queries matter at low load; fix by skipping its own notifications. Autovacuum for a large standing backlog (with 1M rows, dead rows grew by about 41,000 a minute and the default threshold is about 200,000): lower `autovacuum_vacuum_scale_factor` for `jobs`. Two server copies: M5b or `PROFILE=vm`; capacity maths says one server CPU keeps about 2.2 Postgres CPUs busy. `synchronous_commit = off`: discussed in the report, not turned on. PgBouncer: when connection count matters with many copies (M5b).
