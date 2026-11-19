@@ -841,3 +841,52 @@ Four parts: the symptom, how the cause was found, the two fixes, and the numbers
 **Fails halfway:** if all 3 tries land on gone pods (only 2 servers, both old pods replaced about 1.5 s apart), the client gets `Unavailable`: SDK workers retry with backoff, and a producer retries the Enqueue with the same idempotency key. On kind, CI's cluster, CoreDNS caches for 30 s, so the window is about 32 s; the retry on another server and the health checks (a gone pod is marked down 2–4 s after it exits, and `healthy_panic_threshold: 0` keeps Envoy from routing to it even when under half the hosts are healthy) cover it. Measured on kind locally: 0 failed sends in 3 restarts out of 3. If CI ever shows connect timeouts there, the next lever is a longer preStop.
 
 **Trade-off:** trusting DNS over health checks means a pod that drops out of DNS for a moment, for example a readiness blip, loses traffic at once, even though it still works. The other fix, a preStop longer than DNS cache plus refresh, would cost every pod deletion 30 s or more on kind. Dropping on removal plus retrying elsewhere keeps the preStop at 5 s.
+
+## Q52. Why can a CPU-heavy handler make a Node worker run a job twice, and what does the SDK do about it?
+
+Three parts: why, a timeline, and what the SDK does.
+
+**What:** Node runs JavaScript on one thread. While a handler keeps the CPU busy, no timer fires, including the heartbeat. If that lasts longer than the visibility timeout, the lease expires, the reaper gives the job to another worker, and the first worker's late Ack is refused: the work ran twice.
+
+**How (VT 30 s, heartbeat every 10 s):**
+1. t = 0 s: lease; deadline = arrival + 30 s.
+2. t = 1 s: the handler starts a 40 s CPU loop. The thread is busy.
+3. t = 10 s and 20 s: heartbeats are due but can't run.
+4. t ≈ 31–35 s: the lease expired; the reaper (every 5 s) makes the job available; another worker takes it.
+5. t = 41 s: the loop ends; the timer fires 31 s late; the heartbeat gets FAILED_PRECONDITION; the Ack is refused. Fencing kept the database right, but the work (an email, a charge) happened twice.
+
+**What the SDK does:** it measures how late each heartbeat timer fired and logs `event loop blocked for about N s; heartbeats were delayed` past 5 s, so the silent duplicate becomes a visible warning; the docs say CPU-heavy work belongs in `worker_threads` or a child process. Go doesn't have this problem: its heartbeats run on another goroutine that the runtime schedules on another thread.
+
+**Trade-off:** a built-in thread pool would make it safe automatically but costs about 30–40% more SDK code, handlers in separate files and payload copies; most job handlers wait on I/O, where one thread is fine.
+
+## Q53. Why are job IDs `bigint` in the TypeScript SDK?
+
+**What:** job IDs are int64 in Postgres and the proto. A JavaScript `number` is a float64 and is exact only up to 2^53 − 1 (about 9 × 10^15); above that, two different IDs can become the same number, and an Ack would go to the wrong job.
+
+**How:** `@bufbuild/protobuf` v2 maps int64 to `bigint` by default, so IDs stay exact from the wire to the user. The cost is ergonomics: `1234n` literals, `String(id)` for logs, and JSON doesn't serialize `bigint` (the invariant worker writes `Number(id)`, which is safe for test-sized IDs).
+
+**Numbers:** 2^53 ≈ 9.0 × 10^15. At 10,000 jobs/s that's about 28,000 years of IDs, so in practice it never bites, but a wrong Ack is a correctness bug, not a performance one, so the type should make it impossible.
+
+## Q54. How do you prove two SDKs in different languages behave the same?
+
+Three layers, from cheap to strong.
+
+1. **Unit tests per SDK** against a fake server (lease only free slots, release slots on every path, lease lost → no Ack, Ack retried until the deadline, shutdown timeline).
+2. **Integration tests** against the real server: every RPC end to end, delayed jobs, cancel, dead jobs and redrive, one trace from producer to worker.
+3. **The same invariant checker for both.** Workers write a JSONL ledger of every run (`worker, job_id, attempt, start, end, outcome, err`). The TypeScript worker writes the Go format, so the existing Go checker verifies the same rules: every confirmed enqueue ends completed or dead, one job per idempotency key, never two accepted Acks, a stale worker's Ack is refused, a retry never starts before the previous lease could expire. The cross-language test runs a Go producer, three TypeScript worker processes (one SIGKILLed, one frozen with SIGSTOP past its visibility timeout) and two Go zombies that prove fencing.
+
+**Why it matters:** "behaves like the Go SDK" becomes a check instead of a claim, and it reuses the checker that already found a real bug in M4b.
+
+## Q55. Why did the TypeScript SDK use gRPC through Connect-ES and not the HTTP/JSON gateway?
+
+**What:** the server speaks both: gRPC on 7070 and HTTP/JSON (grpc-gateway) on 8080.
+
+**Why gRPC (Connect-ES):**
+1. Types are generated from the same `.proto` by `buf`, so a proto change breaks the TypeScript build in CI instead of drifting silently.
+2. Same errors as Go: `RESOURCE_EXHAUSTED` with `RetryInfo` for a full queue, `FAILED_PRECONDITION` for a stale lease token.
+3. One multiplexed HTTP/2 connection for the long-poll, heartbeats and Acks.
+4. int64 stays `bigint`; the JSON gateway sends 64-bit numbers as strings.
+
+**Cost:** three small dependencies, and it runs on Node, Bun and Deno but not in browsers or edge runtimes. Workers don't run there; a `fetch` producer for edge functions can come later on the gateway.
+
+**Mapping Go idioms:** goroutine per job → a promise per job; `context.Context` → `AbortSignal` (aborted on a lost lease or at the shutdown deadline); a buffered channel as a semaphore → a `Slots` class with the same rule: every acquired slot is released on every path.

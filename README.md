@@ -87,6 +87,26 @@ w := client.NewWorker("emails", tasklane.WorkerOptions{Concurrency: 5, OnResult:
 
 **Tracing.** `tasklane.Dial(addr, tasklane.WithTracerProvider(tp))` records a client span for every RPC with your tracer provider (default: the global one; a worker uses its client's). A handler's `ctx` already carries the job's span, so anything it traces nests under `handle <kind>`. Enqueue with a `ctx` that holds your request's span and the job joins that trace. The SDK depends only on the OpenTelemetry API; you configure the exporter. Handler errors are exported to the tracing backend (span status and recorded error). A handle span whose Ack is still in flight when the worker's shutdown grace expires ends after `Run` returns (same as `OnResult`), so a program that flushes its tracer right after `Run` may miss it.
 
+## TypeScript SDK
+
+`sdk/ts` is the TypeScript SDK (`@mubtasim91/tasklane`, published to npm at v1.0). It talks gRPC to port 7070 and behaves like the Go SDK: the same leases, heartbeats, retries and shutdown, checked by the same invariant test (design §21).
+
+```ts
+import { Worker, createClient } from "@mubtasim91/tasklane";
+
+const client = createClient("http://localhost:7070", { apiKey: "demo-key" });
+await client.enqueue("demo", { kind: "normal", payload: { n: 1 } });
+
+const worker = new Worker(client, "demo", {
+  concurrency: 5,
+  handlers: { normal: async (job, signal) => { /* return = Ack, throw = Nack */ } },
+});
+process.on("SIGTERM", () => void worker.shutdown());
+await worker.run();
+```
+
+Node runs JavaScript on one thread, so a CPU-heavy handler also delays the heartbeats; past the visibility timeout the job runs twice. Put such work in `worker_threads`; the worker logs `event loop blocked for about N s` when it happens. See [`sdk/ts/README.md`](sdk/ts/README.md).
+
 ## Demo
 
 One command starts PostgreSQL, two servers behind Envoy, a producer (about 10 jobs a second: 85% normal, 12% flaky, 3% poison), three workers with 5 slots each, Prometheus, Grafana and Jaeger. It needs Docker and about 1 GB of RAM (details under [Tracing](#tracing)). Envoy owns the host ports 7070 and 8080 and balances each request across the two servers, so every client sees one address.
@@ -101,7 +121,7 @@ docker compose -f deploy/docker-compose.yml up --build
 # pane 2: live counts, redrawn every second
 go run ./cmd/tasklane-watch -api-key demo-key
 # pane 3: what the workers are doing
-docker compose -f deploy/docker-compose.yml logs -f worker-1 worker-2 worker-3
+docker compose -f deploy/docker-compose.yml logs -f worker-1 worker-ts worker-3
 # pane 4: break things (commands below)
 ```
 
@@ -111,13 +131,13 @@ Two ways to stop a worker:
 
 ```bash
 docker compose -f deploy/docker-compose.yml kill worker-1   # SIGKILL: a crash
-docker compose -f deploy/docker-compose.yml stop worker-2   # SIGTERM: a graceful shutdown
+docker compose -f deploy/docker-compose.yml stop worker-ts   # SIGTERM: a graceful shutdown of the TypeScript worker
 ```
 
 - **Crash:** worker-1's jobs stay `leased` until their 15 s visibility timeout expires; then the reaper makes them available and the other workers finish them.
-- **Graceful shutdown:** worker-2 stops leasing, lets running jobs finish (up to 25 s), nacks any that don't, and exits. Its jobs come back within seconds.
+- **Graceful shutdown:** worker-ts stops leasing, lets running jobs finish (up to 25 s), nacks any that don't, and exits. Its jobs come back within seconds.
 
-Bring them back with `docker compose -f deploy/docker-compose.yml start worker-1 worker-2`, and stop everything with `docker compose -f deploy/docker-compose.yml down`.
+Bring them back with `docker compose -f deploy/docker-compose.yml start worker-1 worker-ts`, and stop everything with `docker compose -f deploy/docker-compose.yml down`.
 
 ### Operations
 
@@ -156,7 +176,7 @@ The screenshot shows "Dead (last hour)" in red because the demo produces poison 
 - **DB pool, goroutines and memory** for the servers.
 - **Servers up** (red below 2) and **Requests per server:** whether both servers are alive and how Envoy splits the traffic.
 
-Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill worker-1`. The acked rate holds at about 9.7 jobs/s, because the two other workers have spare capacity. Available jobs climb to about 30 and queue wait p99 to about 5 s while they catch up. Once the demo's 15 s visibility timeout passes, about 4 jobs (the killed worker's leases) are reaped and returned to the queue. `docker compose -f deploy/docker-compose.yml start worker-1` brings everything back to normal. Throughput only drops when the remaining workers can't keep up. Run `docker compose -f deploy/docker-compose.yml stop worker-2 worker-3`: one worker (5 slots) handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until you `start` them again.
+Try it: kill a worker with `docker compose -f deploy/docker-compose.yml kill worker-1`. The acked rate holds at about 9.7 jobs/s, because the two other workers have spare capacity. Available jobs climb to about 30 and queue wait p99 to about 5 s while they catch up. Once the demo's 15 s visibility timeout passes, about 4 jobs (the killed worker's leases) are reaped and returned to the queue. `docker compose -f deploy/docker-compose.yml start worker-1` brings everything back to normal. Throughput only drops when the remaining workers can't keep up. Run `docker compose -f deploy/docker-compose.yml stop worker-ts worker-3`: one worker (5 slots) handles about 4 jobs/s against 10/s arriving, so acked/s drops and available grows until you `start` them again.
 
 Try killing a server: `docker compose -f deploy/docker-compose.yml kill tasklane-1`. "Servers up" drops to 1 and "Requests per server" moves to `tasklane-2`, which went from about 16 to about 33 requests/s. After a hard kill, new calls fail fast for about 14-18 s, most likely until Envoy's health checks (2 s, 2 failures) and DNS re-resolution (5 s) drop the dead server (upstream keepalive and a retry rule that avoids the previous host didn't shorten it; that retry rule is back since M5b, for rolling restarts, see [design §20.3](docs/design.md#203-shutdown-without-dropped-requests)): in the run I measured, the producer and workers logged 25 failed calls (mostly Unavailable) between 0.2 s and 18 s after the kill, none after that. They retry, so throughput held. The acked rate was about 9.3 jobs/s with one server (9.6 before). `docker compose -f deploy/docker-compose.yml start tasklane-1` and the traffic splits again, about 16 and 17 requests/s, with the acked rate back at about 9.5 jobs/s.
 
@@ -179,7 +199,7 @@ demo produce                                 producer
 
 The screenshot is one flaky job: 20 spans, 5 services, 2.0 s. Attempt 1 waited 6.9 ms, then `handle flaky` ran 301 ms on worker-3 and failed (red); the Nack and its database spans follow, then a gap of about 1 s (the retry backoff), then `queue wait` for attempt 2 (17.6 ms) and `handle flaky` on worker-1 (482 ms), which succeeded and acked.
 
-To find one yourself: open Jaeger, pick a worker service (`worker-1`, `worker-2` or `worker-3`) and add the tag `tasklane.attempt=2` to see jobs that were retried (the tag is on the worker's spans, so searching `producer` with it finds nothing). Pick `producer` with no tag for every job. Traces of jobs that were retried several times are longer, because every attempt joins the same trace. `Lease` calls are their own short traces, since a lease starts before any job is known.
+To find one yourself: open Jaeger, pick a worker service (`worker-1`, `worker-ts` or `worker-3`) and add the tag `tasklane.attempt=2` to see jobs that were retried (the tag is on the worker's spans, so searching `producer` with it finds nothing). Pick `producer` with no tag for every job. Traces of jobs that were retried several times are longer, because every attempt joins the same trace. `Lease` calls are their own short traces, since a lease starts before any job is known. A flaky job retried by worker-ts and a Go worker shows both in one trace: one queue, two languages.
 
 **From a graph to a trace.** The "Queue wait" and "RPC latency" panels in Grafana carry exemplars: small dots on the graph, each a sampled request. Click one to open its trace in Jaeger. (Exemplars need the OpenMetrics format, which the server's `/metrics` serves; Prometheus runs with `--enable-feature=exemplar-storage`.)
 

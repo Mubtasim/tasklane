@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "sdk/ts/**"
+      - "sdk/go/**"
       - "proto/**"
       - "internal/**"
       - "cmd/**"
@@ -73,7 +74,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
