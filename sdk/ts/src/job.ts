@@ -101,10 +101,11 @@ export async function callHandler(ctx: RunContext, job: LeasedJob, signal: Abort
 /** runJob (first version): run the handler, then one Ack or Nack. */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Task 4 uses leasedAt
 export async function runJob(ctx: RunContext, pj: ProtoJob, _leasedAt: number): Promise<void> {
-  const job = leasedJobFromProto(pj);
-  const a: ActiveJob = { job, start: new Date(), abort: new AbortController() };
-  ctx.active.add(a);
+  let a: ActiveJob | undefined;
   try {
+    const job = leasedJobFromProto(pj);
+    a = { job, start: new Date(), abort: new AbortController() };
+    ctx.active.add(a);
     const err = await callHandler(ctx, job, a.abort.signal);
     try {
       if (err === undefined) await ctx.client.raw.ack({ id: job.id, leaseToken: job.leaseToken });
@@ -113,7 +114,7 @@ export async function runJob(ctx: RunContext, pj: ProtoJob, _leasedAt: number): 
       ctx.log.warn("tasklane: final call failed", { jobId: String(job.id), err: toError(e).message });
     }
   } finally {
-    ctx.active.delete(a);
+    if (a) ctx.active.delete(a);
     ctx.slots.release();
   }
 }

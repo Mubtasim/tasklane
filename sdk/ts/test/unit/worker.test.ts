@@ -24,7 +24,7 @@ describe("Worker lease loop", () => {
     await until(() => fake.callsOf("ack").length === 5);
     await worker.shutdown();
     await done;
-    expect([...seen].sort()).toEqual(ids);
+    expect([...seen].sort((a, b) => Number(a - b))).toEqual(ids);
   });
 
   it("asks only for free slots", async () => {
@@ -140,5 +140,48 @@ describe("Worker lease loop", () => {
   it("resolves shutdown() at once when run() was never called", async () => {
     const { worker } = setup({});
     await expect(worker.shutdown()).resolves.toBeUndefined();
+  });
+
+  it("resolves run() cleanly when shutdown() comes during GetQueue", async () => {
+    const { fake, worker } = setup({});
+    fake.hangGetQueue = true;
+    const done = worker.run();
+    await until(() => fake.callsOf("getQueue").length === 1);
+    await worker.shutdown();
+    await expect(done).resolves.toBeUndefined();
+  });
+
+  it("uses the queue's visibility timeout when the option is 0", async () => {
+    const fake = new FakeServer();
+    fake.addQueue("q", 1000, 3);
+    fake.add("q", "a");
+    const worker = new Worker(fake.client(), "q", { handlers: { a: () => undefined }, visibilityTimeoutMs: 0 }, fast);
+    void worker.run();
+    await until(() => fake.callsOf("ack").length === 1);
+    await worker.shutdown();
+    expect(Number(fake.callsOf("lease")[0]!.req.visibilityTimeout.seconds)).toBe(1);
+  });
+
+  it("does not leak the slot or raise an unhandled rejection when runJob rejects", async () => {
+    const rejections: unknown[] = [];
+    const onRej = (r: unknown) => void rejections.push(r);
+    process.on("unhandledRejection", onRej);
+    try {
+      const fake = new FakeServer();
+      fake.addQueue("q", 1000, 3);
+      const seen: bigint[] = [];
+      const logger = { info: () => undefined, warn: () => { throw new Error("bad logger"); }, error: () => { throw new Error("bad logger"); } };
+      const worker = new Worker(fake.client(), "q", { handlers: { a: (j) => void seen.push(j.id) }, logger }, fast);
+      fake.fail("ack", new ConnectError("down", Code.Unavailable)); // final call fails, then warn throws
+      fake.add("q", "a");
+      const second = fake.add("q", "a");
+      void worker.run();
+      await until(() => seen.includes(second));
+      await worker.shutdown();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRej);
+    }
   });
 });

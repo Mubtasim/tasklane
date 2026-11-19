@@ -36,6 +36,8 @@ export class FakeServer {
   readonly failures = new Map<Method, ConnectError[]>();
   /** The next Lease returns this many jobs more than it was asked for. */
   extraOnNextLease = 0;
+  /** GetQueue never answers (until the caller aborts). */
+  hangGetQueue = false;
   #nextId = 1n;
   #nextToken = 0;
   #waiters: Array<() => void> = [];
@@ -162,6 +164,7 @@ export class FakeServer {
       },
       getQueue: async (req: { name: string }, ctx: HandlerContext) => {
         this.#record("getQueue", req, ctx);
+        if (this.hangGetQueue) await new Promise<void>((r) => ctx.signal.addEventListener("abort", () => r(), { once: true }));
         const q = this.#queue(req.name);
         const count = (s: JobState) => BigInt([...this.jobs.values()].filter((j) => j.queue === req.name && j.state === s).length);
         return {

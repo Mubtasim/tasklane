@@ -138,8 +138,10 @@ export class Worker {
     const signal = this.#stop.signal;
     for (let attempt = 0; ; attempt++) {
       try {
-        const info = await getQueue(this.#client.raw, this.#queue);
-        return this.#options.visibilityTimeoutMs ?? info.config.visibilityTimeoutMs;
+        // Bounded like a lease: leaseMarginMs (10 s) is the existing "slow network" allowance.
+        const info = await getQueue(this.#client.raw, this.#queue, { signal, timeoutMs: this.#internals.leaseMarginMs });
+        const own = this.#options.visibilityTimeoutMs;
+        return own !== undefined && own > 0 ? own : info.config.visibilityTimeoutMs;
       } catch (e) {
         if (signal.aborted) return undefined;
         const code = codeOf(e);
@@ -194,7 +196,14 @@ export class Worker {
       }
       attempt = 0;
       for (const pj of jobs) {
-        const p = runJob(ctx, pj, leasedAt);
+        const p = runJob(ctx, pj, leasedAt).catch((e: unknown) => {
+          // runJob must not reject; if it does, log without letting a bad logger escape.
+          try {
+            ctx.log.error("tasklane: job run failed", { jobId: String(pj.id), err: toError(e).message });
+          } catch {
+            // nothing more to do
+          }
+        });
         ctx.jobs.add(p);
         void p.finally(() => ctx.jobs.delete(p));
       }

@@ -120,9 +120,15 @@ export async function createQueue(raw: RawService, cfg: QueueConfig): Promise<Qu
   });
 }
 
-export async function getQueue(raw: RawService, name: string): Promise<QueueInfo> {
+/** @internal CallOpts lets the worker bound a call and abort it at shutdown. */
+export interface CallOpts {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export async function getQueue(raw: RawService, name: string, opts?: CallOpts): Promise<QueueInfo> {
   return rpc(async () => {
-    const res = await raw.getQueue({ name });
+    const res = await raw.getQueue({ name }, opts);
     const s = res.stats;
     return {
       config: queueFromProto(res.queue),
