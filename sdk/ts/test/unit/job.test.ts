@@ -150,4 +150,69 @@ describe("running a job", () => {
     await worker.shutdown();
     expect(log.lines.some((l) => l.level === "warn" && /event loop blocked for about \d+ s; heartbeats were delayed/.test(l.message))).toBe(true);
   });
+
+  it("keeps heartbeats on schedule when one hangs until its timeout", async () => {
+    const { fake, worker, results } = setup({ a: () => wait(1300) }, 600);
+    // The second heartbeat (at 400 ms) never answers; its 200 ms timeout ends at 600 ms.
+    const times: number[] = [];
+    fake.hangHeartbeat = () => {
+      times.push(performance.now());
+      return times.length === 2;
+    };
+    fake.add("q", "a");
+    void worker.run();
+    await until(() => results.length === 1, 5000);
+    await worker.shutdown();
+    expect(results[0]!.outcome).toBe("acked");
+    // On schedule the third arrives ~400 ms after the first; drifting, ~600 ms.
+    expect(times[2]! - times[0]!).toBeLessThan(500);
+  });
+
+  it("survives a throwing logger inside the heartbeat loop", async () => {
+    const fake = new FakeServer();
+    fake.addQueue("q", 300, 3);
+    const results: Result[] = [];
+    const thrower = () => {
+      throw new Error("logger bug");
+    };
+    const worker = new Worker(
+      fake.client(),
+      "q",
+      { handlers: { a: () => wait(350) }, logger: { info() {}, warn: thrower, error: thrower }, onResult: (r) => results.push(r) },
+      fast,
+    );
+    fake.fail("heartbeat", new ConnectError("blip", Code.Unavailable));
+    fake.add("q", "a");
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      void worker.run();
+      await until(() => results.length === 1);
+      await worker.shutdown();
+      await wait(20);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toHaveLength(0);
+    expect(results[0]!.outcome).toBe("acked");
+  });
+
+  it("finds retryAt in the cause chain", async () => {
+    const at = new Date(Date.now() + 3_600_000);
+    const { fake, worker, results } = setup({
+      a: () => {
+        throw new Error("outer", { cause: retryAt(new Error("inner"), at) });
+      },
+    });
+    fake.add("q", "a");
+    void worker.run();
+    await until(() => results.length === 1);
+    await worker.shutdown();
+    expect(Number(fake.callsOf("nack")[0]!.req.retryAt.seconds)).toBe(Math.floor(at.getTime() / 1000));
+  });
+
+  it("rejects an invalid date in retryAt", () => {
+    expect(() => retryAt(new Error("x"), new Date(NaN))).toThrow(TypeError);
+  });
 });

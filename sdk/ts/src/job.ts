@@ -108,6 +108,9 @@ export class RetryAtError extends Error {
 
 /** retryAt wraps err so the job's Nack carries retry_at = at instead of the server's backoff. */
 export function retryAt(err: unknown, at: Date): RetryAtError {
+  if (!(at instanceof Date) || Number.isNaN(at.getTime())) {
+    throw new TypeError("tasklane: retryAt needs a valid Date");
+  }
   return new RetryAtError(toError(err), at);
 }
 
@@ -151,7 +154,15 @@ export function claim(a: ActiveJob): boolean {
 
 /** report ends the run's span and calls onResult once; a throwing onResult is logged. */
 export function report(ctx: RunContext, a: ActiveJob, outcome: Outcome, err?: Error): void {
-  ctx.tracing?.end(a.span, a.job, outcome, err);
+  try {
+    ctx.tracing?.end(a.span, a.job, outcome, err);
+  } catch (e) {
+    try {
+      ctx.log.error("tasklane: tracing end threw", { jobId: String(a.job.id), err: toError(e).message });
+    } catch {
+      // a throwing logger must not skip onResult
+    }
+  }
   if (!ctx.onResult) return;
   try {
     ctx.onResult({ job: a.job, outcome, start: a.start, end: new Date(), error: err });
@@ -180,7 +191,16 @@ export async function runJob(ctx: RunContext, pj: ProtoJob, leasedAt: number): P
       span: ctx.tracing?.start(pj),
     };
     ctx.active.add(a);
-    a.hbDone = heartbeat(ctx, a);
+    const hbJob = a;
+    // Never rejects: a throwing logger inside the loop must not become an
+    // unhandled rejection while the handler runs.
+    a.hbDone = heartbeat(ctx, a).catch((e: unknown) => {
+      try {
+        ctx.log.error("tasklane: heartbeat loop failed", { jobId: String(hbJob.job.id), err: toError(e).message });
+      } catch {
+        // nothing more to do
+      }
+    });
     const err = await callHandler(ctx, a.job, a.abort.signal);
     // Claim the final call as soon as the handler returns, so a shutdown
     // that reaches its deadline now can't nack a job that just succeeded.
@@ -209,6 +229,14 @@ export async function runJob(ctx: RunContext, pj: ProtoJob, leasedAt: number): P
   }
 }
 
+/** findRetryAt walks err's cause chain (like Go's errors.As), to a bounded depth. */
+function findRetryAt(err: unknown): RetryAtError | undefined {
+  for (let i = 0, e = err; i < 10 && e instanceof Error; i++, e = e.cause) {
+    if (e instanceof RetryAtError) return e;
+  }
+  return undefined;
+}
+
 /** finish acks the job when err is undefined and nacks it with err's message otherwise. */
 async function finish(ctx: RunContext, a: ActiveJob, err: Error | undefined): Promise<Outcome> {
   const { id, leaseToken } = a.job;
@@ -216,7 +244,8 @@ async function finish(ctx: RunContext, a: ActiveJob, err: Error | undefined): Pr
     return send(ctx, a, "ack", "acked", (opts) => ctx.client.raw.ack({ id, leaseToken }, opts));
   }
   ctx.log.warn("tasklane: job failed", { jobId: String(id), kind: a.job.kind, attempt: a.job.attempt, err: err.message });
-  const retry = err instanceof RetryAtError ? timestampFromDate(err.at) : undefined;
+  const wanted = findRetryAt(err);
+  const retry = wanted ? timestampFromDate(wanted.at) : undefined;
   return send(ctx, a, "nack", "nacked", (opts) => ctx.client.raw.nack({ id, leaseToken, error: err.message, retryAt: retry }, opts));
 }
 

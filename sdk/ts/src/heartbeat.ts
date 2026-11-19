@@ -17,9 +17,12 @@ export async function heartbeat(ctx: RunContext, a: ActiveJob): Promise<void> {
   const vt = ctx.vtMs;
   const interval = vt / 3 > 0 ? vt / 3 : vt;
   const signal = a.hbStop.signal;
+  // Fixed due times, like Go's time.Ticker: a heartbeat that hangs until its
+  // timeout must not push the later ones back, or the lease would run out.
+  let next = performance.now() + interval;
   for (;;) {
-    const due = performance.now() + interval;
-    const slept = await sleep(interval, signal);
+    const due = next;
+    const slept = await sleep(due - performance.now(), signal);
     // Measure even when the job just finished: a handler that blocked the
     // loop past this tick returns before the timer callback gets to run, so
     // the stop is the first thing this loop sees. Stopping early is never late.
@@ -32,6 +35,7 @@ export async function heartbeat(ctx: RunContext, a: ActiveJob): Promise<void> {
       });
     }
     if (!slept) return;
+    next += interval;
     const sent = performance.now();
     try {
       await ctx.client.raw.heartbeat(
@@ -52,5 +56,8 @@ export async function heartbeat(ctx: RunContext, a: ActiveJob): Promise<void> {
       }
       ctx.log.warn("tasklane: heartbeat failed; retrying at the next tick", { jobId: String(a.job.id), err: toError(e).message });
     }
+    // Ticks were missed (a long block or a slow call): don't fire a burst.
+    const now = performance.now();
+    if (now > next + interval) next = now + interval;
   }
 }

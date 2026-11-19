@@ -38,6 +38,8 @@ export class FakeServer {
   extraOnNextLease = 0;
   /** GetQueue never answers (until the caller aborts). */
   hangGetQueue = false;
+  /** Called per Heartbeat; true makes that call hang until the caller aborts. */
+  hangHeartbeat?: () => boolean;
   #nextId = 1n;
   #nextToken = 0;
   #waiters: Array<() => void> = [];
@@ -244,8 +246,11 @@ export class FakeServer {
       },
       heartbeat: async (req: { id: bigint; leaseToken: string; visibilityTimeout?: Parameters<typeof durationToMs>[0] }, ctx: HandlerContext) => {
         this.#record("heartbeat", req, ctx);
+        if (this.hangHeartbeat?.()) await new Promise<void>((r) => ctx.signal.addEventListener("abort", () => r(), { once: true }));
         const j = this.#job(req.id);
         this.#holds(j, req.leaseToken);
+        // Like the server, a heartbeat after the lease ran out is refused.
+        if (j.leaseExpiresAt && timestampMs(j.leaseExpiresAt) < Date.now()) throw new ConnectError("lease expired", Code.FailedPrecondition);
         j.leaseExpiresAt = timestampFromMs(Date.now() + durationToMs(req.visibilityTimeout));
         return { leaseExpiresAt: j.leaseExpiresAt };
       },
