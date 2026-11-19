@@ -4,3 +4,7 @@ deploy
 docs
 *.test
 *.out
+sdk/ts/node_modules
+sdk/ts/dist
+sdk/ts/dist-examples
+sdk/ts/*.tgz

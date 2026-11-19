@@ -1,5 +1,5 @@
 # Tasklane demo: PostgreSQL, two servers behind Envoy, a producer, three
-# workers, Prometheus, Grafana and Jaeger. From the repo root:
+# workers (two Go, one TypeScript), Prometheus, Grafana and Jaeger. From the repo root:
 #   docker compose -f deploy/docker-compose.yml up --build
 # then open http://localhost:3000 for the dashboard and http://localhost:16686
 # for traces.
@@ -98,12 +98,20 @@ services:
       WORKER_NAME: worker-1
       OTEL_SERVICE_NAME: worker-1
 
-  worker-2:
-    <<: *worker
+  # The TypeScript SDK's worker (sdk/ts, design §21) on the same queue as the
+  # Go workers. Jaeger lists it as its own service.
+  worker-ts:
+    build:
+      context: ../sdk/ts
+      dockerfile: Dockerfile
+    image: tasklane-worker-ts:dev
+    # Longer than the worker's 25 s shutdown timeout plus its 2 s grace.
+    stop_grace_period: 30s
     environment:
       <<: *demo-env
-      WORKER_NAME: worker-2
-      OTEL_SERVICE_NAME: worker-2
+      WORKER_NAME: worker-ts
+      OTEL_SERVICE_NAME: worker-ts
+    depends_on: [envoy, jaeger]
 
   worker-3:
     <<: *worker

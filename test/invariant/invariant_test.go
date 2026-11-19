@@ -6,15 +6,11 @@ import (
 	"math/rand/v2"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/ledger"
 	"github.com/mubtasim/tasklane/internal/metrics"
 	"github.com/mubtasim/tasklane/sdk/go/tasklane"
@@ -86,30 +82,14 @@ func TestInvariants(t *testing.T) {
 	}
 
 	// The zombies use the plain API on their own connections, one per server.
-	zctx, stopZombies := context.WithCancel(ctx)
-	var zombies sync.WaitGroup
-	for i, addr := range addrs {
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		require.NoError(t, err)
-		t.Cleanup(func() { conn.Close() })
-		zombies.Add(1)
-		go func() {
-			defer zombies.Done()
-			runZombie(zctx, tasklanev1.NewTasklaneServiceClient(conn), fmt.Sprintf("zombie%d", i), queue, vt, led)
-		}()
-	}
-	// Registered after the servers, so it runs before they stop.
-	t.Cleanup(func() {
-		stopZombies()
-		zombies.Wait()
-	})
+	stopZombies := startZombies(t, ctx, addrs, led)
 
-	produce(t, seed, jobs, producers, ws, led)
+	stop := func(rng *rand.Rand) { stopAbruptly(t, rng, ws) }
+	produce(t, seed, jobs, producers, led, map[int]func(*rand.Rand){jobs * 3 / 10: stop, jobs * 6 / 10: stop})
 
 	// Wait for the zombies' last stalled jobs, so their runs are recorded
 	// before the check.
 	stopZombies()
-	zombies.Wait()
 
 	waitDrained(t, seed, drainTimeout)
 
@@ -193,15 +173,14 @@ func startWorker(t *testing.T, name, addr string, led *ledgerMem) *sdkWorker {
 
 // produce enqueues n jobs, alternating between the servers, with a seeded
 // mix of kinds. It runs on the test goroutine and is the only user of rng,
-// so a seed replays the same jobs and the same worker stops. At 30 % and
-// 60 % it stops a random worker abruptly.
-func produce(t *testing.T, seed int64, n int, producers []*tasklane.Client, ws []*sdkWorker, led *ledgerMem) {
+// so a seed replays the same jobs; at[i], if set, runs just before job i
+// (TestInvariants stops a worker abruptly at 30 % and 60 %).
+func produce(t *testing.T, seed int64, n int, producers []*tasklane.Client, led *ledgerMem, at map[int]func(*rand.Rand)) {
 	t.Helper()
 	rng := rand.New(rand.NewPCG(uint64(seed), 0))
-	stopAt := map[int]bool{n * 3 / 10: true, n * 6 / 10: true}
 	for i := range n {
-		if stopAt[i] {
-			stopAbruptly(t, rng, ws)
+		if f := at[i]; f != nil {
+			f(rng)
 		}
 		job := tasklane.Job{Kind: "normal", IdempotencyKey: fmt.Sprintf("inv-%d", i)}
 		switch p := rng.IntN(100); {

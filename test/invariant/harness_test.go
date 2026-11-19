@@ -3,6 +3,7 @@ package invariant
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net"
 	"sync"
@@ -10,7 +11,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -172,4 +175,33 @@ func runZombie(ctx context.Context, raw tasklanev1.TasklaneServiceClient, name, 
 			led.addRun(ledger.Run{Worker: name, JobID: job.GetId(), Attempt: int(job.GetAttempts()), Start: start, End: time.Now(), Outcome: outcome})
 		}
 	}
+}
+
+// startZombies runs one zombie per server on its own connection (see
+// runZombie). stop cancels them and waits for their last runs to be recorded;
+// it is safe to call more than once and also runs at cleanup, before the
+// servers stop (it is registered after them).
+func startZombies(t *testing.T, ctx context.Context, addrs []string, led *ledgerMem) (stop func()) {
+	t.Helper()
+	zctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	for i, addr := range addrs {
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		require.NoError(t, err)
+		t.Cleanup(func() { conn.Close() })
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runZombie(zctx, tasklanev1.NewTasklaneServiceClient(conn), fmt.Sprintf("zombie%d", i), queue, vt, led)
+		}()
+	}
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			wg.Wait()
+		})
+	}
+	t.Cleanup(stop)
+	return stop
 }

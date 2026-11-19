@@ -16,8 +16,23 @@ services:
   worker-1:
     environment: { <<: *ledger, WORKER_NAME: worker-1 }
     volumes: ["${CHAOS_LEDGER_DIR}:/ledger"]
+  # The chaos test runs three Go workers (design §21.1, choice 3): the
+  # TypeScript worker is switched off and a Go worker-2 is defined here.
+  worker-ts:
+    profiles: [typescript]
   worker-2:
-    environment: { <<: *ledger, WORKER_NAME: worker-2 }
+    image: tasklane:dev
+    pull_policy: never
+    entrypoint: ["/usr/local/bin/worker"]
+    stop_grace_period: 30s
+    depends_on: [envoy, jaeger]
+    environment:
+      <<: *ledger
+      TASKLANE_ADDR: envoy:7070
+      TASKLANE_API_KEY: ${TASKLANE_API_KEY:-demo-key}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      WORKER_NAME: worker-2
+      OTEL_SERVICE_NAME: worker-2
     volumes: ["${CHAOS_LEDGER_DIR}:/ledger"]
   worker-3:
     environment: { <<: *ledger, WORKER_NAME: worker-3 }

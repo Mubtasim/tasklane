@@ -192,3 +192,13 @@ Phase 2 replaces the single PostgreSQL behind the `Store` interface with `RaftSt
 | Failover time | ≈ 0.3–1 s | Election timeout plus one voting round. |
 | Throughput ceiling | etcd: roughly 10k–30k writes/s with batching on good SSDs | Every write goes through the one leader. |
 | Patroni (HA PostgreSQL) | uses etcd, a Raft store, to choose the Postgres leader | Raft already sits under highly available Postgres in practice. |
+
+## TypeScript SDK
+
+| What | Value | Why |
+|---|---|---|
+| Event-loop warning | heartbeat timer > 5 s late | A busy handler blocks Node's one thread, heartbeats included; past the VT the job runs twice. |
+| Shutdown | 25 s for running jobs + 2 s for Nacks/Acks | Give the process ≥ 30 s (`stop_grace_period`, `terminationGracePeriodSeconds`). |
+| Job IDs | `bigint` | int64 doesn't fit a JS number exactly above 2^53. |
+| Package | ESM only, Node ≥ 22, 3 runtime dependencies | `@connectrpc/connect`, `@connectrpc/connect-node`, `@bufbuild/protobuf`; OpenTelemetry is an optional peer. |
+| Demo worker memory | ≈ 71 MiB | `docker stats --no-stream` on `worker-ts` about 2 minutes into the demo (a Go demo worker: about 8 MiB). |
