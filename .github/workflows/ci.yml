@@ -98,3 +98,39 @@ jobs:
       - run: go test -count=1 ./deploy/k8s/
         env:
           TASKLANE_REQUIRE_HELM: "1"
+
+  sdk-ts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    defaults:
+      run:
+        working-directory: sdk/ts
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - if: matrix.node == 24
+        run: npm run check:package
+      - if: matrix.node == 24
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools.sum
+      - if: matrix.node == 24
+        name: Generated TypeScript is up to date
+        run: |
+          npm run generate
+          git add -N src/gen/
+          git diff --exit-code src/gen/

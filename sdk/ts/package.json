@@ -1,0 +1,77 @@
+{
+  "name": "@mubtasim91/tasklane",
+  "version": "0.0.0",
+  "description": "TypeScript producer, admin client and worker for the Tasklane job queue",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mubtasim/tasklane.git",
+    "directory": "sdk/ts"
+  },
+  "homepage": "https://github.com/Mubtasim/tasklane/tree/main/sdk/ts#readme",
+  "bugs": "https://github.com/Mubtasim/tasklane/issues",
+  "keywords": [
+    "job-queue",
+    "queue",
+    "worker",
+    "postgres",
+    "grpc",
+    "background-jobs"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "generate": "cd ../.. && go tool -modfile=tools.mod buf generate --template buf.gen.ts.yaml",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "check:package": "bash scripts/check-package.sh",
+    "prepublishOnly": "npm run check:package"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.17.0",
+    "@connectrpc/connect": "2.3.0",
+    "@connectrpc/connect-node": "2.3.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
+    "@bufbuild/protoc-gen-es": "2.17.0",
+    "@eslint/js": "10.0.1",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/context-async-hooks": "3.1.1",
+    "@opentelemetry/sdk-trace-base": "2.12.1",
+    "@types/node": "26.6.6",
+    "eslint": "10.15.0",
+    "publint": "0.3.25",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.73.0",
+    "vitest": "5.1.1"
+  }
+}
