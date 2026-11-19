@@ -11,3 +11,5 @@ export {
 export type { DeadJobsPage, JobInfo, JobState, RedriveResult } from "./admin.js";
 export { Code, QueueFullError, TasklaneError } from "./errors.js";
 export type { Logger, TracerProviderLike } from "./types.js";
+export { Worker, type WorkerOptions } from "./worker.js";
+export type { Handler, LeasedJob, Outcome, Result } from "./job.js";
