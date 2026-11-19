@@ -65,3 +65,20 @@ jobs:
           TASKLANE_TEST_API_KEY: test-key
       - if: failure()
         run: cat /tmp/tasklane.log
+
+  invariant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: sdk/ts
+      # Postgres comes from testcontainers in the runner's Docker, as in the Go test job.
+      - run: go test -count=1 -v -timeout 10m -run TestInvariantsTS ./test/invariant -invariant.ts
