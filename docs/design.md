@@ -328,8 +328,8 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M5a | Nov 2026 | Load tests, tuning and benchmark report (§19) |
 | M5b | Dec | Kubernetes deployment: Helm chart with probes, SIGTERM drain, Envoy, KEDA autoscaling of workers on queue depth, k3d demo (§20) |
 | M5c | early Dec | TypeScript SDK (npm), §21 |
-| M5d | Jan 2027 | C# SDK (NuGet) |
-| M5e | mid-Jan 2027 | v1.0.0: image on GHCR, release notes, blog post |
+| M5e | Dec | v1.0.0: image on GHCR, release notes, blog post |
+| M5d | after v1.0 | C# SDK (NuGet): **moved after v1.0** (decided 2026-11-20), so v1.0 ships with the Go and TypeScript SDKs |
 
 Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor. *Changed in M5a:* neither sends NOTIFY inside its transaction any more; the API server publishes after the commit (see §6 and §19.8).
 
@@ -1132,7 +1132,17 @@ burst=3000 first_worker=5s three_workers=11s peak_workers=5 drained=78s back_to_
 
 So the 30 s DNS window did not cost a request in 3 restarts: once an old pod exits, its connects fail, the `previous_hosts` retry moves them to another server, and two failed health checks (2–4 s) take the pod out of rotation for good. The kind node container used 1.2 GiB right after the burst (`docker stats`). This is 3 runs on one machine, not a proof; the `k8s-e2e` job on GitHub's runners repeats it on every relevant PR and every push to main.
 
-**CI.** Nothing has run in CI yet. The `k8s-e2e` job runs on this branch's pull request. The `k8s-scale` workflow runs only on its schedule or by hand, and GitHub runs both triggers only from the default branch, so its first GitHub run happens after the merge; until then the kind burst above is its result. Durations on GitHub's runners will be added here after the first runs; §20.1 estimates 5–7 minutes for the end-to-end job.
+**CI** (GitHub's hosted runners, kind). The `k8s-e2e` job passed on the pull request (4 min 27 s) and on the merge to main (4 min 19 s), against the 5–7 minutes §20.1 estimated. The nightly `k8s-scale` workflow passed all 13 runs from 2026-11-07 to 2026-11-19, in 4 min 14 s to 5 min 15 s (median 4 min 29 s). Its burst lines:
+
+```
+13 nightly runs, burst=3000   min    median   max
+first worker                  15 s   21 s     26 s
+3 workers                     16 s   30 s     32 s     # limit 60 s
+queue empty                   83 s   96 s     98 s     # limit 5 min
+back to 0 workers            115 s  125 s    131 s     # 0 within 2 min of empty
+```
+
+Scale-down matched the laptop (about 30 s after the queue was empty), but the runners were slower to scale up: the first worker came 15–26 s after the burst against 5–9 s on the laptop, and the queue emptied about 20 s later as a result. The drain itself took about the same time once workers ran: 70–75 s from the first worker, against 68–70 s. Where those extra seconds go (pod start on a cold kind node, the first Prometheus scrape, KEDA's first poll) was not measured; every run still reached 3 workers with about 28 s to spare.
 
 Out of scope: Ingress and TLS from outside the cluster; publishing the image to GHCR (M5e); server autoscaling; HA Postgres or a Postgres operator; Grafana and Jaeger in Kubernetes; NetworkPolicies; the two-servers throughput measurement.
 
