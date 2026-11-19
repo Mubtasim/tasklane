@@ -72,6 +72,30 @@ describe("shutdown", () => {
     const { worker } = setup({}, 100);
     void worker.run();
     const [a, b] = [worker.shutdown(), worker.shutdown()];
+    expect(a).toBe(b);
     await Promise.all([a, b]);
+  });
+
+  it("shares the grace between an in-flight Ack and a shutdown Nack", async () => {
+    const { fake, worker, results, started } = setup(
+      {
+        quick: () => new Promise((r) => setTimeout(r, 100)),
+        slow: (_job, signal) => new Promise<void>((_res, rej) => signal.addEventListener("abort", () => rej(signal.reason))),
+      },
+      300,
+    );
+    fake.ackDelayMs = 150;
+    fake.add("q", "quick");
+    fake.add("q", "slow");
+    const done = worker.run();
+    await until(() => started.length === 2);
+    const t0 = performance.now();
+    await worker.shutdown();
+    await done;
+    expect(performance.now() - t0).toBeLessThan(300 + 200 + 300);
+    expect(results.map((r) => [r.job.kind, r.outcome]).sort()).toEqual([
+      ["quick", "acked"],
+      ["slow", "nacked"],
+    ]);
   });
 });

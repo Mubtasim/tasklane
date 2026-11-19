@@ -72,6 +72,7 @@ export class Worker {
   readonly #log: Logger;
   readonly #stop = new AbortController();
   #done: Promise<void> | undefined;
+  #shutdownP: Promise<void> | undefined;
 
   constructor(client: Client, queue: string, options: WorkerOptions, internals: Partial<WorkerInternals> = {}) {
     const concurrency = options.concurrency ?? 1;
@@ -102,7 +103,8 @@ export class Worker {
   /** shutdown stops leasing and resolves when run() has finished. Safe to call twice. */
   shutdown(): Promise<void> {
     this.#stop.abort();
-    return (this.#done ?? Promise.resolve()).catch(() => undefined);
+    this.#shutdownP ??= (this.#done ?? Promise.resolve()).catch(() => undefined);
+    return this.#shutdownP;
   }
 
   async #run(): Promise<void> {

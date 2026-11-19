@@ -13,7 +13,9 @@ export const shutdownNackError = "worker shutting down";
  * only makes recovery faster. drain doesn't wait for handlers that ignore
  * their signal. Shutdown Nacks and the Acks or Nacks already in flight share
  * one grace period (finishTimeoutMs), so run() resolves within
- * shutdownTimeoutMs + finishTimeoutMs.
+ * shutdownTimeoutMs + finishTimeoutMs. When the grace runs out, an Ack that
+ * the job's own path is still retrying may finish (and call onResult and end
+ * its span) after run() resolved; closing the client then makes it gave_up.
  */
 export async function drain(ctx: RunContext, shutdownTimeoutMs: number): Promise<void> {
   if (await settlesWithin(Promise.allSettled([...ctx.jobs]), shutdownTimeoutMs)) return;

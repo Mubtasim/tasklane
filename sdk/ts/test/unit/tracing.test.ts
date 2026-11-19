@@ -87,4 +87,25 @@ describe("spans", () => {
     expect(handle.status.message).toHaveLength(4096);
     expect(handle.attributes["tasklane.dead"]).toBe(true);
   });
+
+  it("runs the handler inside the handle span, so its enqueues join the trace", async () => {
+    const { exporter, provider } = tracer();
+    const fake = new FakeServer();
+    fake.addQueue("q", 300, 3);
+    fake.add("q", "parent");
+    const client = fake.client({ tracerProvider: provider });
+    const results: Result[] = [];
+    const worker = new Worker(client, "q", {
+      handlers: { parent: async () => void (await client.enqueue("q", { kind: "child" })), child: () => undefined },
+      onResult: (r) => results.push(r),
+    }, fast);
+    void worker.run();
+    await until(() => results.length === 2);
+    await worker.shutdown();
+    const spans = exporter.getFinishedSpans();
+    const handle = spans.find((s) => s.name === "handle parent")!;
+    const enqueue = spans.find((s) => s.name.endsWith("/Enqueue"))!;
+    expect(enqueue.spanContext().traceId).toBe(handle.spanContext().traceId);
+    expect(enqueue.parentSpanContext?.spanId).toBe(handle.spanContext().spanId);
+  });
 });

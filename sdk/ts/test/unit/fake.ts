@@ -40,6 +40,8 @@ export class FakeServer {
   hangGetQueue = false;
   /** Called per Heartbeat; true makes that call hang until the caller aborts. */
   hangHeartbeat?: () => boolean;
+  /** Each Ack waits this long before it is applied. */
+  ackDelayMs = 0;
   #nextId = 1n;
   #nextToken = 0;
   #waiters: Array<() => void> = [];
@@ -222,6 +224,7 @@ export class FakeServer {
       },
       ack: async (req: { id: bigint; leaseToken: string }, ctx: HandlerContext) => {
         this.#record("ack", req, ctx);
+        if (this.ackDelayMs > 0) await new Promise((r) => setTimeout(r, this.ackDelayMs));
         const j = this.#job(req.id);
         if (j.state === JobState.COMPLETED && j.leaseToken === req.leaseToken) return {}; // retried Ack
         this.#holds(j, req.leaseToken);

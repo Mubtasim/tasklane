@@ -201,7 +201,12 @@ export async function runJob(ctx: RunContext, pj: ProtoJob, leasedAt: number): P
         // nothing more to do
       }
     });
-    const err = await callHandler(ctx, a.job, a.abort.signal);
+    const hj = a;
+    // Run inside the span's context, so spans and enqueues made by the
+    // handler join the job's trace (as in Go).
+    const err = await (ctx.tracing
+      ? ctx.tracing.around(hj.span, () => callHandler(ctx, hj.job, hj.abort.signal))
+      : callHandler(ctx, a.job, a.abort.signal));
     // Claim the final call as soon as the handler returns, so a shutdown
     // that reaches its deadline now can't nack a job that just succeeded.
     // If the shutdown claimed it first, the shutdown answers for the job.
