@@ -5,6 +5,8 @@ import { codeOf, isFatal, rpc, TasklaneError, toError } from "./errors.js";
 import { durationFromMs } from "./internal/time.js";
 import { runJob, type Handler, type Result, type RunContext } from "./job.js";
 import { getQueue } from "./producer.js";
+import { drain } from "./shutdown.js";
+import { jobTracing } from "./tracing.js";
 import { Slots } from "./slots.js";
 import { defaultLogger, type Logger } from "./types.js";
 
@@ -65,7 +67,6 @@ export class Worker {
   readonly #queue: string;
   readonly #options: WorkerOptions;
   readonly #concurrency: number;
-  // eslint-disable-next-line no-unused-private-class-members -- Task 5 uses it
   readonly #shutdownTimeoutMs: number;
   readonly #internals: WorkerInternals;
   readonly #log: Logger;
@@ -118,15 +119,11 @@ export class Worker {
       slots: new Slots(this.#concurrency),
       active: new Set(),
       jobs: new Set(),
+      tracing: jobTracing(this.#client.tracer as Parameters<typeof jobTracing>[0], this.#queue),
     };
     const fatal = await this.#leaseLoop(ctx);
-    await this.#finishRuns(ctx);
+    await drain(ctx, this.#shutdownTimeoutMs);
     if (fatal) throw fatal;
-  }
-
-  /** #finishRuns waits for running jobs (Task 5 replaces it with drain). */
-  async #finishRuns(ctx: RunContext): Promise<void> {
-    await Promise.allSettled([...ctx.jobs]);
   }
 
   /**

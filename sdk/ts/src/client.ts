@@ -3,6 +3,7 @@ import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-no
 import { TasklaneService } from "./gen/tasklane/v1/tasklane_pb.js";
 import * as admin from "./admin.js";
 import * as producer from "./producer.js";
+import { getTracer, tracingInterceptor } from "./tracing.js";
 import type { TracerProviderLike } from "./types.js";
 
 /** The server's message limit (design §6), both directions. */
@@ -24,6 +25,8 @@ export class Client {
   readonly options: ClientOptions;
   /** @internal */
   readonly interceptors: Interceptor[] = [];
+  /** @internal The OpenTelemetry tracer, or undefined without @opentelemetry/api. */
+  readonly tracer: unknown;
   #close: () => void;
   #closed = false;
 
@@ -38,6 +41,8 @@ export class Client {
         return next(req);
       });
     }
+    this.tracer = getTracer(options.tracerProvider);
+    this.interceptors.push(tracingInterceptor(this.tracer as Parameters<typeof tracingInterceptor>[0]));
     this.raw = createConnectClient(TasklaneService, makeTransport(this.interceptors));
   }
 
