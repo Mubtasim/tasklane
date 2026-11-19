@@ -73,3 +73,11 @@ export async function rpc<T>(call: () => Promise<T>): Promise<T> {
 export function toError(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e));
 }
+
+/** @internal The reason a job's signal is aborted at shutdown; tracing tells it from a handler's own error by type. */
+export class ShutdownError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ShutdownError";
+  }
+}

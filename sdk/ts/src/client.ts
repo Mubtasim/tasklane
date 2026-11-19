@@ -18,6 +18,10 @@ export interface ClientOptions {
   tracerProvider?: TracerProviderLike;
 }
 
+/**
+ * Client talks to the Tasklane server. createClient is the only way to make
+ * one: the class has no public constructor.
+ */
 export class Client {
   /** @internal */
   readonly raw: RawService;
@@ -30,8 +34,7 @@ export class Client {
   #close: () => void;
   #closed = false;
 
-  /** @internal Use createClient. */
-  constructor(makeTransport: (interceptors: Interceptor[]) => Transport, options: ClientOptions = {}, close: () => void = () => {}) {
+  private constructor(makeTransport: (interceptors: Interceptor[]) => Transport, options: ClientOptions = {}, close: () => void = () => {}) {
     this.options = options;
     this.#close = close;
     if (options.apiKey) {
@@ -44,6 +47,11 @@ export class Client {
     this.tracer = getTracer(options.tracerProvider);
     this.interceptors.push(tracingInterceptor(this.tracer as Parameters<typeof tracingInterceptor>[0]));
     this.raw = createConnectClient(TasklaneService, makeTransport(this.interceptors));
+  }
+
+  /** @internal Used by createClient and tests; there is no public constructor. */
+  static make(makeTransport: (interceptors: Interceptor[]) => Transport, options: ClientOptions = {}, close: () => void = () => {}): Client {
+    return new Client(makeTransport, options, close);
   }
 
   get closed(): boolean {
@@ -102,7 +110,7 @@ export class Client {
  */
 export function createClient(baseUrl: string, options: ClientOptions = {}): Client {
   const sessionManager = new Http2SessionManager(baseUrl);
-  return new Client(
+  return Client.make(
     (interceptors) =>
       createGrpcTransport({ baseUrl, sessionManager, interceptors, readMaxBytes: maxMessageBytes, writeMaxBytes: maxMessageBytes }),
     options,

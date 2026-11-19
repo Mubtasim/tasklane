@@ -11,13 +11,13 @@ import { Slots } from "./slots.js";
 import { defaultLogger, type Logger } from "./types.js";
 
 export interface WorkerOptions {
-  /** How many jobs run at once (default 1). */
+  /** How many jobs run at once (default 1; zero or less means 1, like the Go SDK). */
   concurrency?: number;
   /** The lease length; omitted uses the queue's setting. */
   visibilityTimeoutMs?: number;
   /**
    * How long running jobs may take to finish after shutdown() (default
-   * 25 000 ms); the Nacks and Acks after it take up to 2 s more. Give the
+   * 25 000 ms; zero or less means the default); the Nacks and Acks after it take up to 2 s more. Give the
    * process at least that long to stop: Docker's default is only 10 s.
    */
   shutdownTimeoutMs?: number;
@@ -74,16 +74,22 @@ export class Worker {
   #done: Promise<void> | undefined;
   #shutdownP: Promise<void> | undefined;
 
+  constructor(client: Client, queue: string, options: WorkerOptions);
+  /** @internal Tests pass shortened timings. */
+  constructor(client: Client, queue: string, options: WorkerOptions, internals?: Partial<WorkerInternals>);
   constructor(client: Client, queue: string, options: WorkerOptions, internals: Partial<WorkerInternals> = {}) {
-    const concurrency = options.concurrency ?? 1;
-    if (!Number.isInteger(concurrency) || concurrency < 1) {
-      throw new RangeError("tasklane: concurrency must be a positive integer");
+    // Like Go's NewWorker: zero, negative or missing means the default.
+    const requested = options.concurrency;
+    const concurrency = requested === undefined || requested <= 0 ? 1 : requested;
+    if (!Number.isInteger(concurrency)) {
+      throw new RangeError("tasklane: concurrency must be an integer");
     }
     this.#client = client;
     this.#queue = queue;
     this.#options = options;
     this.#concurrency = concurrency;
-    this.#shutdownTimeoutMs = options.shutdownTimeoutMs ?? defaultShutdownTimeoutMs;
+    const st = options.shutdownTimeoutMs;
+    this.#shutdownTimeoutMs = st === undefined || !(st > 0) ? defaultShutdownTimeoutMs : st;
     this.#internals = { ...defaultInternals, ...internals };
     this.#log = options.logger ?? defaultLogger;
   }

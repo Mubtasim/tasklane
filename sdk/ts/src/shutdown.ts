@@ -1,12 +1,12 @@
 import { settlesWithin } from "./backoff.js";
-import { codeOf, isLeaseLost, toError } from "./errors.js";
+import { codeOf, isLeaseLost, ShutdownError, toError } from "./errors.js";
 import { claim, report, type ActiveJob, type RunContext } from "./job.js";
 
-/** The Nack message for jobs still running at the shutdown deadline. */
+/** @internal The Nack message for jobs still running at the shutdown deadline. */
 export const shutdownNackError = "worker shutting down";
 
 /**
- * drain waits for running jobs after the lease loop stopped. Jobs still
+ * @internal drain waits for running jobs after the lease loop stopped. Jobs still
  * running after shutdownTimeoutMs are aborted and nacked, so the server
  * retries them within seconds instead of after their lease expires. If a Nack
  * can't be sent, the lease expires and the reaper retries the job: the Nack
@@ -32,7 +32,7 @@ export async function drain(ctx: RunContext, shutdownTimeoutMs: number): Promise
       continue;
     }
     a.hbStop.abort();
-    a.abort.abort(new Error(shutdownNackError));
+    a.abort.abort(new ShutdownError(shutdownNackError));
     nacks.push(nackAtShutdown(ctx, a, graceEnd));
   }
 
@@ -47,7 +47,7 @@ async function nackAtShutdown(ctx: RunContext, a: ActiveJob, graceEnd: number): 
   // Join the heartbeat before the Nack, as runJob does before its final
   // call. A lost lease can only be reported before the heartbeat exits.
   await a.hbDone;
-  const reason = new Error(shutdownNackError);
+  const reason = new ShutdownError(shutdownNackError);
   if (a.lost) {
     report(ctx, a, "lease_lost", reason);
     return;
@@ -59,10 +59,16 @@ async function nackAtShutdown(ctx: RunContext, a: ActiveJob, graceEnd: number): 
     );
   try {
     await (ctx.tracing ? ctx.tracing.around(a.span, call) : call());
-    report(ctx, a, "nacked", reason);
-    ctx.log.info("tasklane: nacked an unfinished job at shutdown", { jobId: String(a.job.id), kind: a.job.kind });
   } catch (e) {
     ctx.log.warn("tasklane: shutdown nack failed; the job is retried when its lease expires", { jobId: String(a.job.id), err: toError(e).message });
     report(ctx, a, isLeaseLost(codeOf(e)) ? "lease_lost" : "gave_up", reason);
+    return;
+  }
+  // Report exactly once: after the Nack, outside its try, with a logger that may throw.
+  report(ctx, a, "nacked", reason);
+  try {
+    ctx.log.info("tasklane: nacked an unfinished job at shutdown", { jobId: String(a.job.id), kind: a.job.kind });
+  } catch {
+    // a throwing logger must not fail the shutdown
   }
 }

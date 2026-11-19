@@ -2,7 +2,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import type * as Otel from "@opentelemetry/api";
 import type { Job as ProtoJob } from "./gen/tasklane/v1/tasklane_pb.js";
 import type { JobTracing, LeasedJob, Outcome } from "./job.js";
-import { shutdownNackError } from "./shutdown.js";
+import { ShutdownError } from "./errors.js";
 import type { TracerProviderLike } from "./types.js";
 
 // @opentelemetry/api is an optional peer dependency: without it every hook
@@ -107,7 +107,7 @@ export function jobTracing(tracer: Otel.Tracer | undefined, queue: string): JobT
           s.setStatus({ code: otel.SpanStatusCode.OK });
           break;
         case "nacked":
-          if (err?.message === shutdownNackError) {
+          if (err instanceof ShutdownError) {
             s.setStatus({ code: otel.SpanStatusCode.ERROR, message: "shutdown" });
           } else if (err) {
             s.recordException(err);

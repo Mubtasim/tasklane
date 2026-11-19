@@ -127,6 +127,13 @@ describe("Worker lease loop", () => {
     expect(fake.callsOf("lease")[0]!.req.visibilityTimeout.nanos).toBe(500_000_000);
   });
 
+  it("treats zero or negative concurrency as 1, like Go, and refuses a fraction", () => {
+    const fake = new FakeServer();
+    expect(() => new Worker(fake.client(), "q", { handlers: {}, concurrency: 0 })).not.toThrow();
+    expect(() => new Worker(fake.client(), "q", { handlers: {}, concurrency: -3 })).not.toThrow();
+    expect(() => new Worker(fake.client(), "q", { handlers: {}, concurrency: 1.5 })).toThrow(RangeError);
+  });
+
   it("refuses a second run() and a bad concurrency", async () => {
     const { worker } = setup({});
     const first = worker.run();
@@ -134,7 +141,7 @@ describe("Worker lease loop", () => {
     await worker.shutdown();
     await first;
     const fake = new FakeServer();
-    expect(() => new Worker(fake.client(), "q", { handlers: {}, concurrency: 0 })).toThrow(RangeError);
+    expect(() => new Worker(fake.client(), "q", { handlers: {}, concurrency: Number.NaN })).toThrow(RangeError);
   });
 
   it("resolves shutdown() at once when run() was never called", async () => {

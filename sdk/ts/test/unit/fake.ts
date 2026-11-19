@@ -91,7 +91,7 @@ export class FakeServer {
   }
 
   client(options: ClientOptions = {}): Client {
-    return new Client(
+    return Client.make(
       (interceptors) =>
         createRouterTransport((router) => router.service(TasklaneService, this.#impl()), {
           transport: { interceptors },

@@ -88,6 +88,51 @@ describe("spans", () => {
     expect(handle.attributes["tasklane.dead"]).toBe(true);
   });
 
+  it("gives a handler's own 'worker shutting down' error an error status, not the shutdown one", async () => {
+    const { exporter, provider } = tracer();
+    const fake = new FakeServer();
+    fake.addQueue("q", 300, 1);
+    fake.add("q", "odd");
+    const results: Result[] = [];
+    const worker = new Worker(fake.client({ tracerProvider: provider }), "q", {
+      handlers: {
+        odd: () => {
+          throw new Error("worker shutting down");
+        },
+      },
+      logger: { info() {}, warn() {}, error() {} },
+      onResult: (r) => results.push(r),
+    }, fast);
+    void worker.run();
+    await until(() => results.length === 1);
+    await worker.shutdown();
+    const handle = exporter.getFinishedSpans().find((s) => s.name === "handle odd")!;
+    expect(handle.status.code).toBe(SpanStatusCode.ERROR);
+    expect(handle.status.message).toBe("worker shutting down");
+    expect(handle.events.some((e) => e.name === "exception")).toBe(true);
+  });
+
+  it("marks a job nacked at shutdown with the shutdown status", async () => {
+    const { exporter, provider } = tracer();
+    const fake = new FakeServer();
+    fake.addQueue("q", 5000, 3);
+    fake.add("q", "slow");
+    const results: Result[] = [];
+    let started = 0;
+    const worker = new Worker(fake.client({ tracerProvider: provider }), "q", {
+      shutdownTimeoutMs: 100,
+      handlers: { slow: (_job, signal) => new Promise<void>((_res, rej) => { started++; signal.addEventListener("abort", () => rej(signal.reason)); }) },
+      logger: { info() {}, warn() {}, error() {} },
+      onResult: (r) => results.push(r),
+    }, fast);
+    void worker.run();
+    await until(() => started === 1);
+    await worker.shutdown();
+    const handle = exporter.getFinishedSpans().find((s) => s.name === "handle slow")!;
+    expect(handle.status.code).toBe(SpanStatusCode.ERROR);
+    expect(handle.status.message).toBe("shutdown");
+  });
+
   it("runs the handler inside the handle span, so its enqueues join the trace", async () => {
     const { exporter, provider } = tracer();
     const fake = new FakeServer();

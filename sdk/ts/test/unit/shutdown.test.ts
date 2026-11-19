@@ -68,6 +68,35 @@ describe("shutdown", () => {
     expect(results.map((r) => r.outcome)).toEqual(["acked"]);
   });
 
+  it("treats shutdownTimeoutMs 0 as the 25 s default, not as no grace", async () => {
+    const { fake, worker, results, started } = setup({ a: () => new Promise((r) => setTimeout(r, 150)) }, 0);
+    fake.add("q", "a");
+    void worker.run();
+    await until(() => started.length === 1);
+    await worker.shutdown();
+    expect(results.map((r) => r.outcome)).toEqual(["acked"]);
+    expect(fake.callsOf("nack")).toHaveLength(0);
+  });
+
+  it("reports a shutdown nack once even when the info logger throws", async () => {
+    const fake = new FakeServer();
+    fake.addQueue("q", 5000, 3);
+    const results: Result[] = [];
+    let started = 0;
+    const worker = new Worker(fake.client(), "q", {
+      shutdownTimeoutMs: 100,
+      handlers: { slow: (_job, signal) => new Promise<void>((_res, rej) => { started++; signal.addEventListener("abort", () => rej(signal.reason)); }) },
+      logger: { info() { throw new Error("log sink down"); }, warn() {}, error() {} },
+      onResult: (r) => results.push(r),
+    }, fast);
+    fake.add("q", "slow");
+    void worker.run();
+    await until(() => started === 1);
+    await worker.shutdown();
+    expect(fake.callsOf("nack")).toHaveLength(1);
+    expect(results.map((r) => r.outcome)).toEqual(["nacked"]);
+  });
+
   it("returns the same promise from a second shutdown()", async () => {
     const { worker } = setup({}, 100);
     void worker.run();

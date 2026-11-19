@@ -126,6 +126,7 @@ export interface CallOpts {
   timeoutMs?: number;
 }
 
+/** @internal getQueue with call options, for the worker; Client.getQueue is the public one. */
 export async function getQueue(raw: RawService, name: string, opts?: CallOpts): Promise<QueueInfo> {
   return rpc(async () => {
     const res = await raw.getQueue({ name }, opts);

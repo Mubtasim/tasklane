@@ -4,7 +4,10 @@ TypeScript client and worker for [Tasklane](https://github.com/Mubtasim/tasklane
 
 Node 22 or later. ESM only: use `import`, not `require()` (the tracing module uses top-level `await`, so `require()` of this package fails with `ERR_REQUIRE_ASYNC_MODULE`). Talks gRPC to the server's port 7070.
 
+The package is not on npm yet; it will be published at v1.0. Until then, install it from this repository (`cd sdk/ts && npm run build && npm pack`, then `npm install ./mubtasim91-tasklane-0.0.0.tgz`). The command once it is published:
+
 ```bash
+# after v1.0 only
 npm install @mubtasim91/tasklane
 ```
 
@@ -51,10 +54,10 @@ client.close();
 - **Delivery is at least once.** Make handlers idempotent: a job can run again after a crash or a lost lease.
 - **`signal`** aborts when the lease is lost or shutdown runs out of time. Pass it to `fetch` and database calls.
 - **Shutdown** lets running jobs finish for 25 s (`shutdownTimeoutMs`), then nacks the rest within 2 s. Give the process at least 30 s to stop (Kubernetes `terminationGracePeriodSeconds`, Docker `stop_grace_period`; Docker's default is 10 s). `shutdown()` is safe to call twice: it returns the same promise.
-- **Lost leases.** If the server refuses an Ack or Nack because the lease is gone (`FAILED_PRECONDITION` or `NOT_FOUND`), the run is reported as `lease_lost` and the signal is aborted.
+- **Lost leases.** When a heartbeat finds the lease gone, the signal is aborted so the handler can stop. If the handler had already returned and the server then refuses its Ack or Nack because the lease is gone (`FAILED_PRECONDITION`), nothing is left to abort; the run is reported as `lease_lost` in `onResult`.
 - **CPU-heavy work** (image resizing, big parses, bcrypt) blocks Node's one thread, and with it the heartbeats: past the visibility timeout the job runs twice. Run such work in `worker_threads` or a child process. The worker logs `event loop blocked for about N s` when a heartbeat timer is more than 5 s late.
 - **`onResult`** is called once per leased job with a `Result` (`job`, `outcome`, `start`, `end`, `error`). `outcome` is `acked`, `nacked`, `lease_lost` or `gave_up`.
-- **Options:** `concurrency` (default 1), `visibilityTimeoutMs`, `shutdownTimeoutMs`, `handlers`, `onResult`, `logger` (anything with `info`, `warn` and `error`; defaults to `console`).
+- **Options:** `concurrency` (default 1; zero or less means 1), `visibilityTimeoutMs`, `shutdownTimeoutMs`, `handlers`, `onResult`, `logger` (anything with `info`, `warn` and `error`; defaults to `console`).
 
 ## Tracing
 
@@ -62,7 +65,7 @@ Install `@opentelemetry/api` and set up an OpenTelemetry SDK: enqueue calls send
 
 ## Admin calls
 
-`getJob`, `cancelJob` (available jobs only), `listDeadJobs` (pages), `redriveJobs`, `redriveAll`, `createQueue`, `getQueue`.
+`enqueue`, `enqueueBatch`, `getJob`, `cancelJob` (available jobs only), `listDeadJobs` (pages), `redriveJobs`, `redriveAll`, `createQueue`, `getQueue`.
 
 ## License
 

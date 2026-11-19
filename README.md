@@ -89,7 +89,7 @@ w := client.NewWorker("emails", tasklane.WorkerOptions{Concurrency: 5, OnResult:
 
 ## TypeScript SDK
 
-`sdk/ts` is the TypeScript SDK (`@mubtasim91/tasklane`, published to npm at v1.0). It talks gRPC to port 7070 and behaves like the Go SDK: the same leases, heartbeats, retries and shutdown, checked by the same invariant test (design §21).
+`sdk/ts` is the TypeScript SDK (`@mubtasim91/tasklane`, to be published to npm at v1.0; until then build and install it from `sdk/ts`). It talks gRPC to port 7070 and behaves like the Go SDK: the same leases, heartbeats, retries and shutdown, checked by the same invariant test (design §21).
 
 ```ts
 import { Worker, createClient } from "@mubtasim91/tasklane";

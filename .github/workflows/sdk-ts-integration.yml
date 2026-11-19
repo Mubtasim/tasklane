@@ -6,6 +6,8 @@ on:
       - "sdk/ts/**"
       - "sdk/go/**"
       - "proto/**"
+      - "go.mod"
+      - "go.sum"
       - "internal/**"
       - "cmd/**"
       - "test/invariant/**"

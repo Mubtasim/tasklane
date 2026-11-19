@@ -852,12 +852,12 @@ Three parts: why, a timeline, and what the SDK does.
 1. t = 0 s: lease; deadline = arrival + 30 s.
 2. t = 1 s: the handler starts a 40 s CPU loop. The thread is busy.
 3. t = 10 s and 20 s: heartbeats are due but can't run.
-4. t ≈ 31–35 s: the lease expired; the reaper (every 5 s) makes the job available; another worker takes it.
+4. t ≈ 31–35 s: the lease expired; the reaper (the default 5 s interval) makes the job available; another worker takes it.
 5. t = 41 s: the loop ends; the timer fires 31 s late; the heartbeat gets FAILED_PRECONDITION; the Ack is refused. Fencing kept the database right, but the work (an email, a charge) happened twice.
 
 **What the SDK does:** it measures how late each heartbeat timer fired and logs `event loop blocked for about N s; heartbeats were delayed` past 5 s, so the silent duplicate becomes a visible warning; the docs say CPU-heavy work belongs in `worker_threads` or a child process. Go doesn't have this problem: its heartbeats run on another goroutine that the runtime schedules on another thread.
 
-**Trade-off:** a built-in thread pool would make it safe automatically but costs about 30–40% more SDK code, handlers in separate files and payload copies; most job handlers wait on I/O, where one thread is fine.
+**Trade-off:** a built-in thread pool would make it safe automatically but costs considerably more code, handlers in separate files and payload copies; most job handlers wait on I/O, where one thread is fine.
 
 ## Q53. Why are job IDs `bigint` in the TypeScript SDK?
 

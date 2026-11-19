@@ -69,6 +69,7 @@ export interface RunContext {
   tracing?: JobTracing;
 }
 
+/** @internal */
 export function leasedJobFromProto(pj: ProtoJob): LeasedJob {
   return {
     id: pj.id,
@@ -83,7 +84,7 @@ export function leasedJobFromProto(pj: ProtoJob): LeasedJob {
   };
 }
 
-/** callHandler runs the handler for the job's kind; a missing handler or a throw becomes the error. */
+/** @internal callHandler runs the handler for the job's kind; a missing handler or a throw becomes the error. */
 export async function callHandler(ctx: RunContext, job: LeasedJob, signal: AbortSignal): Promise<Error | undefined> {
   const handler = ctx.handlers[job.kind];
   if (!handler) return new Error(`no handler for kind "${job.kind}"`);
@@ -142,7 +143,7 @@ export interface ActiveJob {
 }
 
 /**
- * claim reports whether the caller may send the job's final Ack or Nack: only
+ * @internal claim reports whether the caller may send the job's final Ack or Nack: only
  * the first caller may, so the job's own path and a shutdown never both
  * answer for it.
  */
@@ -152,7 +153,7 @@ export function claim(a: ActiveJob): boolean {
   return true;
 }
 
-/** report ends the run's span and calls onResult once; a throwing onResult is logged. */
+/** @internal report ends the run's span and calls onResult once; a throwing onResult is logged. */
 export function report(ctx: RunContext, a: ActiveJob, outcome: Outcome, err?: Error): void {
   try {
     ctx.tracing?.end(a.span, a.job, outcome, err);
@@ -171,7 +172,7 @@ export function report(ctx: RunContext, a: ActiveJob, outcome: Outcome, err?: Er
   }
 }
 
-/** runJob runs one leased job, sends its Ack or Nack and frees its slot. leasedAt is performance.now() when the Lease response arrived. */
+/** @internal runJob runs one leased job, sends its Ack or Nack and frees its slot. leasedAt is performance.now() when the Lease response arrived. */
 export async function runJob(ctx: RunContext, pj: ProtoJob, leasedAt: number): Promise<void> {
   let a: ActiveJob | undefined;
   try {
