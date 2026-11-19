@@ -1,0 +1,67 @@
+name: TypeScript SDK integration
+
+on:
+  pull_request:
+    paths:
+      - "sdk/ts/**"
+      - "proto/**"
+      - "internal/**"
+      - "cmd/**"
+      - "test/invariant/**"
+      - "test/invariants/**"
+      - ".github/workflows/sdk-ts-integration.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-ts-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+      - name: Start the server
+        run: |
+          go build -o /tmp/tasklane ./cmd/tasklane
+          TASKLANE_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable' \
+          TASKLANE_API_KEYS=test-key TASKLANE_METRICS_ADDR=off \
+            /tmp/tasklane > /tmp/tasklane.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8080/readyz && exit 0
+            sleep 1
+          done
+          cat /tmp/tasklane.log
+          exit 1
+      - run: npm ci
+        working-directory: sdk/ts
+      - run: npm run test:integration
+        working-directory: sdk/ts
+        env:
+          TASKLANE_TEST_ADDR: http://127.0.0.1:7070
+          TASKLANE_TEST_API_KEY: test-key
+      - if: failure()
+        run: cat /tmp/tasklane.log
