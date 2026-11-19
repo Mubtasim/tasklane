@@ -1179,7 +1179,7 @@ sdk/ts/                       @mubtasim91/tasklane (ESM, Node >= 22)
 ```
 
 ```ts
-const client = createClient("http://localhost:8080", { apiKey: "demo-key" });
+const client = createClient("http://localhost:7070", { apiKey: "demo-key" }); // the gRPC port (h2c); 8080 is the HTTP gateway
 
 const { jobId, created } = await client.enqueue("emails", {
   kind: "welcome", payload: { userId: 42 }, priority: Priority.High,
@@ -1212,10 +1212,10 @@ Names, defaults and outcomes (`acked`, `nacked`, `lease_lost`, `gave_up`) match 
 The lease loop is the Go algorithm (§14.2):
 
 1. `free = concurrency - running`. When `free` is 0, wait on a promise that resolves when a slot frees (no polling).
-2. One `Lease(queue, max_jobs = free, wait = 20 s)` at a time per worker, with a call deadline of wait + 10 s. Errors other than shutdown are retried with full-jitter backoff (base 100 ms, cap 5 s) and never end `run()`.
+2. One `Lease(queue, max_jobs = free, wait = 20 s)` at a time per worker, with a call deadline of wait + 10 s. Before the first Lease, `GetQueue` checks that the queue exists and supplies the visibility timeout unless the option sets one. Errors are retried with full-jitter backoff (ceiling 1 s doubling to a 30 s cap, as in Go), except the ones retrying cannot fix: `NOT_FOUND`, `UNAUTHENTICATED`, `PERMISSION_DENIED` and `INVALID_ARGUMENT` make `run()` reject (after the shutdown steps below), as Go's `Run` returns an error.
 3. Each leased job starts its run without awaiting it. The local lease deadline is the time the Lease response arrived plus the visibility timeout, the conservative end.
 4. A heartbeat every VT/3. Success moves the local deadline. `FAILED_PRECONDITION` or `NOT_FOUND` means the lease is lost: abort the handler's signal, outcome `lease_lost`, send no Ack or Nack. Other errors are retried at the next tick. A timer that fires more than 5 s late logs the event-loop warning (§21.1, 2).
-5. The handler's result decides the call: return → `Ack`; throw → `Nack` with the error message (the server truncates at 4 KiB); `retryAt(err, date)` → `Nack` with `retry_at`; a job whose kind has no handler → `Nack` "no handler for kind X".
+5. The handler's result decides the call: return → `Ack`; throw (or a rejected promise) → `Nack` with the error message (the server truncates at 4 KiB); `retryAt(err, date)` → `Nack` with `retry_at`; a job whose kind has no handler → `Nack` "no handler for kind X".
 6. Ack and Nack are retried with backoff until the local lease deadline, then the outcome is `gave_up` (the reaper retries the job; safe because Ack is idempotent, §5). A repeated Nack's `FAILED_PRECONDITION` counts as nacked.
 7. `onResult` is called exactly once; an exception inside it is logged, not thrown.
 8. The slot is released in a `finally` block, on every path.
