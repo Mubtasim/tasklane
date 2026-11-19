@@ -1159,7 +1159,7 @@ Decided 2026-11-20. This section is the M5c spec. It adds a TypeScript SDK with 
 | 3 | Proving it behaves like the Go SDK | Unit tests with a fake server, integration tests against the real server, and a cross-language invariant test whose TypeScript workers write the same JSONL ledger the existing Go checker reads; the compose demo runs a Go and a TypeScript worker on one queue | "Behaves like the Go SDK" becomes a check, not a claim, reusing the checker that found the M4b bug (§17). Rejected: unit and integration tests only; adding the chaos test with TypeScript workers (about 4 minutes, and it mostly tests the server, which §17 already covers). |
 | 4 | When to publish to npm | At v1.0 (M5e), with the server image; M5c makes the package publish-ready and checks it from a local tarball | One coordinated release, and nothing public that may still change. Rejected: a `0.1.0` now (earlier installs, but a token in CI before trusted publishing is set up, and a second release to manage). |
 
-Decided for the user (routine): the package lives in `sdk/ts/`; ESM only, types included, Node 22, 24 and 26 tested in CI (Bun and Deno untested); job IDs are `bigint`; payloads are typed with a generic and must be a JSON object, with no validation library; cancellation is an `AbortSignal`; OpenTelemetry is an optional peer dependency; Vitest and ESLint; generated code is committed and CI fails if it is stale, as for Go. **Package name:** `@mubtasim91/tasklane` (the npm account is `mubtasim91`; the `mubtasim` name belongs to an npm account with no valid email that cannot be recovered).
+Decided for the user (routine): the package lives in `sdk/ts/`; ESM only, types included, Node 22, 24 and 26 tested in CI (Bun and Deno untested); job IDs are `bigint`; payloads are typed with a generic `P extends object` (so interfaces work) and must be a JSON object at runtime (`TypeError` otherwise), with no validation library; cancellation is an `AbortSignal`; OpenTelemetry is an optional peer dependency; Vitest and ESLint; generated code is committed and CI fails if it is stale, as for Go. **Package name:** `@mubtasim91/tasklane` (the npm account is `mubtasim91`; the `mubtasim` name belongs to an npm account with no valid email that cannot be recovered).
 
 ### 21.2 Package and API
 
@@ -1197,12 +1197,13 @@ const worker = new Worker(client, "emails", {
     },
   },
   onResult: (r) => { /* { job, outcome, start, end, error }, exactly once per leased job */ },
-  logger: console,                       // anything with warn/error
+  logger: console,                       // anything with info/warn/error
 });
 
 const done = worker.run();               // resolves after shutdown() finishes
 process.on("SIGTERM", () => worker.shutdown());
 await done;
+client.close();                          // closes the HTTP/2 session so the process can exit
 ```
 
 Names, defaults and outcomes (`acked`, `nacked`, `lease_lost`, `gave_up`) match the Go SDK. `LeasedJob` carries `id`, `kind`, `payload`, `attempt`, `maxAttempts`, `priority`, `enqueuedAt` and `leaseToken`. Differences are JavaScript idioms only: promises instead of goroutines, `AbortSignal` instead of `context.Context`, `bigint` instead of `int64`, milliseconds in option names.
@@ -1216,7 +1217,7 @@ The lease loop is the Go algorithm (§14.2):
 3. Each leased job starts its run without awaiting it. The local lease deadline is the time the Lease response arrived plus the visibility timeout, the conservative end.
 4. A heartbeat every VT/3. Success moves the local deadline. `FAILED_PRECONDITION` or `NOT_FOUND` means the lease is lost: abort the handler's signal, outcome `lease_lost`, send no Ack or Nack. Other errors are retried at the next tick. A timer that fires more than 5 s late logs the event-loop warning (§21.1, 2).
 5. The handler's result decides the call: return → `Ack`; throw (or a rejected promise) → `Nack` with the error message (the server truncates at 4 KiB); `retryAt(err, date)` → `Nack` with `retry_at`; a job whose kind has no handler → `Nack` "no handler for kind X".
-6. Ack and Nack are retried with backoff until the local lease deadline, then the outcome is `gave_up` (the reaper retries the job; safe because Ack is idempotent, §5). A repeated Nack's `FAILED_PRECONDITION` counts as nacked.
+6. Ack and Nack are retried with backoff until the local lease deadline, then the outcome is `gave_up` (the reaper retries the job; safe because Ack is idempotent, §5). A `FAILED_PRECONDITION` or `NOT_FOUND` on the Ack or Nack means `lease_lost`, as in Go: the server cannot tell a repeated Nack from a stale token, and invariant rule 3 expects `lease_lost`. `UNAVAILABLE` after the client was closed means `gave_up`.
 7. `onResult` is called exactly once; an exception inside it is logged, not thrown.
 8. The slot is released in a `finally` block, on every path.
 
@@ -1240,7 +1241,7 @@ The lease loop is the Go algorithm (§14.2):
 
 CI: a new `sdk-ts` job (lint, typecheck, unit tests on Node 22, 24 and 26, package checks) on every PR; integration and the cross-language test on PRs touching `sdk/ts/**`, `proto/**` or the server, and on every push to main.
 
-Demo: `docker compose up` replaces worker-2 with `worker-ts` (Node 26 slim, about 60–80 MB at runtime) on the same `demo` queue, with the same job mix and tracing settings (`OTEL_SERVICE_NAME=worker-ts`). The proof that both languages share the queue is in Jaeger: the service list shows `worker-1` (Go) and `worker-ts`, and a flaky job retried by both shows both in one trace. No new Grafana panel: the demo workers expose no metrics, and adding them to both workers is not worth it for M5c.
+Demo: `docker compose up` replaces worker-2 with `worker-ts` (Node 26 slim, about 60–80 MB at runtime) on the same `demo` queue, with the same job mix and tracing settings (`OTEL_SERVICE_NAME=worker-ts`). The proof that both languages share the queue is in Jaeger: the service list shows `worker-1` (Go) and `worker-ts`, and a flaky job retried by both shows both in one trace. No new Grafana panel: the demo workers expose no metrics, and adding them to both workers is not worth it for M5c. The chaos test kills and pauses `worker-1..3` by name, so its compose override switches `worker-ts` off (a profile) and defines a Go `worker-2`: chaos stays all-Go (§21.1, 3). The demo worker accepts `TASKLANE_ADDR` without a scheme (`envoy:7070`, the shared env anchor) and adds `http://`. README demo commands that name worker-2 (shutdown example, logs, Jaeger services) change to worker-ts. Spans of the Ack and Nack calls join the `handle` span only with a context manager registered (the OpenTelemetry Node SDK registers one; the unit tests register `AsyncLocalStorageContextManager`).
 
 Docs: README "TypeScript SDK" section (install, producer, worker, shutdown and grace period, the CPU-heavy warning); `sdk/ts/README.md` as the npm page; `docs/npm-publishing.md` (how npm publishing works, semantic versioning, package contents, trusted publishing with provenance, the pre-publish checks); cheatsheet rows (event loop and heartbeats, package size); interview notes Q52–Q55.
 
