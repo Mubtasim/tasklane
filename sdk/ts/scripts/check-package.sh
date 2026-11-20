@@ -21,6 +21,7 @@ if [[ -n "$unexpected" ]]; then
   echo "$unexpected" >&2
   exit 1
 fi
+tar -tzf "$tarball" | grep -qx 'package/CHANGELOG.md' || { echo "CHANGELOG.md missing from the tarball" >&2; exit 1; }
 
 project=$(mktemp -d)
 trap 'rm -f "$tarball"; rm -rf "$project"' EXIT
