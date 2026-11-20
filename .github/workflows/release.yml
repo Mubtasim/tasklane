@@ -195,10 +195,11 @@ jobs:
           exit 1
       - name: npm package
         run: |
-          # The registry can lag behind a fresh publish.
-          for i in $(seq 1 10); do
+          # The registry can lag behind a fresh publish: 1.0.1 took more than
+          # 2.5 minutes to show up, so wait up to 5.
+          for i in $(seq 1 20); do
             [[ "$(npm view "@mubtasim91/tasklane@$VERSION" version 2>/dev/null)" == "$VERSION" ]] && exit 0
-            echo "not on npm yet (try $i of 10)"; sleep 15
+            echo "not on npm yet (try $i of 20)"; sleep 15
           done
           exit 1
       - name: Helm chart
