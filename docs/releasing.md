@@ -151,8 +151,10 @@ npm can't set up trusted publishing for a package that doesn't exist yet, so:
      | gh api -X PUT repos/Mubtasim/tasklane/environments/release --input -
    gh api -X POST repos/Mubtasim/tasklane/environments/release/deployment-branch-policies -f name='v*' -f type=tag
    ```
-1. The maintainer publishes `1.0.0-rc.1` by hand: `npm login` (2FA), then `cd sdk/ts && npm ci && npm publish --tag next --provenance=false`. Note: npm sets `latest` on the first publish of a new package even with `--tag next`, so `rc.1` is `latest` until `1.0.0` is out. That is expected.
-2. npmjs.com → package → Settings → **Trusted publisher**: GitHub Actions, `Mubtasim/tasklane`, workflow `release.yml`, environment `release`. Then *Require two-factor authentication and disallow tokens*.
+1. The maintainer publishes `1.0.0-rc.1` by hand: `npm login` (2FA; the login link it prints can be opened on any device that holds your passkey, e.g. your phone), then `cd sdk/ts && npm ci && npm publish --tag next --provenance=false`. Note: npm sets `latest` on the first publish of a new package even with `--tag next`, so `rc.1` is `latest` until `1.0.0` is out. That is expected.
+2. npmjs.com → package → Settings → **Trusted publisher**: GitHub Actions, `Mubtasim/tasklane`, workflow `release.yml`, environment `release`. Allowed actions: **Allow npm publish** checked (the workflow runs a plain `npm publish`), **Allow npm dist-tag** unchecked. Then, under Publishing access, *Require two-factor authentication and disallow bypass 2fa tokens* → Update Package Settings.
+   - npm also offers **staged publishing** (leave "Allow npm publish" unchecked): CI can only stage a version, and it goes live after a maintainer approves it on npmjs.com with 2FA. Tasklane starts with direct publish behind the GitHub approval; moving to staged publishing (switch the workflow to the staging command and make `confirm` wait for the npm approval) is a later hardening step.
+   - While a new trusted publisher is unused, npm shows it as *Pending validation* with a deadline; the first workflow publish validates it.
 3. Within two days (npm [expires a trusted-publisher setup that goes unused](https://docs.npmjs.com/trusted-publishers)), release `1.0.0-rc.2` through the workflow.
 4. Make the new GHCR packages public; re-run `confirm`.
 

@@ -2,6 +2,12 @@
 
 One version covers the server image, the Go SDK, the TypeScript SDK and the Helm chart (design §22). Release steps: [docs/releasing.md](docs/releasing.md).
 
+## 1.0.0-rc.2
+
+Second release candidate: the first one published by the release workflow (image and chart on GHCR, npm through trusted publishing with provenance). No code changes since rc.1.
+
+- Docs: the first-release steps in docs/releasing.md now cover the npm login link opened on another device, the trusted publisher's allowed actions, and staged publishing as a later option.
+
 ## 1.0.0-rc.1
 
 First release candidate of 1.0.0.
