@@ -6,7 +6,7 @@ A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
 
-**Status:** 1.0.0. Young and maintained by one person: try it, but don't bet production on it yet.
+**Status:** 1.0.1. Young and maintained by one person: try it, but don't bet production on it yet.
 
 - Design: [docs/design.md](docs/design.md)
 - Benchmarks: [docs/benchmarks.md](docs/benchmarks.md). On a 2-core laptop with pinned CPUs, one server and one PostgreSQL complete about 430 jobs/s (enqueue, lease, ack; median of 4 runs), with p99 enqueue-to-start of 61 ms at 80% of that. The limit there is PostgreSQL's per-commit disk flush, not CPU.
@@ -17,21 +17,21 @@ Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once d
 One version covers all four parts ([CHANGELOG](CHANGELOG.md), [how releases work](docs/releasing.md)).
 
 ```bash
-docker pull ghcr.io/mubtasim/tasklane:1.0.0                         # server (linux/amd64, linux/arm64)
-go get github.com/mubtasim/tasklane/sdk/go@v1.0.0                   # Go SDK (Go 1.26+)
+docker pull ghcr.io/mubtasim/tasklane:1.0.1                         # server (linux/amd64, linux/arm64)
+go get github.com/mubtasim/tasklane/sdk/go@v1.0.1                   # Go SDK (Go 1.26+)
 npm install @mubtasim91/tasklane                                    # TypeScript SDK (Node 22+)
-helm install tasklane oci://ghcr.io/mubtasim/charts/tasklane --version 1.0.0 \
+helm install tasklane oci://ghcr.io/mubtasim/charts/tasklane --version 1.0.1 \
   --set databaseURL='postgres://user:pass@host:5432/tasklane'       # Kubernetes
 ```
 
-- Server image: [ghcr.io/mubtasim/tasklane](https://github.com/Mubtasim/tasklane/pkgs/container/tasklane); `docker run ghcr.io/mubtasim/tasklane:1.0.0 -version` prints the version.
+- Server image: [ghcr.io/mubtasim/tasklane](https://github.com/Mubtasim/tasklane/pkgs/container/tasklane); `docker run ghcr.io/mubtasim/tasklane:1.0.1 -version` prints the version.
 - Go SDK: [pkg.go.dev](https://pkg.go.dev/github.com/mubtasim/tasklane/sdk/go/tasklane). It is its own Go module with only the SDK's dependencies. The server itself isn't meant for `go install`: run the image.
 - TypeScript SDK: [npmjs.com/package/@mubtasim91/tasklane](https://www.npmjs.com/package/@mubtasim91/tasklane).
 - Every image and npm package carries provenance: a signed record of the commit and workflow that built it ([docs/releasing.md §6](docs/releasing.md#6-provenance)).
 
 ## Running the server
 
-To run the published image instead of building from source: `docker run -p 7070:7070 -p 8080:8080 -e TASKLANE_DATABASE_URL=... ghcr.io/mubtasim/tasklane:1.0.0`.
+To run the published image instead of building from source: `docker run -p 7070:7070 -p 8080:8080 -e TASKLANE_DATABASE_URL=... ghcr.io/mubtasim/tasklane:1.0.1`.
 
 From source, it requires Go and PostgreSQL. The server applies its migrations on start.
 
