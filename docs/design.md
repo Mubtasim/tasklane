@@ -1280,7 +1280,7 @@ The import path does not change: `github.com/mubtasim/tasklane/sdk/go/tasklane`.
 | `sdk/go/integrationtest/` | `test/sdkgo/` in the root module | These tests start the real server and Postgres |
 
 - The root `go.mod` requires the SDK module with `replace github.com/mubtasim/tasklane/sdk/go => ./sdk/go`, so the server always builds against the SDK in the same commit. Consequence, documented: `go install github.com/mubtasim/tasklane/cmd/...@version` is not supported (Go refuses modules with `replace`); the server ships as the image.
-- The SDK module's `go` line is the lowest its dependencies allow: Go 1.26, set by OpenTelemetry (`otel` 1.47 and `otelgrpc` 0.72 need 1.26; gRPC 1.84 needs 1.25). That is both currently supported Go releases (1.26, 1.27).
+- The SDK module's `go` line is the lowest its dependencies allow: Go 1.26, set by OpenTelemetry (`otel` 1.47, `otelgrpc` 0.72 and gRPC 1.85 all need 1.26). That is both currently supported Go releases (1.26, 1.27).
 - The buf templates write Go code into `sdk/go/gen` and the gateway into the server's package; the CI generate check covers both modules.
 - CI lints and tests both modules, runs `go mod tidy` checks on both, and fails if the SDK module's `go list -deps` includes pgx, Prometheus, testcontainers or grpc-gateway.
 - Proof: a throwaway module outside the repo requires the SDK; its `go mod graph` module count and `go` minimum are recorded before and after (§22.7).
@@ -1291,7 +1291,7 @@ Triggered by a pushed tag matching `v*`. The maintainer pushes `vX.Y.Z` and `sdk
 
 1. **Check.** The tagged commit is on `main`; `sdk/go/vX.Y.Z` points at the same commit; `sdk/ts/package.json` version, the chart's `version` and `appVersion` all equal `X.Y.Z` (the workflow checks, never edits); `CHANGELOG.md` has a `## X.Y.Z` section, which becomes the release notes.
 2. **Test.** The CI workflow runs on the tagged commit as a reusable workflow (`workflow_call`): lint, `go test -race` for both modules, proto checks, TypeScript unit and integration tests, chart checks. Any failure ends the run with nothing published.
-3. **Approve.** The publish job runs in environment `release`, which requires the maintainer's review.
+3. **Approve.** The publish job runs in environment `release`, which requires the maintainer's review. The environment must exist before the first tag (§22.5, step 0): GitHub creates a missing one with no protection.
 4. **Publish**, in this order:
    1. Image `ghcr.io/mubtasim/tasklane`: `docker buildx` for amd64 and arm64 from the Dockerfile's `server` stage (`FROM --platform=$BUILDPLATFORM golang`, `GOOS`/`GOARCH` from `TARGETOS`/`TARGETARCH`); version injected with `-ldflags -X`; OCI labels (`org.opencontainers.image.source`, version, revision); provenance attestation with `actions/attest-build-provenance` pushed to the registry.
    2. npm: `npm publish --provenance` from `sdk/ts` through trusted publishing (OIDC, no stored token); `--tag next` for pre-releases.
@@ -1299,7 +1299,7 @@ Triggered by a pushed tag matching `v*`. The maintainer pushes `vX.Y.Z` and `sdk
    4. GitHub Release for the tag, body = the CHANGELOG section plus install commands; marked pre-release for `-rc.N`.
 5. **Confirm.** Pull the image anonymously and run `tasklane -version`; fetch `github.com/mubtasim/tasklane/sdk/go@vX.Y.Z` through `proxy.golang.org` (also warms the cache and pkg.go.dev); `npm view @mubtasim91/tasklane@X.Y.Z version`; `helm show chart oci://ghcr.io/mubtasim/charts/tasklane --version X.Y.Z`.
 
-Permissions: `contents: write` (release), `packages: write`, `id-token: write` (npm OIDC, attestations), `attestations: write`. Every step can be re-run: pushing identical image tags is harmless, the npm step skips a version that already exists with the same contents, `helm push` of an existing version is skipped, the GitHub Release is updated rather than duplicated. Tags never move; a bad release is fixed with the next patch version.
+Permissions: `contents: write` (release), `packages: write`, `id-token: write` (npm OIDC, attestations), `attestations: write`. Every step can be re-run: the image step skips a version that is already pushed (the build is not byte-for-byte reproducible, so a rebuild would move `X.Y.Z` to a new digest), the npm step skips a version that already exists with the same contents, `helm push` of an existing version is skipped, the GitHub Release is updated rather than duplicated. Tags never move; a bad release is fixed with the next patch version.
 
 ### 22.4 Server changes
 
@@ -1314,10 +1314,11 @@ Pre-releases first, so surprises land in versions nobody depends on.
 
 | # | Who | Step |
 |---|---|---|
+| 0 | maintainer (GitHub) | Create environment `release`: required reviewer = the maintainer, "Prevent self-review" off (sole maintainer), deployment rule limited to tags `v*`. Otherwise GitHub creates it unprotected on the first tag and publish runs unapproved |
 | 1 | build, maintainer merges | The M5e PR merges with versions `1.0.0-rc.1` |
-| 2 | maintainer (laptop) | `npm login` (2FA), then in `sdk/ts`: `npm publish --tag next --provenance=false`. npm cannot set up trusted publishing for a package that doesn't exist yet, so the first publish is manual and has no provenance |
+| 2 | maintainer (laptop) | `npm login` (2FA), then in `sdk/ts`: `npm publish --tag next --provenance=false`. npm cannot set up trusted publishing for a package that doesn't exist yet, so the first publish is manual and has no provenance. npm also sets `latest` on a new package's first publish, so `rc.1` is `latest` until `1.0.0` |
 | 3 | maintainer (npmjs.com) | Package settings → trusted publisher: GitHub Actions, `Mubtasim/tasklane`, `release.yml`, environment `release`; then require 2FA and disallow tokens |
-| 4 | tags + maintainer approves | Within two days of step 3 (an unused trusted-publisher setup expires): bump to `rc.2`, push `v1.0.0-rc.2` and `sdk/go/v1.0.0-rc.2`, approve. First full run, npm through OIDC |
+| 4 | tags + maintainer approves | Within two days of step 3 (npm [expires an unused trusted-publisher setup](https://docs.npmjs.com/trusted-publishers)): bump to `rc.2`, push `v1.0.0-rc.2` and `sdk/go/v1.0.0-rc.2`, approve. First full run, npm through OIDC |
 | 5 | maintainer (GitHub) | Make the new GHCR packages (image and chart) public; they are created private |
 | 6 | maintainer runs, guided | Clean-machine check and Helm lab (§22.6): anonymous `docker pull`/`run`, `npm install @mubtasim91/tasklane@next` and `go get …/sdk/go@v1.0.0-rc.2` in empty folders, then the chart from GHCR on a fresh k3d cluster |
 | 7 | tags + maintainer approves | Fix what rc.2 found (rc.3 if needed); then `1.0.0`, CHANGELOG, tags, approve |

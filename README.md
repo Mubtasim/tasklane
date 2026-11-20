@@ -14,7 +14,7 @@ Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once d
 
 ## Install
 
-One version covers all four parts ([CHANGELOG](CHANGELOG.md), [how releases work](docs/releasing.md)). Until 1.0.0 is out, use the release candidate (`1.0.0-rc.N`; npm: `@next`).
+One version covers all four parts ([CHANGELOG](CHANGELOG.md), [how releases work](docs/releasing.md)). Until 1.0.0 is out, use the release candidate (`1.0.0-rc.N`; npm: `@next`). npm marks the first version of a new package as `latest`, so for now a plain `npm install @mubtasim91/tasklane` also gives you the release candidate.
 
 ```bash
 docker pull ghcr.io/mubtasim/tasklane:1.0.0                         # server (linux/amd64, linux/arm64)
@@ -32,7 +32,6 @@ helm install tasklane oci://ghcr.io/mubtasim/charts/tasklane --version 1.0.0 \
 ## Running the server
 
 To run the published image instead of building from source: `docker run -p 7070:7070 -p 8080:8080 -e TASKLANE_DATABASE_URL=... ghcr.io/mubtasim/tasklane:1.0.0`.
-
 
 From source, it requires Go and PostgreSQL. The server applies its migrations on start.
 

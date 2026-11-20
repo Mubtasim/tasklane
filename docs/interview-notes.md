@@ -910,9 +910,9 @@ Three layers, from cheap to strong.
 1. **Branch deploy:** merge to `staging`/`main` → a pipeline replaces the running app. One live version; rollback = deploy the previous commit.
 2. **Tag release:** an annotated tag (`vX.Y.Z`) marks one commit on `main`; a workflow triggered by the tag builds and publishes packages that stay downloadable forever. Users choose and pin versions; many coexist.
 3. **Immutability:** npm never lets a version number be reused (unpublish only within 72 h), the Go proxy caches a version forever, NuGet only unlists. So the human check must come **before** publishing: Tasklane's workflow runs checks and the full CI on the tag, then waits for approval in a GitHub environment before pushing anything.
-4. **Fails halfway:** every publish step is re-runnable (identical image tags, skip an npm version that exists, edit the GitHub Release); tags never move; a bad release is fixed forward with the next patch.
+4. **Fails halfway:** every publish step is re-runnable (skip an image version that is already pushed, skip an npm version that exists, skip an existing chart, edit the GitHub Release); tags never move; a bad release is fixed forward with the next patch.
 
-**Semver:** PATCH = fixes, MINOR = additions, MAJOR = breaking; 1.0.0 promises no breaking change until 2.0 (enforced for the API by `buf breaking`). Release candidates (`-rc.N`) rehearse the pipeline; npm puts them under `next`, Docker gets no `latest`.
+**Semver:** PATCH = fixes, MINOR = additions, MAJOR = breaking; 1.0.0 promises no breaking change until 2.0 (enforced for the API by `buf breaking`). Release candidates (`-rc.N`) rehearse the pipeline; npm puts them under `next` (except the very first publish of a new package, which npm always marks `latest`), Docker gets no `latest`.
 
 **Trade-off of one version for everything:** simple and easy to match SDK to server, but an SDK-only fix bumps everyone. Switch to per-part versions when SDK releases outnumber server releases or one SDK needs a 2.0 alone.
 

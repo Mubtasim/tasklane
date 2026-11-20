@@ -47,7 +47,7 @@ git push --atomic origin v1.0.0 sdk/go/v1.0.0
 | MAJOR 1 → 2.0.0 | something breaks | rename an RPC field | **no** |
 
 - **1.0.0 is a promise:** no breaking change until 2.0. Before 1.0 (0.x) anything may change. `buf breaking` in CI guards the API.
-- **Release candidates** (`1.0.0-rc.1`, `-rc.2`, …) test the whole publish pipeline before the real version. npm installs them only when asked (`@next`); Docker gets no `latest` tag for them.
+- **Release candidates** (`1.0.0-rc.1`, `-rc.2`, …) test the whole publish pipeline before the real version. npm installs them only when asked (`@next`); Docker gets no `latest` tag for them. One catch: npm marks the very first version of a new package as `latest`, even with `--tag next`. So `1.0.0-rc.1`, published by hand as the first version (§9), is `latest` until `1.0.0` is out.
 - **One version for everything:** a release `X.Y.Z` is server image `X.Y.Z`, Go SDK `vX.Y.Z`, npm `X.Y.Z` and chart `X.Y.Z` (design §22.1, decision 1).
 
 ## 4. Where each part lives
@@ -72,6 +72,8 @@ git push --atomic origin v1.0.0 sdk/go/v1.0.0
 In a repo with several Go modules, Go finds a module's versions by tags that start with the module's folder: the SDK in `sdk/go/` is versioned by `sdk/go/vX.Y.Z`. That is why every release has two tags.
 
 **Docker tags are not git tags.** Git tags never move; image tags may. Each release pushes `X.Y.Z` (never moved) plus `X.Y`, `X` and `latest`, which move to the newest matching release. An image's **digest** (`sha256:…`) is its permanent ID.
+
+The workflow marks every non-pre-release as `latest`. That is right while versions only go up. A backport (say `1.0.2` after `1.1.0` is out) would move `latest` and `1` backwards. Don't release a backport this way without first changing the `flavor` setting in `release.yml`. This does not matter for 1.0.0.
 
 ## 5. What can never change
 
@@ -108,6 +110,7 @@ workflow runs ─▶ GitHub gives it a short-lived identity (OIDC: "I am release
 
 ## 7. Making a release
 
+0. **Check the approval gate (once, before the first tag).** The environment `release` must exist and must list you as a required reviewer (§9, step 0). If it is missing, GitHub creates it with no protection when the tag is pushed, and the publish job then runs without asking you. Check: `gh api repos/Mubtasim/tasklane/environments/release --jq '.protection_rules'` must show a `required_reviewers` rule.
 1. **One pull request** that sets the version in `sdk/ts/package.json` (`cd sdk/ts && npm version X.Y.Z --no-git-tag-version`, which also updates `package-lock.json`), `deploy/k8s/tasklane/Chart.yaml` (`version` and `appVersion`), and adds a `## X.Y.Z` section to `CHANGELOG.md`. Merge it.
 2. Tag the merge commit on `main` and push both tags:
    ```sh
@@ -128,7 +131,7 @@ workflow runs ─▶ GitHub gives it a short-lived identity (OIDC: "I am release
 
 ## 8. When a release fails halfway
 
-- **Re-run the failed job.** Every publish step can run again: pushing identical image tags is harmless; npm skips a version that is already there; the chart push skips an existing version; the GitHub Release is edited, not duplicated.
+- **Re-run the failed job.** Every publish step can run again: the image step skips a version that is already pushed (a rebuild would give a different image under the same tag); npm skips a version that is already there; the chart push skips an existing version; the GitHub Release is edited, not duplicated.
 - **Confirm fails on the first release** because new GHCR packages are private: make `tasklane` and `charts/tasklane` public, then re-run `confirm`.
 - **Never move or reuse a tag.** If a release is wrong, fix it in the next patch version (1.0.1). A Go version, once fetched by the proxy, and an npm version number are permanent anyway.
 - **A tag pushed by mistake** fails `check` (or waits at approval): reject the deployment, then delete the tag (`git push origin :refs/tags/vX.Y.Z`) before anything was published.
@@ -137,9 +140,20 @@ workflow runs ─▶ GitHub gives it a short-lived identity (OIDC: "I am release
 
 npm can't set up trusted publishing for a package that doesn't exist yet, so:
 
-1. The maintainer publishes `1.0.0-rc.1` by hand: `npm login` (2FA), then `cd sdk/ts && npm ci && npm publish --tag next --provenance=false`.
+0. **Create the approval gate first.** The publish job runs in the GitHub environment `release`. If that environment doesn't exist when a tag is pushed, GitHub creates it with no rules, and publishing runs with nobody's approval. So create it now: repo Settings → Environments → New environment `release`, then:
+   - **Required reviewers:** add yourself.
+   - **Prevent self-review:** leave OFF. You are the only maintainer, and you must be able to approve your own release.
+   - **Deployment branches and tags:** choose "Selected branches and tags" and add the tag rule `v*`, so only release tags can use it.
+
+   Or with the API (the second call adds the tag rule; replace `<your-user-id>` with the number from `gh api user --jq .id`):
+   ```sh
+   echo '{"reviewers":[{"type":"User","id":<your-user-id>}],"prevent_self_review":false,"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' \
+     | gh api -X PUT repos/Mubtasim/tasklane/environments/release --input -
+   gh api -X POST repos/Mubtasim/tasklane/environments/release/deployment-branch-policies -f name='v*' -f type=tag
+   ```
+1. The maintainer publishes `1.0.0-rc.1` by hand: `npm login` (2FA), then `cd sdk/ts && npm ci && npm publish --tag next --provenance=false`. Note: npm sets `latest` on the first publish of a new package even with `--tag next`, so `rc.1` is `latest` until `1.0.0` is out. That is expected.
 2. npmjs.com → package → Settings → **Trusted publisher**: GitHub Actions, `Mubtasim/tasklane`, workflow `release.yml`, environment `release`. Then *Require two-factor authentication and disallow tokens*.
-3. Within two days (an unused trusted-publisher setup expires), release `1.0.0-rc.2` through the workflow.
+3. Within two days (npm [expires a trusted-publisher setup that goes unused](https://docs.npmjs.com/trusted-publishers)), release `1.0.0-rc.2` through the workflow.
 4. Make the new GHCR packages public; re-run `confirm`.
 
 ## 10. When to give each part its own version

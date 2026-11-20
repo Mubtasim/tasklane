@@ -61,6 +61,8 @@ jobs:
       IMAGE: ghcr.io/mubtasim/tasklane
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false # gh, helm and docker get tokens from env or inputs
       - uses: actions/download-artifact@v8
         with:
           name: notes
@@ -85,7 +87,18 @@ jobs:
             org.opencontainers.image.title=tasklane
             org.opencontainers.image.description=Tasklane job queue server
             org.opencontainers.image.licenses=Apache-2.0
+      # The build is not byte-for-byte reproducible, so a re-run must not
+      # push a second image under the same version tag.
+      - id: exists
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "image $VERSION already pushed; skipping build"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
       - id: build
+        if: steps.exists.outputs.found == 'false'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -97,7 +110,8 @@ jobs:
           build-args: |
             VERSION=${{ env.VERSION }}
             REVISION=${{ github.sha }}
-      - uses: actions/attest-build-provenance@v4
+      - if: steps.exists.outputs.found == 'false'
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -111,7 +125,7 @@ jobs:
       - run: npm install -g npm@^11.5.1
       - working-directory: sdk/ts
         run: |
-          npm ci
+          npm ci --ignore-scripts
           if npm view "@mubtasim91/tasklane@$VERSION" version >/dev/null 2>&1; then
             echo "@mubtasim91/tasklane@$VERSION is already on npm; skipping"
           else
@@ -173,10 +187,20 @@ jobs:
           docker run --rm "ghcr.io/mubtasim/tasklane:$VERSION" -version | tee /dev/stderr | grep -F "tasklane $VERSION "
       - name: Go SDK through the module proxy
         run: |
-          curl -fsS "https://proxy.golang.org/github.com/mubtasim/tasklane/sdk/go/@v/v$VERSION.info"
-          echo
+          # The proxy can take a little while to see a new tag.
+          for i in $(seq 1 10); do
+            curl -fsS "https://proxy.golang.org/github.com/mubtasim/tasklane/sdk/go/@v/v$VERSION.info" && { echo; exit 0; }
+            echo "not on the proxy yet (try $i of 10)"; sleep 15
+          done
+          exit 1
       - name: npm package
-        run: test "$(npm view "@mubtasim91/tasklane@$VERSION" version)" = "$VERSION"
+        run: |
+          # The registry can lag behind a fresh publish.
+          for i in $(seq 1 10); do
+            [[ "$(npm view "@mubtasim91/tasklane@$VERSION" version 2>/dev/null)" == "$VERSION" ]] && exit 0
+            echo "not on npm yet (try $i of 10)"; sleep 15
+          done
+          exit 1
       - name: Helm chart
         run: |
           BIN="$RUNNER_TEMP/bin" deploy/k8s/tools.sh helm

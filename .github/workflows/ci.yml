@@ -89,6 +89,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t tasklane:ci .
+      - run: docker build --target server -t tasklane:ci-server . # the published target
 
   deploy:
     runs-on: ubuntu-latest
