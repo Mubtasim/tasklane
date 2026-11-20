@@ -17,10 +17,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/metrics"
 	"github.com/mubtasim/tasklane/internal/store"
 	"github.com/mubtasim/tasklane/internal/traceparent"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 )
 
 const (

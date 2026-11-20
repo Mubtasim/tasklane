@@ -15,13 +15,13 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/api"
 	"github.com/mubtasim/tasklane/internal/backoff"
 	"github.com/mubtasim/tasklane/internal/notify"
 	"github.com/mubtasim/tasklane/internal/pgstore"
 	"github.com/mubtasim/tasklane/internal/reaper"
 	"github.com/mubtasim/tasklane/internal/testpg"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/sdk/go/tasklane"
 )
 

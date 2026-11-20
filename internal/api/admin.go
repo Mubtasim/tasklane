@@ -7,8 +7,8 @@ import (
 	"slices"
 	"time"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/store"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 )
 
 const (

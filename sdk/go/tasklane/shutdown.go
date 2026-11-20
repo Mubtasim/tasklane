@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 )
 
 // shutdownNackError is the Nack message for jobs still running at the

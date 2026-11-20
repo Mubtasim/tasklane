@@ -9,3 +9,7 @@ lint:
 breaking:
   use:
     - FILE
+  # The Go package moved once, into the SDK module, before v1.0.0 (design
+  # §22.2). Go users are protected by the SDK module's own versioning.
+  except:
+    - FILE_SAME_GO_PACKAGE

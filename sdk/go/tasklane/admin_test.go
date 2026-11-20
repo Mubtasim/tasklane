@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 )
 
 func TestCancelJobConvertsTheJob(t *testing.T) {

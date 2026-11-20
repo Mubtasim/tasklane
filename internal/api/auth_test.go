@@ -7,7 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 )
 
 func withKey(key string) context.Context {

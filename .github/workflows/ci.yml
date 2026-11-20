@@ -23,6 +23,10 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15.0
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          working-directory: sdk/go
 
   test:
     runs-on: ubuntu-latest
@@ -35,6 +39,28 @@ jobs:
       # runner's Docker.
       - run: go test -race -count=1 ./...
 
+  sdk-go:
+    # The SDK module on both supported Go releases: its floor (go.mod) and the
+    # newest (design §22.2).
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.26.x", "1.27.x"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: sdk/go/go.sum
+      - run: go test -race -count=1 ./...
+        working-directory: sdk/go
+      - run: scripts/check-sdk-deps.sh
+      - name: go.mod files are tidy
+        run: |
+          (cd sdk/go && go mod tidy -diff)
+          if [[ "${{ matrix.go }}" == 1.27.x ]]; then go mod tidy -diff; fi
+
   proto:
     runs-on: ubuntu-latest
     steps:
@@ -46,6 +72,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
+            sdk/go/go.sum
             tools.sum
       - run: go tool -modfile=tools.mod buf lint
       - if: github.event_name == 'pull_request'
@@ -53,8 +80,8 @@ jobs:
       - name: Generated code is up to date
         run: |
           go tool -modfile=tools.mod buf generate
-          git add -N gen/ # so untracked generated files also show up in the diff
-          git diff --exit-code gen/
+          git add -N sdk/go/gen/ internal/gateway/ # untracked generated files show up too
+          git diff --exit-code sdk/go/gen/ internal/gateway/
 
   docker:
     runs-on: ubuntu-latest
