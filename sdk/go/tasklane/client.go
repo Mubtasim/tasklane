@@ -13,8 +13,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
-	"github.com/mubtasim/tasklane/internal/traceparent"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
+	"github.com/mubtasim/tasklane/sdk/go/tasklane/internal/traceparent"
 )
 
 // maxMessageBytes matches the server's gRPC message limit: a full Lease

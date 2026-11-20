@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 )
 
 // defaultFinishTimeout bounds an Ack or Nack attempt whose lease deadline

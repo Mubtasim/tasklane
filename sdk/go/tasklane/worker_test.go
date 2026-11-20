@@ -15,8 +15,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
-	"github.com/mubtasim/tasklane/internal/backoff"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
+	"github.com/mubtasim/tasklane/sdk/go/tasklane/internal/backoff"
 )
 
 // testWorker returns a worker on queue "q" with short waits, so tests run in

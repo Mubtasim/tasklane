@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
-	"github.com/mubtasim/tasklane/internal/backoff"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
+	"github.com/mubtasim/tasklane/sdk/go/tasklane/internal/backoff"
 )
 
 const (

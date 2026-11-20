@@ -1,12 +1,19 @@
+# Go code (design §22.2): messages and the gRPC client/server go into the SDK
+# module (sdk/go/gen); the HTTP/JSON gateway, which only the server needs,
+# goes into the server's own package (internal/gateway) as a standalone
+# package, so SDK users never pull grpc-gateway. `clean: true` empties both
+# output directories first: keep only generated code in them.
 version: v2
 clean: true
 plugins:
   - local: ["go", "tool", "-modfile=tools.mod", "protoc-gen-go"]
-    out: gen
+    out: sdk/go/gen
     opt: paths=source_relative
   - local: ["go", "tool", "-modfile=tools.mod", "protoc-gen-go-grpc"]
-    out: gen
+    out: sdk/go/gen
     opt: paths=source_relative
   - local: ["go", "tool", "-modfile=tools.mod", "protoc-gen-grpc-gateway"]
-    out: gen
-    opt: paths=source_relative
+    out: internal/gateway
+    opt:
+      - paths=source_relative
+      - standalone=true

@@ -8,7 +8,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 )
 
 // heartbeat extends a's lease every vt/3 until ctx is cancelled, so one lost

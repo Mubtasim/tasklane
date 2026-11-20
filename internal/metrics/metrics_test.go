@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/mubtasim/tasklane/internal/store"
+	"github.com/mubtasim/tasklane/internal/version"
 )
 
 func TestNilMetricsIsANoOp(t *testing.T) {
@@ -179,4 +181,32 @@ func TestExemplarsCarryTheTraceID(t *testing.T) {
 	require.Contains(t, body, `trace_id="0af7651916cd43dd8448eb211c80319c"`)
 	require.Contains(t, body, `trace_id="1234567890abcdef1234567890abcdef"`)
 	require.NotContains(t, body, "fedcba0987654321fedcba0987654321")
+}
+
+func TestBuildInfo(t *testing.T) {
+	m := New()
+	families, err := m.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range families {
+		if f.GetName() != "tasklane_build_info" {
+			continue
+		}
+		got := map[string]string{}
+		for _, l := range f.GetMetric()[0].GetLabel() {
+			got[l.GetName()] = l.GetValue()
+		}
+		want := map[string]string{"version": version.Version, "revision": version.Revision, "goversion": runtime.Version()}
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("label %s = %q, want %q", k, got[k], v)
+			}
+		}
+		if v := f.GetMetric()[0].GetGauge().GetValue(); v != 1 {
+			t.Errorf("value = %v, want 1", v)
+		}
+		return
+	}
+	t.Fatal("tasklane_build_info not registered")
 }

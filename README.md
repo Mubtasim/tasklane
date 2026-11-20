@@ -6,15 +6,34 @@ A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
 
-**Status:** early development (milestone M5b: Kubernetes deployment and autoscaling). Not ready for production use.
+**Status:** 1.0.0 release candidate (milestone M5e). Young and maintained by one person: try it, but don't bet production on it yet.
 
 - Design: [docs/design.md](docs/design.md)
 - Benchmarks: [docs/benchmarks.md](docs/benchmarks.md). On a 2-core laptop with pinned CPUs, one server and one PostgreSQL complete about 430 jobs/s (enqueue, lease, ack; median of 4 runs), with p99 enqueue-to-start of 61 ms at 80% of that. The limit there is PostgreSQL's per-commit disk flush, not CPU.
 - Kubernetes: a Helm chart for the server, Envoy for per-request gRPC balancing, and demo workers that KEDA scales from zero on queue depth (see [Kubernetes](#kubernetes)).
 
+## Install
+
+One version covers all four parts ([CHANGELOG](CHANGELOG.md), [how releases work](docs/releasing.md)). Until 1.0.0 is out, use the release candidate (`1.0.0-rc.N`; npm: `@next`). npm marks the first version of a new package as `latest`, so for now a plain `npm install @mubtasim91/tasklane` also gives you the release candidate.
+
+```bash
+docker pull ghcr.io/mubtasim/tasklane:1.0.0                         # server (linux/amd64, linux/arm64)
+go get github.com/mubtasim/tasklane/sdk/go@v1.0.0                   # Go SDK (Go 1.26+)
+npm install @mubtasim91/tasklane                                    # TypeScript SDK (Node 22+)
+helm install tasklane oci://ghcr.io/mubtasim/charts/tasklane --version 1.0.0 \
+  --set databaseURL='postgres://user:pass@host:5432/tasklane'       # Kubernetes
+```
+
+- Server image: [ghcr.io/mubtasim/tasklane](https://github.com/Mubtasim/tasklane/pkgs/container/tasklane); `docker run ghcr.io/mubtasim/tasklane:1.0.0 -version` prints the version.
+- Go SDK: [pkg.go.dev](https://pkg.go.dev/github.com/mubtasim/tasklane/sdk/go/tasklane). It is its own Go module with only the SDK's dependencies. The server itself isn't meant for `go install`: run the image.
+- TypeScript SDK: [npmjs.com/package/@mubtasim91/tasklane](https://www.npmjs.com/package/@mubtasim91/tasklane).
+- Every image and npm package carries provenance: a signed record of the commit and workflow that built it ([docs/releasing.md §6](docs/releasing.md#6-provenance)).
+
 ## Running the server
 
-Requires Go and PostgreSQL. The server applies its migrations on start.
+To run the published image instead of building from source: `docker run -p 7070:7070 -p 8080:8080 -e TASKLANE_DATABASE_URL=... ghcr.io/mubtasim/tasklane:1.0.0`.
+
+From source, it requires Go and PostgreSQL. The server applies its migrations on start.
 
 ```bash
 docker run -d --rm --name tasklane-pg -e POSTGRES_USER=tasklane -e POSTGRES_PASSWORD=tasklane \
@@ -89,7 +108,7 @@ w := client.NewWorker("emails", tasklane.WorkerOptions{Concurrency: 5, OnResult:
 
 ## TypeScript SDK
 
-`sdk/ts` is the TypeScript SDK (`@mubtasim91/tasklane`, to be published to npm at v1.0; until then build and install it from `sdk/ts`). It talks gRPC to port 7070 and behaves like the Go SDK: the same leases, heartbeats, retries and shutdown, checked by the same invariant test (design §21).
+`sdk/ts` is the TypeScript SDK ([`@mubtasim91/tasklane`](https://www.npmjs.com/package/@mubtasim91/tasklane) on npm). It talks gRPC to port 7070 and behaves like the Go SDK: the same leases, heartbeats, retries and shutdown, checked by the same invariant test (design §21).
 
 ```ts
 import { Worker, createClient } from "@mubtasim91/tasklane";
@@ -220,7 +239,7 @@ With the parent-based sampler the producer decides once and everyone else follow
 
 ## Kubernetes
 
-A Helm chart (`deploy/k8s/tasklane/`) runs the server: 2 pods behind Envoy, which balances each gRPC request rather than each connection; probes on `/healthz` and `/readyz`; a 5 s `preStop` wait so a pod keeps serving while it is removed from the endpoints; a disruption budget; non-root, read-only pods. Postgres is not part of the chart: set `databaseURL` or `existingSecret`. No image is published until v1.0.0 (milestone M5e), so the chart's default image can't be pulled yet: build and push your own and set `image.repository` and `image.tag` (the demo builds `tasklane:dev` and loads it into the cluster). With `existingSecret`, restart the server Deployment after rotating the Secret; only a chart-made Secret rolls the pods on change.
+A Helm chart (`deploy/k8s/tasklane/`) runs the server: 2 pods behind Envoy, which balances each gRPC request rather than each connection; probes on `/healthz` and `/readyz`; a 5 s `preStop` wait so a pod keeps serving while it is removed from the endpoints; a disruption budget; non-root, read-only pods. Postgres is not part of the chart: set `databaseURL` or `existingSecret`. Each release publishes the chart to `oci://ghcr.io/mubtasim/charts/tasklane` and the image it runs to `ghcr.io/mubtasim/tasklane` (chart X.Y.Z runs server X.Y.Z); the demo instead builds `tasklane:dev` and loads it into the cluster. A hands-on walk through install, upgrade, rollback and uninstall: [docs/labs/helm.md](docs/labs/helm.md). With `existingSecret`, restart the server Deployment after rotating the Secret; only a chart-made Secret rolls the pods on change.
 
 The demo runs everything in a local k3d cluster (about 0.9 GB of RAM: `docker stats` on the idle k3s container, which holds every pod, KEDA and Postgres included) and scales the demo workers from zero with KEDA, on waiting plus running jobs read from Prometheus:
 

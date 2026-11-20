@@ -17,7 +17,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/api"
 	"github.com/mubtasim/tasklane/internal/backoff"
 	"github.com/mubtasim/tasklane/internal/ledger"
@@ -26,6 +25,7 @@ import (
 	"github.com/mubtasim/tasklane/internal/pgstore"
 	"github.com/mubtasim/tasklane/internal/reaper"
 	"github.com/mubtasim/tasklane/internal/testpg"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 	"github.com/mubtasim/tasklane/sdk/go/tasklane"
 )
 

@@ -890,3 +890,54 @@ Three layers, from cheap to strong.
 **Cost:** three small dependencies, and it runs on Node, Bun and Deno but not in browsers or edge runtimes. Workers don't run there; a `fetch` producer for edge functions can come later on the gateway.
 
 **Mapping Go idioms:** goroutine per job → a promise per job; `context.Context` → `AbortSignal` (aborted on a lost lease or at the shutdown deadline); a buffered channel as a semaphore → a `Slots` class with the same rule: every acquired slot is released on every path.
+
+## Q56. Why did you split the Go SDK into its own Go module before tagging v1.0.0?
+
+**What (3 parts):** who was hurt, why it had to happen before v1, what it cost.
+
+1. **The problem.** The SDK lived in the server's module (one `go.mod`). A user's binary only compiles what the SDK imports, but `go get` takes the whole module's requirements: Go 1.27.2 as the minimum, and pgx, Prometheus, testcontainers and Docker client libraries in their module graph. Security scanners flag those, and every server dependency bump raised the user's minimum versions too.
+2. **The numbers** (a throwaway consumer module that imports the SDK): modules in the graph **143 → 51**, graph edges 289 → 165, server-only modules **13 → 0**, minimum Go **1.27.2 → 1.26.0** (set by OpenTelemetry; both supported Go releases). A CI guard (`scripts/check-sdk-deps.sh`) fails if a banned module ever comes back.
+3. **Why before v1.** Splitting after v1 means two modules provide the same import path for a while, and users get "ambiguous import" errors until they upgrade both. Before the compatibility promise it is only a file move. The import path users write didn't change.
+
+**How:** generated protobuf/gRPC code moved into the SDK module (public: it is the API itself); the grpc-gateway code stayed in the server as a standalone package, so SDK users never pull grpc-gateway; two tiny helpers (backoff, traceparent; 75 lines) were **copied**, because Go forbids importing another module's `internal/` and making them public would add them to the v1 promise. The server builds against the SDK in the same commit through a `replace` directive.
+
+**Trade-off:** `go install github.com/mubtasim/tasklane/cmd/...@version` stops working (Go refuses modules with `replace`); the server ships as a Docker image instead. Two tags per release (`vX.Y.Z` and `sdk/go/vX.Y.Z`), because Go finds a nested module's versions by tags prefixed with its folder.
+
+## Q57. How is a tag-based release different from deploying by merging to environment branches?
+
+**What:** deploying runs *one* copy you operate; releasing hands out *many* copies others run.
+
+1. **Branch deploy:** merge to `staging`/`main` → a pipeline replaces the running app. One live version; rollback = deploy the previous commit.
+2. **Tag release:** an annotated tag (`vX.Y.Z`) marks one commit on `main`; a workflow triggered by the tag builds and publishes packages that stay downloadable forever. Users choose and pin versions; many coexist.
+3. **Immutability:** npm never lets a version number be reused (unpublish only within 72 h), the Go proxy caches a version forever, NuGet only unlists. So the human check must come **before** publishing: Tasklane's workflow runs checks and the full CI on the tag, then waits for approval in a GitHub environment before pushing anything.
+4. **Fails halfway:** every publish step is re-runnable (skip an image version that is already pushed, skip an npm version that exists, skip an existing chart, edit the GitHub Release); tags never move; a bad release is fixed forward with the next patch.
+
+**Semver:** PATCH = fixes, MINOR = additions, MAJOR = breaking; 1.0.0 promises no breaking change until 2.0 (enforced for the API by `buf breaking`). Release candidates (`-rc.N`) rehearse the pipeline; npm puts them under `next` (except the very first publish of a new package, which npm always marks `latest`), Docker gets no `latest`.
+
+**Trade-off of one version for everything:** simple and easy to match SDK to server, but an SDK-only fix bumps everyone. Switch to per-part versions when SDK releases outnumber server releases or one SDK needs a 2.0 alone.
+
+## Q58. What does provenance prove, and what doesn't it?
+
+**What:** a signed statement attached to a package: "built from repo R at commit C by workflow W, run N, on GitHub's runners; output checksum S" (SLSA format).
+
+**How it is signed without a stored key:** the workflow gets a short-lived OIDC identity from GitHub → Sigstore issues a ~10-minute certificate for that identity and signs → the signature goes into a public transparency log (Rekor) → npm/GHCR store it next to the package. npm "trusted publishing" uses the same OIDC identity instead of an npm token.
+
+**Proves:** the package came from that public commit and that workflow, not from someone's laptop with a stolen token. Combined with "disallow tokens", a stolen password can't publish at all.
+
+**Doesn't prove:** that the code is safe, reviewed or bug-free; a malicious commit merged into `main` gets a perfectly valid label. It moves trust from "trust the uploader" to "read the commit".
+
+**Verify:** npm's Provenance badge and `npm audit signatures`; `gh attestation verify oci://ghcr.io/mubtasim/tasklane:1.0.0 --owner Mubtasim` for the image. The first npm version (published by hand to create the package, because npm can't configure trusted publishing for a package that doesn't exist yet) has none.
+
+## Q59. What is a Helm chart, and why do teams use Helm instead of plain YAML?
+
+**What:** a chart is a package of Kubernetes YAML **templates** (with blanks like `{{ .Values.replicaCount }}`) plus default **values** and a `Chart.yaml` label (chart version, app version). `helm install` fills the blanks and applies the result as one named **release**.
+
+**Why (4 parts):**
+1. **One set of templates, many environments:** dev/staging/prod keep only their ~10 differences in values files instead of three drifting copies of ~300 lines.
+2. **History and rollback:** every `helm upgrade` is a numbered revision; `helm rollback <release> <n>` returns to any of them.
+3. **Clean uninstall:** Helm knows which objects belong to a release; `helm uninstall` removes exactly those.
+4. **Installing other people's software:** KEDA, Prometheus, cert-manager ship charts; one command creates hundreds of objects the vendor maintains. Tasklane's chart does the same for users: 2 servers behind Envoy, probes, preStop drain, PDBs.
+
+**Tasklane specifics:** the chart is published as an OCI artifact on GHCR (`helm install tasklane oci://ghcr.io/mubtasim/charts/tasklane --version X.Y.Z`); the image tag defaults to the chart's `appVersion`, so chart X.Y.Z runs server X.Y.Z; a Secret-content hash annotation rolls the pods when the chart-made Secret changes.
+
+**Fails halfway / trade-offs:** templates are text, so errors show up only at render time (`helm lint`, `helm template` + kubeconform in CI); a `helm upgrade --wait` that times out leaves the release `failed` until the next upgrade or a rollback. Teams often let Argo CD or Flux run Helm from git instead of running it by hand.

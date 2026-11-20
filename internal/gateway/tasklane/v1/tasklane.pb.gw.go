@@ -16,6 +16,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/utilities"
+	extTasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/grpclog"
@@ -35,9 +36,9 @@ var (
 	_ = metadata.Join
 )
 
-func request_TasklaneService_CreateQueue_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_CreateQueue_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq CreateQueueRequest
+		protoReq extTasklanev1.CreateQueueRequest
 		metadata runtime.ServerMetadata
 	)
 	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq.Queue); err != nil && !errors.Is(err, io.EOF) {
@@ -50,9 +51,9 @@ func request_TasklaneService_CreateQueue_0(ctx context.Context, marshaler runtim
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_CreateQueue_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_CreateQueue_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq CreateQueueRequest
+		protoReq extTasklanev1.CreateQueueRequest
 		metadata runtime.ServerMetadata
 	)
 	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq.Queue); err != nil && !errors.Is(err, io.EOF) {
@@ -62,9 +63,9 @@ func local_request_TasklaneService_CreateQueue_0(ctx context.Context, marshaler 
 	return msg, metadata, err
 }
 
-func request_TasklaneService_GetQueue_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_GetQueue_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq GetQueueRequest
+		protoReq extTasklanev1.GetQueueRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -83,9 +84,9 @@ func request_TasklaneService_GetQueue_0(ctx context.Context, marshaler runtime.M
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_GetQueue_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_GetQueue_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq GetQueueRequest
+		protoReq extTasklanev1.GetQueueRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -101,9 +102,9 @@ func local_request_TasklaneService_GetQueue_0(ctx context.Context, marshaler run
 	return msg, metadata, err
 }
 
-func request_TasklaneService_Enqueue_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_Enqueue_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq EnqueueRequest
+		protoReq extTasklanev1.EnqueueRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -125,9 +126,9 @@ func request_TasklaneService_Enqueue_0(ctx context.Context, marshaler runtime.Ma
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_Enqueue_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_Enqueue_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq EnqueueRequest
+		protoReq extTasklanev1.EnqueueRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -146,9 +147,9 @@ func local_request_TasklaneService_Enqueue_0(ctx context.Context, marshaler runt
 	return msg, metadata, err
 }
 
-func request_TasklaneService_EnqueueBatch_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_EnqueueBatch_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq EnqueueBatchRequest
+		protoReq extTasklanev1.EnqueueBatchRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -170,9 +171,9 @@ func request_TasklaneService_EnqueueBatch_0(ctx context.Context, marshaler runti
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_EnqueueBatch_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_EnqueueBatch_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq EnqueueBatchRequest
+		protoReq extTasklanev1.EnqueueBatchRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -191,9 +192,9 @@ func local_request_TasklaneService_EnqueueBatch_0(ctx context.Context, marshaler
 	return msg, metadata, err
 }
 
-func request_TasklaneService_Lease_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_Lease_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq LeaseRequest
+		protoReq extTasklanev1.LeaseRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -215,9 +216,9 @@ func request_TasklaneService_Lease_0(ctx context.Context, marshaler runtime.Mars
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_Lease_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_Lease_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq LeaseRequest
+		protoReq extTasklanev1.LeaseRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -236,9 +237,9 @@ func local_request_TasklaneService_Lease_0(ctx context.Context, marshaler runtim
 	return msg, metadata, err
 }
 
-func request_TasklaneService_Ack_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_Ack_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq AckRequest
+		protoReq extTasklanev1.AckRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -260,9 +261,9 @@ func request_TasklaneService_Ack_0(ctx context.Context, marshaler runtime.Marsha
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_Ack_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_Ack_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq AckRequest
+		protoReq extTasklanev1.AckRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -281,9 +282,9 @@ func local_request_TasklaneService_Ack_0(ctx context.Context, marshaler runtime.
 	return msg, metadata, err
 }
 
-func request_TasklaneService_Nack_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_Nack_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq NackRequest
+		protoReq extTasklanev1.NackRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -305,9 +306,9 @@ func request_TasklaneService_Nack_0(ctx context.Context, marshaler runtime.Marsh
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_Nack_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_Nack_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq NackRequest
+		protoReq extTasklanev1.NackRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -326,9 +327,9 @@ func local_request_TasklaneService_Nack_0(ctx context.Context, marshaler runtime
 	return msg, metadata, err
 }
 
-func request_TasklaneService_Heartbeat_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_Heartbeat_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq HeartbeatRequest
+		protoReq extTasklanev1.HeartbeatRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -350,9 +351,9 @@ func request_TasklaneService_Heartbeat_0(ctx context.Context, marshaler runtime.
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_Heartbeat_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_Heartbeat_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq HeartbeatRequest
+		protoReq extTasklanev1.HeartbeatRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -371,9 +372,9 @@ func local_request_TasklaneService_Heartbeat_0(ctx context.Context, marshaler ru
 	return msg, metadata, err
 }
 
-func request_TasklaneService_GetJob_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_GetJob_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq GetJobRequest
+		protoReq extTasklanev1.GetJobRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -392,9 +393,9 @@ func request_TasklaneService_GetJob_0(ctx context.Context, marshaler runtime.Mar
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_GetJob_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_GetJob_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq GetJobRequest
+		protoReq extTasklanev1.GetJobRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -410,9 +411,9 @@ func local_request_TasklaneService_GetJob_0(ctx context.Context, marshaler runti
 	return msg, metadata, err
 }
 
-func request_TasklaneService_CancelJob_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_CancelJob_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq CancelJobRequest
+		protoReq extTasklanev1.CancelJobRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -434,9 +435,9 @@ func request_TasklaneService_CancelJob_0(ctx context.Context, marshaler runtime.
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_CancelJob_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_CancelJob_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq CancelJobRequest
+		protoReq extTasklanev1.CancelJobRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -457,9 +458,9 @@ func local_request_TasklaneService_CancelJob_0(ctx context.Context, marshaler ru
 
 var filter_TasklaneService_ListDeadJobs_0 = &utilities.DoubleArray{Encoding: map[string]int{"queue": 0}, Base: []int{1, 1, 0}, Check: []int{0, 1, 2}}
 
-func request_TasklaneService_ListDeadJobs_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_ListDeadJobs_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq ListDeadJobsRequest
+		protoReq extTasklanev1.ListDeadJobsRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -484,9 +485,9 @@ func request_TasklaneService_ListDeadJobs_0(ctx context.Context, marshaler runti
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_ListDeadJobs_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_ListDeadJobs_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq ListDeadJobsRequest
+		protoReq extTasklanev1.ListDeadJobsRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -508,9 +509,9 @@ func local_request_TasklaneService_ListDeadJobs_0(ctx context.Context, marshaler
 	return msg, metadata, err
 }
 
-func request_TasklaneService_RedriveJobs_0(ctx context.Context, marshaler runtime.Marshaler, client TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func request_TasklaneService_RedriveJobs_0(ctx context.Context, marshaler runtime.Marshaler, client extTasklanev1.TasklaneServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq RedriveJobsRequest
+		protoReq extTasklanev1.RedriveJobsRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -532,9 +533,9 @@ func request_TasklaneService_RedriveJobs_0(ctx context.Context, marshaler runtim
 	return msg, metadata, err
 }
 
-func local_request_TasklaneService_RedriveJobs_0(ctx context.Context, marshaler runtime.Marshaler, server TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+func local_request_TasklaneService_RedriveJobs_0(ctx context.Context, marshaler runtime.Marshaler, server extTasklanev1.TasklaneServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
-		protoReq RedriveJobsRequest
+		protoReq extTasklanev1.RedriveJobsRequest
 		metadata runtime.ServerMetadata
 		err      error
 	)
@@ -558,7 +559,7 @@ func local_request_TasklaneService_RedriveJobs_0(ctx context.Context, marshaler 
 // StreamingRPC :currently unsupported pending https://github.com/grpc/grpc-go/issues/906.
 // Note that using this registration option will cause many gRPC library features to stop working. Consider using RegisterTasklaneServiceHandlerFromEndpoint instead.
 // GRPC interceptors will not work for this type of registration. To use interceptors, you must use the "runtime.WithMiddlewares" option in the "runtime.NewServeMux" call.
-func RegisterTasklaneServiceHandlerServer(ctx context.Context, mux *runtime.ServeMux, server TasklaneServiceServer) error {
+func RegisterTasklaneServiceHandlerServer(ctx context.Context, mux *runtime.ServeMux, server extTasklanev1.TasklaneServiceServer) error {
 	mux.Handle(http.MethodPost, pattern_TasklaneService_CreateQueue_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -830,15 +831,15 @@ func RegisterTasklaneServiceHandlerFromEndpoint(ctx context.Context, mux *runtim
 // RegisterTasklaneServiceHandler registers the http handlers for service TasklaneService to "mux".
 // The handlers forward requests to the grpc endpoint over "conn".
 func RegisterTasklaneServiceHandler(ctx context.Context, mux *runtime.ServeMux, conn *grpc.ClientConn) error {
-	return RegisterTasklaneServiceHandlerClient(ctx, mux, NewTasklaneServiceClient(conn))
+	return RegisterTasklaneServiceHandlerClient(ctx, mux, extTasklanev1.NewTasklaneServiceClient(conn))
 }
 
 // RegisterTasklaneServiceHandlerClient registers the http handlers for service TasklaneService
-// to "mux". The handlers forward requests to the grpc endpoint over the given implementation of "TasklaneServiceClient".
-// Note: the gRPC framework executes interceptors within the gRPC handler. If the passed in "TasklaneServiceClient"
+// to "mux". The handlers forward requests to the grpc endpoint over the given implementation of "extTasklanev1.TasklaneServiceClient".
+// Note: the gRPC framework executes interceptors within the gRPC handler. If the passed in "extTasklanev1.TasklaneServiceClient"
 // doesn't go through the normal gRPC flow (creating a gRPC client etc.) then it will be up to the passed in
-// "TasklaneServiceClient" to call the correct interceptors. This client ignores the HTTP middlewares.
-func RegisterTasklaneServiceHandlerClient(ctx context.Context, mux *runtime.ServeMux, client TasklaneServiceClient) error {
+// "extTasklanev1.TasklaneServiceClient" to call the correct interceptors. This client ignores the HTTP middlewares.
+func RegisterTasklaneServiceHandlerClient(ctx context.Context, mux *runtime.ServeMux, client extTasklanev1.TasklaneServiceClient) error {
 	mux.Handle(http.MethodPost, pattern_TasklaneService_CreateQueue_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()

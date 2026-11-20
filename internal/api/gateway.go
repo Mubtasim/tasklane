@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
+	gateway "github.com/mubtasim/tasklane/internal/gateway/tasklane/v1"
 	"github.com/mubtasim/tasklane/internal/traceparent"
 )
 
@@ -58,7 +58,7 @@ func NewHTTPHandler(ctx context.Context, conn *grpc.ClientConn, ready func(conte
 			UnmarshalOptions: protojson.UnmarshalOptions{DiscardUnknown: true},
 		}),
 	)
-	if err := tasklanev1.RegisterTasklaneServiceHandler(ctx, gw, conn); err != nil {
+	if err := gateway.RegisterTasklaneServiceHandler(ctx, gw, conn); err != nil {
 		return nil, err
 	}
 	mux := http.NewServeMux()

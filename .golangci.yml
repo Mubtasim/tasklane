@@ -16,6 +16,7 @@ linters:
       - common-false-positives
     paths:
       - gen/
+      - internal/gateway/
 formatters:
   enable:
     - gofmt
@@ -27,3 +28,4 @@ formatters:
   exclusions:
     paths:
       - gen/
+      - internal/gateway/

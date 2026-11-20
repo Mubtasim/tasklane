@@ -1,0 +1,207 @@
+# Release (design §22.3). Push both tags on one commit, atomically:
+#   git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
+# check → tests → approval (environment "release") → publish → confirm.
+# Every step can be re-run; tags never move (docs/releasing.md).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # all tags and main's history
+      - id: check
+        env:
+          RELEASE_BRANCH: origin/main
+        run: |
+          scripts/release-check.sh "$GITHUB_REF_NAME" notes.md
+          v=${GITHUB_REF_NAME#v}
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [[ $v == *-* ]]; then echo "prerelease=true"; else echo "prerelease=false"; fi >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notes
+          path: notes.md
+
+  ci:
+    needs: check
+    uses: ./.github/workflows/ci.yml
+
+  ts-integration:
+    needs: check
+    uses: ./.github/workflows/sdk-ts-integration.yml
+
+  publish:
+    needs: [check, ci, ts-integration]
+    runs-on: ubuntu-latest
+    environment: release # waits for the maintainer's approval
+    permissions:
+      contents: write     # GitHub Release
+      packages: write     # GHCR image and chart
+      id-token: write     # npm trusted publishing, provenance
+      attestations: write # image provenance
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      PRERELEASE: ${{ needs.check.outputs.prerelease }}
+      IMAGE: ghcr.io/mubtasim/tasklane
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false # gh, helm and docker get tokens from env or inputs
+      - uses: actions/download-artifact@v8
+        with:
+          name: notes
+
+      # 1. Image. The build stage cross-compiles, so no QEMU is needed.
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=${{ needs.check.outputs.prerelease == 'false' }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          labels: |
+            org.opencontainers.image.title=tasklane
+            org.opencontainers.image.description=Tasklane job queue server
+            org.opencontainers.image.licenses=Apache-2.0
+      # The build is not byte-for-byte reproducible, so a re-run must not
+      # push a second image under the same version tag.
+      - id: exists
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "image $VERSION already pushed; skipping build"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - id: build
+        if: steps.exists.outputs.found == 'false'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            REVISION=${{ github.sha }}
+      - if: steps.exists.outputs.found == 'false'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # 2. npm, through trusted publishing (no token). Needs npm >= 11.5.1.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@^11.5.1
+      - working-directory: sdk/ts
+        run: |
+          npm ci --ignore-scripts
+          if npm view "@mubtasim91/tasklane@$VERSION" version >/dev/null 2>&1; then
+            echo "@mubtasim91/tasklane@$VERSION is already on npm; skipping"
+          else
+            tag=latest; [[ $PRERELEASE == true ]] && tag=next
+            npm publish --provenance --access public --tag "$tag"
+          fi
+
+      # 3. Helm chart, as an OCI artifact.
+      - run: |
+          BIN="$RUNNER_TEMP/bin" deploy/k8s/tools.sh helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if helm show chart oci://ghcr.io/mubtasim/charts/tasklane --version "$VERSION" >/dev/null 2>&1; then
+            echo "chart $VERSION already pushed; skipping"
+          else
+            helm package deploy/k8s/tasklane -d "$RUNNER_TEMP/chart"
+            helm push "$RUNNER_TEMP/chart/tasklane-$VERSION.tgz" oci://ghcr.io/mubtasim/charts
+          fi
+
+      # 4. GitHub Release: the CHANGELOG section plus install commands.
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            cat notes.md
+            echo
+            echo "### Install"
+            echo
+            echo '```sh'
+            echo "docker pull $IMAGE:$VERSION"
+            echo "go get github.com/mubtasim/tasklane/sdk/go@v$VERSION"
+            echo "npm install @mubtasim91/tasklane@$VERSION"
+            echo "helm install tasklane oci://ghcr.io/mubtasim/charts/tasklane --version $VERSION --set databaseURL=postgres://..."
+            echo '```'
+          } > body.md
+          flags=(); [[ $PRERELEASE == true ]] && flags+=(--prerelease)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file body.md "${flags[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Tasklane $VERSION" --notes-file body.md "${flags[@]}"
+          fi
+
+  # Checks what a stranger gets, without logging in. On the very first
+  # release the GHCR packages are private until made public: then re-run
+  # this job.
+  confirm:
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Image runs and reports its version
+        run: |
+          docker pull "ghcr.io/mubtasim/tasklane:$VERSION"
+          docker run --rm "ghcr.io/mubtasim/tasklane:$VERSION" -version | tee /dev/stderr | grep -F "tasklane $VERSION "
+      - name: Go SDK through the module proxy
+        run: |
+          # The proxy can take a little while to see a new tag.
+          for i in $(seq 1 10); do
+            curl -fsS "https://proxy.golang.org/github.com/mubtasim/tasklane/sdk/go/@v/v$VERSION.info" && { echo; exit 0; }
+            echo "not on the proxy yet (try $i of 10)"; sleep 15
+          done
+          exit 1
+      - name: npm package
+        run: |
+          # The registry can lag behind a fresh publish.
+          for i in $(seq 1 10); do
+            [[ "$(npm view "@mubtasim91/tasklane@$VERSION" version 2>/dev/null)" == "$VERSION" ]] && exit 0
+            echo "not on npm yet (try $i of 10)"; sleep 15
+          done
+          exit 1
+      - name: Helm chart
+        run: |
+          BIN="$RUNNER_TEMP/bin" deploy/k8s/tools.sh helm
+          "$RUNNER_TEMP/bin/helm" show chart oci://ghcr.io/mubtasim/charts/tasklane --version "$VERSION"

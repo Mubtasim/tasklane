@@ -328,7 +328,7 @@ The HTTP gateway uses the proto field names in JSON (`job_id`, `lease_token`) an
 | M5a | Nov 2026 | Load tests, tuning and benchmark report (§19) |
 | M5b | Dec | Kubernetes deployment: Helm chart with probes, SIGTERM drain, Envoy, KEDA autoscaling of workers on queue depth, k3d demo (§20) |
 | M5c | early Dec | TypeScript SDK (npm), §21 |
-| M5e | Dec | v1.0.0: image on GHCR, release notes, blog post |
+| M5e | Dec | v1.0.0: Go SDK as its own module, one release workflow with approval, image and chart on GHCR, npm package, Go module tags, release notes (§22); the blog post is scheduled separately |
 | M5d | after v1.0 | C# SDK (NuGet): **moved after v1.0** (decided 2026-11-20), so v1.0 ships with the Go and TypeScript SDKs |
 
 Notes for M3: like `Enqueue`, `RedriveJobs` must send `pg_notify('tasklane_jobs', queue)` inside its transaction, because it makes jobs runnable, or waiting leases only notice at their next one-second re-check. `CancelJob` only removes runnable work, so it sends none. `LeaseStream` is the first streaming RPC, so it needs a `StreamServerInterceptor` for API-key auth; the M2a server only installs the unary interceptor. *Changed in M5a:* neither sends NOTIFY inside its transaction any more; the API server publishes after the commit (see §6 and §19.8).
@@ -584,8 +584,8 @@ Decided 2026-11-01. This section is the M4a spec. Tracing, invariant and chaos t
 |---|---|
 | `lint` | `golangci-lint` (pinned) with `.golangci.yml`: the default linters (errcheck, govet, staticcheck, unused, ineffassign) plus errorlint and misspell, and the gofmt and goimports formatters |
 | `test` | `go test -race -count=1 ./...`; testcontainers starts Postgres 17 in the runner's Docker |
-| `proto` | `buf lint`; on pull requests `buf breaking` against `main`; `buf generate` followed by `git diff --exit-code gen/` |
-| `docker` | `docker build` of the server image, without pushing (publishing to GHCR comes with v1.0.0 in M5) |
+| `proto` | `buf lint`; on pull requests `buf breaking` against `main`; `buf generate` followed by `git diff --exit-code gen/` (since M5e: `sdk/go/gen/` and `internal/gateway/`, §22.2) |
+| `docker` | `docker build` of the server image, without pushing (publishing to GHCR: the release workflow, §22.3) |
 | `deploy` | `promtool check config` on `deploy/prometheus/prometheus.yml` (which also checks the rule files it loads); `docker compose -f deploy/docker-compose.yml config --quiet` |
 
 - **Pinned tools.** buf and the protoc plugins are `tool` directives in a separate `tools.mod` (with `tools.sum`) at the repo root and run as `go tool -modfile=tools.mod <tool>`; `buf.gen.yaml` runs the plugins the same way, so local runs and CI use the same versions and SDK users don't inherit buf's dependencies through the main `go.mod`. The README's generate command changes to match.
@@ -1252,3 +1252,95 @@ Out of scope: publishing to npm (M5e); a `fetch`/HTTP-JSON transport; browser or
 ### 21.6 Results
 
 Measured 2026-11-20 on the laptop (2 cores, 7.6 GB RAM). Tests: 58 unit tests (CI runs them on Node 22, 24 and 26; locally on Node 24), 8 integration tests against the real server (last run in Task 5; not re-run for the demo task). Cross-language invariant test (`TestInvariantsTS`, 3 runs, about 8 s each), runs / completed / dead / lease_lost: 2465 / 1934 / 66 / 9; 2510 / 1934 / 66 / 7 (plus 3 gave_up); 2502 / 1943 / 57 / 9, no violations in any of them. Package: 60 KiB packed, publint and attw clean. Demo, about 2 minutes after `up`: worker-ts uses about 71 MiB of RAM in `docker stats` (the two Go workers: about 8 MiB each); Jaeger's service list shows `worker-ts` next to `worker-1`, `worker-3`, `producer`, `tasklane-1` and `tasklane-2`; a search for spans with `tasklane.attempt=2` on worker-ts found 14 traces in the last 15 minutes, 11 of them with a Go worker's `handle` span as well (7 flaky, 4 poison), so a job retried across languages does show both in one trace. `docker compose stop worker-ts` took 3.5 s and the worker logged `worker stopped cleanly` (exit code 0). The `tasklane-worker-ts:dev` image is 617 MB on disk (128 MB of content; node:26-slim plus the SDK's whole `node_modules`, OpenTelemetry included). The Jaeger v2 UI answers `/api/v3/services` and `/api/v3/traces`; the older `/api/services` is not served.
+
+## 22. M5e: v1.0.0 release
+
+Decided 2026-11-20. This section is the M5e spec. It releases Tasklane 1.0.0: the server image on GHCR, the Go SDK through the Go module proxy, the TypeScript SDK on npm and the Helm chart on GHCR, all from one tag through one release workflow that waits for the maintainer's approval before anything goes public. Before the tag, the Go SDK becomes its own Go module, because splitting it after the v1 compatibility promise would break users. The blog post is not part of M5e (to be scheduled later); the C# SDK stays after v1.0 (§13).
+
+### 22.1 Decisions
+
+| # | Question | Choice | Why |
+|---|---|---|---|
+| 1 | Version numbers | One version for everything (lockstep): tag `v1.0.0` releases server image 1.0.0, Go SDK v1.0.0, npm 1.0.0 and chart 1.0.0 | One tag, one workflow, and anyone can see which SDK matches which server. Cost: a fix in one SDK bumps everyone's number (a 1.0.1 with no server change). Rejected: separate versions per part (tags like `sdk/ts/v1.0.0`, more workflows, a compatibility table). **Revisit when** SDK-only releases outnumber server releases, users complain that a new version changed nothing for them, or one SDK needs a breaking 2.0 while the server stays 1.x. Switching later only changes the tag scheme: every published package already has its own version field, so nothing is renamed or withdrawn. |
+| 2 | Go SDK module | Its own module `github.com/mubtasim/tasklane/sdk/go` before v1 | Today `go get` on the SDK inherits the server's requirements: the Go 1.27.2 minimum, pgx, Prometheus, testcontainers and Docker client libraries in the user's module graph (security scanners flag them), and the server's dependency versions as minimums. Splitting after v1 would make two modules provide one import path for a while ("ambiguous import" until users upgrade both). Rejected: keep one module. |
+| 3 | How a release starts | Push the tags; the workflow checks and tests, then waits for approval in a GitHub environment `release` (required reviewer: the maintainer) before publishing; npm trusted publishing is bound to that environment | npm, the Go proxy and NuGet never let a version number be reused, so the human check comes before anything goes public. Rejected: publish on tag with no approval (a typo goes public); release-please (needs conventional commit messages and writes the notes itself). |
+| 4 | Helm chart distribution | Published as an OCI artifact to `oci://ghcr.io/mubtasim/charts/tasklane`, versioned with everything else | Without it, a user has to clone the repo to install the chart. About ten lines in the workflow. |
+
+Decided for the user (routine): images for linux/amd64 and linux/arm64, cross-compiled (no emulation); image tags `X.Y.Z`, `X.Y`, `X` and `latest` (the last three only for releases without a pre-release suffix); provenance attestations for the image and npm; pre-releases (`-rc.N`) go to npm under the dist-tag `next`; the published image contains only the server; one `CHANGELOG.md` at the repo root; the compose demo keeps building from source.
+
+### 22.2 Go SDK module
+
+The import path does not change: `github.com/mubtasim/tasklane/sdk/go/tasklane`.
+
+| Today (root module) | After | Why |
+|---|---|---|
+| `gen/tasklane/v1` (protobuf + gRPC) | `sdk/go/gen/tasklane/v1`, public, in the SDK module; the server imports it from there | One copy of the API types for server and SDK; public is fine, it is the API itself |
+| `*.pb.gw.go` (grpc-gateway) | stays in the root module, in its own package (buf `standalone=true`) | Otherwise every SDK user pulls grpc-gateway, which only the server needs |
+| `internal/backoff` (33 lines), `internal/traceparent` (42 lines) | copied to `sdk/go/tasklane/internal/` | Go forbids importing another module's `internal/`; making them public adds them to the v1 promise. Traceparent follows the W3C format, so the copies don't drift; the existing cross-process trace tests cover both |
+| `sdk/go/integrationtest/` | `test/sdkgo/` in the root module | These tests start the real server and Postgres |
+
+- The root `go.mod` requires the SDK module with `replace github.com/mubtasim/tasklane/sdk/go => ./sdk/go`, so the server always builds against the SDK in the same commit. Consequence, documented: `go install github.com/mubtasim/tasklane/cmd/...@version` is not supported (Go refuses modules with `replace`); the server ships as the image.
+- The SDK module's `go` line is the lowest its dependencies allow: Go 1.26, set by OpenTelemetry (`otel` 1.47, `otelgrpc` 0.72 and gRPC 1.85 all need 1.26). That is both currently supported Go releases (1.26, 1.27).
+- The buf templates write Go code into `sdk/go/gen` and the gateway into the server's package; the CI generate check covers both modules.
+- CI lints and tests both modules, runs `go mod tidy` checks on both, and fails if the SDK module's `go list -deps` includes pgx, Prometheus, testcontainers or grpc-gateway.
+- Proof: a throwaway module outside the repo requires the SDK; its `go mod graph` module count and `go` minimum are recorded before and after (§22.7).
+
+### 22.3 Release workflow (`.github/workflows/release.yml`)
+
+Triggered by a pushed tag matching `v*`. The maintainer pushes `vX.Y.Z` and `sdk/go/vX.Y.Z` on the same commit.
+
+1. **Check.** The tagged commit is on `main`; `sdk/go/vX.Y.Z` points at the same commit; `sdk/ts/package.json` version, the chart's `version` and `appVersion` all equal `X.Y.Z` (the workflow checks, never edits); `CHANGELOG.md` has a `## X.Y.Z` section, which becomes the release notes.
+2. **Test.** The CI workflow runs on the tagged commit as a reusable workflow (`workflow_call`): lint, `go test -race` for both modules, proto checks, TypeScript unit and integration tests, chart checks. Any failure ends the run with nothing published.
+3. **Approve.** The publish job runs in environment `release`, which requires the maintainer's review. The environment must exist before the first tag (§22.5, step 0): GitHub creates a missing one with no protection.
+4. **Publish**, in this order:
+   1. Image `ghcr.io/mubtasim/tasklane`: `docker buildx` for amd64 and arm64 from the Dockerfile's `server` stage (`FROM --platform=$BUILDPLATFORM golang`, `GOOS`/`GOARCH` from `TARGETOS`/`TARGETARCH`); version injected with `-ldflags -X`; OCI labels (`org.opencontainers.image.source`, version, revision); provenance attestation with `actions/attest-build-provenance` pushed to the registry.
+   2. npm: `npm publish --provenance` from `sdk/ts` through trusted publishing (OIDC, no stored token); `--tag next` for pre-releases.
+   3. Chart: `helm package` + `helm push` to `oci://ghcr.io/mubtasim/charts`.
+   4. GitHub Release for the tag, body = the CHANGELOG section plus install commands; marked pre-release for `-rc.N`.
+5. **Confirm.** Pull the image anonymously and run `tasklane -version`; fetch `github.com/mubtasim/tasklane/sdk/go@vX.Y.Z` through `proxy.golang.org` (also warms the cache and pkg.go.dev); `npm view @mubtasim91/tasklane@X.Y.Z version`; `helm show chart oci://ghcr.io/mubtasim/charts/tasklane --version X.Y.Z`.
+
+Permissions: `contents: write` (release), `packages: write`, `id-token: write` (npm OIDC, attestations), `attestations: write`. Every step can be re-run: the image step skips a version that is already pushed (the build is not byte-for-byte reproducible, so a rebuild would move `X.Y.Z` to a new digest), the npm step skips a version that already exists with the same contents, `helm push` of an existing version is skipped, the GitHub Release is updated rather than duplicated. Tags never move; a bad release is fixed with the next patch version.
+
+### 22.4 Server changes
+
+- `tasklane -version` prints the version, commit and Go version and exits; the version defaults to `dev` in local builds.
+- Metric `tasklane_build_info{version, revision, goversion}` = 1.
+- Dockerfile stages: `server` (published: only `cmd/tasklane`) and `demo` (compose: server + demo producer and worker, as today).
+- Chart: `version` and `appVersion` follow the release; `values.yaml` and the README drop the "no image is published yet" notes.
+
+### 22.5 First release
+
+Pre-releases first, so surprises land in versions nobody depends on.
+
+| # | Who | Step |
+|---|---|---|
+| 0 | maintainer (GitHub) | Create environment `release`: required reviewer = the maintainer, "Prevent self-review" off (sole maintainer), deployment rule limited to tags `v*`. Otherwise GitHub creates it unprotected on the first tag and publish runs unapproved |
+| 1 | build, maintainer merges | The M5e PR merges with versions `1.0.0-rc.1` |
+| 2 | maintainer (laptop) | `npm login` (2FA), then in `sdk/ts`: `npm publish --tag next --provenance=false`. npm cannot set up trusted publishing for a package that doesn't exist yet, so the first publish is manual and has no provenance. npm also sets `latest` on a new package's first publish, so `rc.1` is `latest` until `1.0.0` |
+| 3 | maintainer (npmjs.com) | Package settings → trusted publisher: GitHub Actions, `Mubtasim/tasklane`, `release.yml`, environment `release`; then require 2FA and disallow tokens |
+| 4 | tags + maintainer approves | Within two days of step 3 (npm [expires an unused trusted-publisher setup](https://docs.npmjs.com/trusted-publishers)): bump to `rc.2`, push `v1.0.0-rc.2` and `sdk/go/v1.0.0-rc.2`, approve. First full run, npm through OIDC |
+| 5 | maintainer (GitHub) | Make the new GHCR packages (image and chart) public; they are created private |
+| 6 | maintainer runs, guided | Clean-machine check and Helm lab (§22.6): anonymous `docker pull`/`run`, `npm install @mubtasim91/tasklane@next` and `go get …/sdk/go@v1.0.0-rc.2` in empty folders, then the chart from GHCR on a fresh k3d cluster |
+| 7 | tags + maintainer approves | Fix what rc.2 found (rc.3 if needed); then `1.0.0`, CHANGELOG, tags, approve |
+| 8 | after release | README install section live; portfolio, profile README and CV mention v1.0.0 |
+
+The `release` environment is created through the GitHub API if the token allows it, else by the maintainer in the repo settings.
+
+### 22.6 Docs and the Helm lab
+
+- `docs/releasing.md`: branch deploys vs tag releases, git tags (annotated, pushed on purpose), semantic versioning and what v1 promises, where each part lives (GHCR, npm, Go proxy + sum database + pkg.go.dev, NuGet later), what is immutable where, provenance (what it proves and doesn't), the release steps, recovering from a half-finished release, and the signs that it is time for separate versions.
+- `docs/labs/helm.md`: a hands-on lab the maintainer runs, one command at a time, with `kubectl get pods -w` open in a second pane: install from the published chart; send jobs; `helm upgrade --set replicaCount=3`; change the API key and watch the rolling update; `helm history`; `helm rollback`; `helm get manifest`; `helm uninstall`. About 30–40 minutes, about 0.9 GB of RAM.
+- README: an Install section (`docker pull`, `go get`, `npm install`, `helm install`) with links to GHCR, npm and pkg.go.dev; status line updated.
+- `CHANGELOG.md` at the root, one section per version covering server, Go SDK, TypeScript SDK and chart; `sdk/ts/CHANGELOG.md` folds into it and the npm `files` list points at the root copy (copied into the package at pack time).
+- Interview notes Q56–Q59: why split the Go module before v1; tag-based releases vs branch deploys; what provenance proves and doesn't; Helm templates and values.
+
+Out of scope: the blog post; the C# SDK; Envoy graceful drain (§20 follow-up); separate versions per part (see decision 1).
+
+### 22.7 Results
+
+Measured 2026-11-20 on the laptop, before the first release:
+
+- **Go SDK module split.** A throwaway module that imports the SDK: modules in its graph 143 → 51, `go mod graph` edges 289 → 165, server-only modules (pgx, Prometheus, testcontainers, grpc-gateway, Docker) 13 → 0, minimum Go 1.27.2 → 1.26.0. The standalone gateway package keeps the package name `tasklanev1` and imports the SDK's generated package. Changing `go_package` also changes the descriptor embedded in the generated TypeScript (`tasklane_pb.ts`, one line), regenerated in the same commit. The fresh SDK module resolved gRPC 1.85.0, and the server followed.
+- **Images.** Server image (only the server) 37.0 MB, demo image 80.6 MB; the arm64 server image cross-compiles without emulation.
+
+To be added after the release: workflow durations (check, test, publish), image sizes per architecture on GHCR, the clean-machine check and Helm lab outcomes, and anything rc.2 found.

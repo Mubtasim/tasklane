@@ -12,8 +12,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/stats"
 
-	tasklanev1 "github.com/mubtasim/tasklane/gen/tasklane/v1"
-	"github.com/mubtasim/tasklane/internal/traceparent"
+	tasklanev1 "github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1"
+	"github.com/mubtasim/tasklane/sdk/go/tasklane/internal/traceparent"
 )
 
 // maxSpanStatusBytes bounds a span status description. RecordError already

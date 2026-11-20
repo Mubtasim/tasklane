@@ -1974,7 +1974,7 @@ const file_tasklane_v1_tasklane_proto_rawDesc = "" +
 	"\x06GetJob\x12\x1a.tasklane.v1.GetJobRequest\x1a\x1b.tasklane.v1.GetJobResponse\"\x15\x82\xd3\xe4\x93\x02\x0f\x12\r/v1/jobs/{id}\x12k\n" +
 	"\tCancelJob\x12\x1d.tasklane.v1.CancelJobRequest\x1a\x1e.tasklane.v1.CancelJobResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/jobs/{id}:cancel\x12t\n" +
 	"\fListDeadJobs\x12 .tasklane.v1.ListDeadJobsRequest\x1a!.tasklane.v1.ListDeadJobsResponse\"\x1f\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/queues/{queue}/dead\x12|\n" +
-	"\vRedriveJobs\x12\x1f.tasklane.v1.RedriveJobsRequest\x1a .tasklane.v1.RedriveJobsResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/queues/{queue}/dead:redriveB9Z7github.com/mubtasim/tasklane/gen/tasklane/v1;tasklanev1b\x06proto3"
+	"\vRedriveJobs\x12\x1f.tasklane.v1.RedriveJobsRequest\x1a .tasklane.v1.RedriveJobsResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/queues/{queue}/dead:redriveB@Z>github.com/mubtasim/tasklane/sdk/go/gen/tasklane/v1;tasklanev1b\x06proto3"
 
 var (
 	file_tasklane_v1_tasklane_proto_rawDescOnce sync.Once

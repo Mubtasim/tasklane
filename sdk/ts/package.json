@@ -1,6 +1,6 @@
 {
   "name": "@mubtasim91/tasklane",
-  "version": "0.0.0",
+  "version": "1.0.0-rc.1",
   "description": "TypeScript producer, admin client and worker for the Tasklane job queue",
   "license": "Apache-2.0",
   "type": "module",
@@ -46,6 +46,7 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "check:package": "bash scripts/check-package.sh",
+    "prepack": "cp ../../CHANGELOG.md CHANGELOG.md",
     "prepublishOnly": "npm run check:package"
   },
   "peerDependencies": {
