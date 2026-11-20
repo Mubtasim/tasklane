@@ -2,6 +2,13 @@
 
 One version covers the server image, the Go SDK, the TypeScript SDK and the Helm chart (design §22). Release steps: [docs/releasing.md](docs/releasing.md).
 
+## 1.0.1
+
+Documentation only; no code changes since 1.0.0.
+
+- **TypeScript SDK:** the README shipped in the npm package (and shown on npmjs.com) said the package was not on npm yet; it now shows the install command.
+- All parts move to 1.0.1 together (one version for the server image, both SDKs and the Helm chart).
+
 ## 1.0.0
 
 First stable release. The code is the same as `1.0.0-rc.2`, which was installed from the published artifacts and taken through a full Helm lifecycle (install, scale, rolling key change, rollback, uninstall) with no jobs lost and clean shutdowns ([docs/labs/helm.md](docs/labs/helm.md)).

@@ -1,6 +1,6 @@
 {
   "name": "@mubtasim91/tasklane",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TypeScript producer, admin client and worker for the Tasklane job queue",
   "license": "Apache-2.0",
   "type": "module",
