@@ -1,6 +1,6 @@
 # Lab: Helm, hands on
 
-Install Tasklane from the published chart into a local Kubernetes cluster, then upgrade it, change a setting, look at the history, roll back and uninstall, watching the pods change live. About 30–40 minutes and about 0.9 GB of RAM (one k3d cluster). The outputs below are from a dry run on a 2-core laptop with a locally built image; yours will differ in names and seconds.
+Install Tasklane from the published chart into a local Kubernetes cluster, then upgrade it, change a setting, look at the history, roll back and uninstall, watching the pods change live. About 30–40 minutes and about 0.9 GB of RAM (one k3d cluster). The outputs below are from runs on a 2-core laptop (the last one, on 2026-11-21, installed the published `1.0.0-rc.2` from GHCR); yours will differ in names and seconds.
 
 **What Helm is, in one paragraph.** A *chart* is a folder of Kubernetes YAML *templates* with blanks (`{{ .Values.replicaCount }}`), a `values.yaml` with the default for every blank, and a `Chart.yaml` label (chart version, app version). `helm install` fills the blanks with your values and applies the result as one named *release*. Helm remembers every change as a numbered *revision*, so it can show the history, roll back, and uninstall exactly what it created. Tasklane's chart lives in [`deploy/k8s/tasklane/`](../../deploy/k8s/tasklane/) and is published with each release to `oci://ghcr.io/mubtasim/charts/tasklane`.
 
@@ -12,7 +12,7 @@ Tools (pinned versions into `~/.local/bin`), from the repo root:
 deploy/k8s/tools.sh kubectl helm k3d
 export PATH="$HOME/.local/bin:$PATH"
 source deploy/k8s/versions.sh          # sets K3S_IMAGE
-export V=1.0.0-rc.2                    # the release to install
+export V=1.0.0                        # the release to install
 ```
 
 Two terminal panes (tmux: `Ctrl-b %`). In the **right** pane, after step 1, keep this running the whole time:
@@ -64,7 +64,7 @@ Clients connect to tasklane.tasklane.svc.cluster.local:7070 (gRPC) or :8080 (HTT
 
 ```sh
 kubectl get deploy tasklane-server -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
-# ghcr.io/mubtasim/tasklane:1.0.0-rc.2  ← the chart's appVersion
+# ghcr.io/mubtasim/tasklane:1.0.0  ← the chart's appVersion
 ```
 
 ## 3. Send jobs
@@ -145,9 +145,9 @@ helm history tasklane
 
 ```
 REVISION  STATUS      CHART                APP VERSION  DESCRIPTION
-1         superseded  tasklane-1.0.0-rc.2  1.0.0-rc.2   Install complete
-2         superseded  tasklane-1.0.0-rc.2  1.0.0-rc.2   Upgrade complete
-3         deployed    tasklane-1.0.0-rc.2  1.0.0-rc.2   Upgrade complete
+1         superseded  tasklane-1.0.0       1.0.0        Install complete
+2         superseded  tasklane-1.0.0       1.0.0        Upgrade complete
+3         deployed    tasklane-1.0.0       1.0.0        Upgrade complete
 ```
 
 Every deploy is a numbered revision, with the chart and app version it used.
