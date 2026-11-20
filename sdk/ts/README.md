@@ -4,12 +4,11 @@ TypeScript client and worker for [Tasklane](https://github.com/Mubtasim/tasklane
 
 Node 22 or later. ESM only: use `import`, not `require()` (the tracing module uses top-level `await`, so `require()` of this package fails with `ERR_REQUIRE_ASYNC_MODULE`). Talks gRPC to the server's port 7070.
 
-The package is not on npm yet; it will be published at v1.0. Until then, install it from this repository (`cd sdk/ts && npm run build && npm pack`, then `npm install ./mubtasim91-tasklane-0.0.0.tgz`). The command once it is published:
-
 ```bash
-# after v1.0 only
 npm install @mubtasim91/tasklane
 ```
+
+The package version matches the server's (one version for the server, both SDKs and the Helm chart; see the [CHANGELOG](https://github.com/Mubtasim/tasklane/blob/main/CHANGELOG.md)).
 
 ## Enqueue
 
