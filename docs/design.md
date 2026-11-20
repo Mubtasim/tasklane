@@ -584,8 +584,8 @@ Decided 2026-11-01. This section is the M4a spec. Tracing, invariant and chaos t
 |---|---|
 | `lint` | `golangci-lint` (pinned) with `.golangci.yml`: the default linters (errcheck, govet, staticcheck, unused, ineffassign) plus errorlint and misspell, and the gofmt and goimports formatters |
 | `test` | `go test -race -count=1 ./...`; testcontainers starts Postgres 17 in the runner's Docker |
-| `proto` | `buf lint`; on pull requests `buf breaking` against `main`; `buf generate` followed by `git diff --exit-code gen/` |
-| `docker` | `docker build` of the server image, without pushing (publishing to GHCR comes with v1.0.0 in M5) |
+| `proto` | `buf lint`; on pull requests `buf breaking` against `main`; `buf generate` followed by `git diff --exit-code gen/` (since M5e: `sdk/go/gen/` and `internal/gateway/`, §22.2) |
+| `docker` | `docker build` of the server image, without pushing (publishing to GHCR: the release workflow, §22.3) |
 | `deploy` | `promtool check config` on `deploy/prometheus/prometheus.yml` (which also checks the rule files it loads); `docker compose -f deploy/docker-compose.yml config --quiet` |
 
 - **Pinned tools.** buf and the protoc plugins are `tool` directives in a separate `tools.mod` (with `tools.sum`) at the repo root and run as `go tool -modfile=tools.mod <tool>`; `buf.gen.yaml` runs the plugins the same way, so local runs and CI use the same versions and SDK users don't inherit buf's dependencies through the main `go.mod`. The README's generate command changes to match.
@@ -1337,4 +1337,9 @@ Out of scope: the blog post; the C# SDK; Envoy graceful drain (§20 follow-up); 
 
 ### 22.7 Results
 
-Filled in after the release: Go SDK module graph and Go minimum before and after; workflow durations (check, test, publish); image sizes per architecture; clean-machine check and Helm lab outcomes; anything rc.2 found.
+Measured 2026-11-20 on the laptop, before the first release:
+
+- **Go SDK module split.** A throwaway module that imports the SDK: modules in its graph 143 → 51, `go mod graph` edges 289 → 165, server-only modules (pgx, Prometheus, testcontainers, grpc-gateway, Docker) 13 → 0, minimum Go 1.27.2 → 1.26.0. The standalone gateway package keeps the package name `tasklanev1` and imports the SDK's generated package. Changing `go_package` also changes the descriptor embedded in the generated TypeScript (`tasklane_pb.ts`, one line), regenerated in the same commit. The fresh SDK module resolved gRPC 1.85.0, and the server followed.
+- **Images.** Server image (only the server) 37.0 MB, demo image 80.6 MB; the arm64 server image cross-compiles without emulation.
+
+To be added after the release: workflow durations (check, test, publish), image sizes per architecture on GHCR, the clean-machine check and Helm lab outcomes, and anything rc.2 found.

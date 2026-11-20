@@ -319,7 +319,7 @@ Every question the earlier milestones left for the load test, with its answer.
 | Two server copies vs one | **Deferred** to M5b (two replicas) or `PROFILE=vm` | Replaced here by capacity maths (section 6): one server CPU feeds about 2.2 Postgres CPUs |
 | `synchronous_commit = off` | **Deferred: discussed, not turned on** | Not measured; the trade-off is in section 6 |
 | PgBouncer | **Deferred** | Not tested. Trigger: connection count, with many server copies (M5b). |
-| Full-queue 429 vs payload-too-large over HTTP | **Done**, as an integration test (not a load question) | `TestOversizeBatchIsNotQueueFull` in `sdk/go/integrationtest` |
+| Full-queue 429 vs payload-too-large over HTTP | **Done**, as an integration test (not a load question) | `TestOversizeBatchIsNotQueueFull` in `test/sdkgo` (was `sdk/go/integrationtest` before M5e) |
 
 ## 8. How to reproduce
 
