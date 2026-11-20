@@ -6,7 +6,7 @@ A self-hosted, language-agnostic job queue server backed by PostgreSQL.
 
 Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once delivery, retries with exponential backoff and jitter, a dead-letter queue, delayed jobs and priorities.
 
-**Status:** 1.0.0 release candidate (milestone M5e). Young and maintained by one person: try it, but don't bet production on it yet.
+**Status:** 1.0.0. Young and maintained by one person: try it, but don't bet production on it yet.
 
 - Design: [docs/design.md](docs/design.md)
 - Benchmarks: [docs/benchmarks.md](docs/benchmarks.md). On a 2-core laptop with pinned CPUs, one server and one PostgreSQL complete about 430 jobs/s (enqueue, lease, ack; median of 4 runs), with p99 enqueue-to-start of 61 ms at 80% of that. The limit there is PostgreSQL's per-commit disk flush, not CPU.
@@ -14,7 +14,7 @@ Producers enqueue jobs; workers lease, run and acknowledge them. At-least-once d
 
 ## Install
 
-One version covers all four parts ([CHANGELOG](CHANGELOG.md), [how releases work](docs/releasing.md)). Until 1.0.0 is out, use the release candidate (`1.0.0-rc.N`; npm: `@next`). npm marks the first version of a new package as `latest`, so for now a plain `npm install @mubtasim91/tasklane` also gives you the release candidate.
+One version covers all four parts ([CHANGELOG](CHANGELOG.md), [how releases work](docs/releasing.md)).
 
 ```bash
 docker pull ghcr.io/mubtasim/tasklane:1.0.0                         # server (linux/amd64, linux/arm64)
