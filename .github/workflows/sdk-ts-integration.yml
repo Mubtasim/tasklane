@@ -13,6 +13,7 @@ on:
       - "test/invariant/**"
       - "test/invariants/**"
       - ".github/workflows/sdk-ts-integration.yml"
+  workflow_call:
   push:
     branches: [main]
 
@@ -53,7 +54,7 @@ jobs:
           TASKLANE_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable' \
           TASKLANE_API_KEYS=test-key TASKLANE_METRICS_ADDR=off \
             /tmp/tasklane > /tmp/tasklane.log 2>&1 &
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             curl -sf http://127.0.0.1:8080/readyz && exit 0
             sleep 1
           done
