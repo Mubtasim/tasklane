@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"path"
+	"runtime"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/mubtasim/tasklane/internal/store"
 	"github.com/mubtasim/tasklane/internal/traceparent"
+	"github.com/mubtasim/tasklane/internal/version"
 )
 
 const (
@@ -77,6 +79,12 @@ func New() *Metrics {
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Name: "tasklane_queue_stats_age_seconds", Help: "Seconds since the queue gauges were last refreshed.",
 		}, m.statsAge),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "tasklane_build_info", Help: "Always 1; the labels say which build is running.",
+			ConstLabels: prometheus.Labels{
+				"version": version.Version, "revision": version.Revision, "goversion": runtime.Version(),
+			},
+		}, func() float64 { return 1 }),
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)

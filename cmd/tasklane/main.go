@@ -28,6 +28,7 @@ import (
 	"github.com/mubtasim/tasklane/internal/pruner"
 	"github.com/mubtasim/tasklane/internal/reaper"
 	"github.com/mubtasim/tasklane/internal/tracing"
+	"github.com/mubtasim/tasklane/internal/version"
 )
 
 // Each drain step on SIGINT/SIGTERM gets its own budget, so a slow HTTP
@@ -42,11 +43,22 @@ const (
 )
 
 func main() {
+	if versionRequested(os.Args) {
+		fmt.Println(version.String())
+		return
+	}
 	log := slog.New(tracing.LogHandler{Handler: slog.NewJSONHandler(os.Stdout, nil)})
 	if err := run(log); err != nil {
 		log.Error("tasklane stopped", "err", err)
 		os.Exit(1)
 	}
+}
+
+// versionRequested reports whether the only argument is -version or
+// --version. The server has no other flags: everything else is environment
+// variables (config.go).
+func versionRequested(args []string) bool {
+	return len(args) == 2 && (args[1] == "-version" || args[1] == "--version")
 }
 
 func run(log *slog.Logger) error {

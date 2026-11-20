@@ -43,3 +43,20 @@ func TestMetricsServerWiring(t *testing.T) {
 	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	require.Equal(t, http.StatusNotFound, rec.Code, "only /metrics lives on this port")
 }
+
+func TestVersionRequested(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"tasklane"}, false},
+		{[]string{"tasklane", "-version"}, true},
+		{[]string{"tasklane", "--version"}, true},
+		{[]string{"tasklane", "-version", "extra"}, false},
+		{[]string{"tasklane", "version"}, false},
+	} {
+		if got := versionRequested(tc.args); got != tc.want {
+			t.Errorf("versionRequested(%q) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
