@@ -78,8 +78,13 @@ func TestOneTraceFromProducerToWorker(t *testing.T) {
 	})
 	runWorker(t, w)
 	id := root.SpanContext().TraceID()
+	// Wait for the server's Ack span too: the worker gets the Ack reply (and
+	// ends its handle span) a moment before the server ends its own span for
+	// that call, so checking only the handle spans raced on busy CI runners.
 	require.Eventually(t, func() bool {
-		return len(named(inTrace(rec, id), "handle flaky", trace.SpanKindConsumer)) == 2
+		spans := inTrace(rec, id)
+		return len(named(spans, "handle flaky", trace.SpanKindConsumer)) == 2 &&
+			len(named(spans, "tasklane.v1.TasklaneService/Ack", trace.SpanKindServer)) == 1
 	}, 10*time.Second, 20*time.Millisecond)
 
 	spans := inTrace(rec, id)
