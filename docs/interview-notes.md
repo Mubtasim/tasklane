@@ -941,3 +941,36 @@ Three layers, from cheap to strong.
 **Tasklane specifics:** the chart is published as an OCI artifact on GHCR (`helm install tasklane oci://ghcr.io/mubtasim/charts/tasklane --version X.Y.Z`); the image tag defaults to the chart's `appVersion`, so chart X.Y.Z runs server X.Y.Z; a Secret-content hash annotation rolls the pods when the chart-made Secret changes.
 
 **Fails halfway / trade-offs:** templates are text, so errors show up only at render time (`helm lint`, `helm template` + kubeconform in CI); a `helm upgrade --wait` that times out leaves the release `failed` until the next upgrade or a rollback. Teams often let Argo CD or Flux run Helm from git instead of running it by hand.
+
+## Q60. A DAG has 1 billion nodes and 10 billion edges. Design an API that answers "is Y an ancestor of X?"
+
+The scaled-up version of LeetCode 2192 (all ancestors of every node in a DAG). The design depends on the clarifying questions, so ask them first.
+
+**Clarify (and the answers used here):**
+1. Machines? Up to ~100, each 64 GB RAM + 2 TB SSD.
+2. Density and limits? ~10 parents per node on average; very uneven: hubs with millions of children, some nodes with millions of ancestors.
+3. Tree or DAG? A DAG: many parents, no cycles. So ancestor paths fan out and rejoin; a visited set is needed.
+4. What does the caller need? Mostly yes/no checks, 10k/s, under 100 ms; full lists rarely (minutes are fine). A full list can be ~1 billion IDs × 4 B ≈ 4 GB, so it is never one response: snapshot-pinned pagination or a background export.
+5. Does the graph change? Yes, ~1 million new edges/day, mostly additions; answers may be a few minutes stale. Staleness allowed = precompute and refresh in the background are allowed.
+
+**Numbers:**
+- Node ID: 2^32 ≈ 4.3 billion > 1 billion, so 32 bits = **4 bytes**.
+- Parent lists (CSR): 10 B edges × 4 B = 40 GB + 1 B offsets × 8 B = 8 GB → **≈ 48 GB, fits in one machine's RAM**. Storing the graph is not the hard part.
+- Walk up at query time: average ~1,000 ancestors × ~100 ns in RAM ≈ **0.1 ms**; worst case millions of nodes and ~10× that in edges ≈ **~1 s**. Across machines (~0.5 ms per hop) it would be hopeless, so don't shard the graph.
+- Precompute every ancestor set: 1 B × 1,000 × 4 B ≈ **4 TB** (≈ 63 machines of RAM, ~190 with 3 copies), and one edge added above a hub rewrites millions of sets.
+- Load: 10k/s × 1,000 visits = 10 M visits/s → a few cores; growth: 1 M edges/day × 4 B = 4 MB/day ≈ 1.5 GB/year.
+
+**How (design):**
+1. Every server keeps a **full copy** of the parent lists in RAM; ~5 servers behind a load balancer, sized N+1 (with one down, 4 × 2,500/s).
+2. Query = walk up from X with a visited set; **stop as soon as Y is found**; reject at once when level(Y) ≥ level(X) (level = longest distance from a root).
+3. The few heavy nodes (millions of ancestors): precompute or cache their sets, refreshed in the background (staleness is allowed).
+4. Full lists: a background job against one graph version writes a file; or pagination with a cursor `{version, after_id}` so pages never shift.
+
+**Fails halfway:**
+1. **Updates:** the writer checks for cycles and appends each edge to a durable, numbered **change log** (Kafka or a table). Each server pulls "everything after #N", applies it, then saves its bookmark. A server that was down catches up from its bookmark; nothing is pushed to a dead machine (same idea as Tasklane workers pulling durable jobs). Crash after applying but before saving the bookmark → the edge is applied twice, so applying is **idempotent** (adding an existing edge is a no-op). Alert when any server is > ~1 min behind (12 edges/s on average).
+2. **Restart:** load a snapshot stamped "as of log #N" from local SSD (48 GB at 1–2 GB/s ≈ 30–60 s), replay the log from #N, and only then pass the **readiness** probe; until then the load balancer skips it. Snapshots are written to a temp file and **renamed**, so a crash never leaves a half-written snapshot. Restart one server at a time.
+3. **Pagination while the graph changes:** recomputing each page shifts items, so the caller sees duplicates and misses others. Pin a graph version in the cursor (like an MVCC snapshot).
+
+**Trade-off:** walking up is cheap to store (48 GB) and cheap to update (one edge = one append), but slow for the rare huge nodes; precomputing makes every query one lookup but costs ~4 TB and million-write update storms. Mix: walk for most nodes, precompute or cache the heavy few.
+
+**Link to Raft:** a numbered log copied safely to several machines, with each replica applying it in order, is exactly what a Raft store builds.
