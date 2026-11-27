@@ -1343,4 +1343,42 @@ Measured 2026-11-20 on the laptop, before the first release:
 - **Go SDK module split.** A throwaway module that imports the SDK: modules in its graph 143 → 51, `go mod graph` edges 289 → 165, server-only modules (pgx, Prometheus, testcontainers, grpc-gateway, Docker) 13 → 0, minimum Go 1.27.2 → 1.26.0. The standalone gateway package keeps the package name `tasklanev1` and imports the SDK's generated package. Changing `go_package` also changes the descriptor embedded in the generated TypeScript (`tasklane_pb.ts`, one line), regenerated in the same commit. The fresh SDK module resolved gRPC 1.85.0, and the server followed.
 - **Images.** Server image (only the server) 37.0 MB, demo image 80.6 MB; the arm64 server image cross-compiles without emulation.
 
-To be added after the release: workflow durations (check, test, publish), image sizes per architecture on GHCR, the clean-machine check and Helm lab outcomes, and anything rc.2 found.
+The releases: `v1.0.0-rc.2` on 2026-11-20, then `v1.0.0` and `v1.0.1` on 2026-11-21 (Dhaka time), each one run of `release.yml` on GitHub's hosted runners.
+
+**Workflow durations** (from the job start and end times; "approval" is the time the run waited for the maintainer, not machine time):
+
+```
+                    rc.2      1.0.0     1.0.1
+check + tests       1m56s     2m15s     2m27s
+approval              36s     3m04s     1m12s
+publish             2m35s     2m22s     2m07s
+confirm             1m18s     1m43s     2m45s failed, 10s re-run
+whole run           6m31s     9m29s     9m32s
+```
+
+- **Machine time** was about 6 minutes per release (5m49s, 6m20s; 7m29s for 1.0.1 with the failed confirm). The check job takes 6–7 s; the test jobs run in parallel and the slowest is the Go test job with `-race` and Postgres (1m49s–2m18s).
+- **Publish**: the two-architecture image build and push is the biggest step (61–80 s), then the attestation (5–6 s), npm (13–18 s including `npm ci`), the chart (4–9 s) and the GitHub Release (2–6 s).
+- **Confirm**: the image check and the Go module proxy take a few seconds each. Almost all of the rest is waiting for npm to list the new version (next point).
+
+**npm is slow to show a new version.** npm recorded each version 77 s (rc.2), 96 s (1.0.0) and 157 s (1.0.1) after the publish step ended, and `npm view` saw it later still. For 1.0.1 the confirm step's 10 tries × 15 s (2.5 minutes) ran out, so the job failed with everything already published. Re-running only the failed job ([releasing.md](releasing.md) §8) passed less than a minute later. PR #17 doubled the wait to 20 tries × 15 s (5 minutes). Nothing else in a release needed a re-run.
+
+**Published sizes** (1.0.1, compressed, summed from the registry manifests):
+
+```
+image linux/amd64    8.7 MB   (13 layers; server binary 8.0 MB)
+image linux/arm64    8.0 MB   (13 layers; server binary 7.3 MB)
+Helm chart           5.5 KB
+npm package          245 KB unpacked, 76 files
+```
+
+The distroless base is about 0.7 MB of the image; the rest is the server binary. Unpacked on disk it is the 37.0 MB server image measured above. Each platform also gets an attestation manifest (provenance) in the same image index.
+
+**Clean-machine check.** The confirm job did it on every run, with no registry login: pulled the image and ran `tasklane -version`, fetched the Go SDK through `proxy.golang.org`, found the npm version, and read the chart from GHCR. Step 5 of §22.5 was not needed: the GHCR image and chart packages were public as soon as they were created, because they are linked to the public repository.
+
+**Helm lab** (§22.6), run by the maintainer on 2026-11-21 against the published `1.0.0-rc.2` chart and image on a fresh k3d cluster: install, scale 2 → 3 servers (one new pod, no restarts), change `apiKeys` (a rolling update of about 6 s, each new pod Ready before an old one stopped), `helm history`, roll back to revision 1 (recorded as revision 4, reusing the old ReplicaSet), `helm get manifest`, uninstall. Jobs sent before the upgrades were still there after the rollback, since they live in Postgres. No bugs.
+
+**What rc.2 found:** nothing, so there was no rc.3 and `1.0.0` is the same code as rc.2 with new version numbers (PR #14). The one problem before it was a flaky trace test (the server's Ack span was sometimes not recorded yet), seen twice in CI, last on the rc.2 version-bump PR, and fixed in PR #13 before the rc.2 tag.
+
+**The cost of one version for everything** (decision 1), seen once: the npm page for 1.0.0 showed a stale TypeScript README ("not on npm yet"), because npm shows the README shipped with each version. Fixing it took a docs-only `1.0.1`, which also published a rebuilt server image, a Go SDK `v1.0.1` and a chart `1.0.1`, none of them with a code change. That cost about 10 minutes of workflow time and a version number in four places. Once is not a reason to switch; the revisit signals in decision 1 still apply.
+
+Left over: npm's `next` dist-tag still points at `1.0.0-rc.2` and should move to the current release.
