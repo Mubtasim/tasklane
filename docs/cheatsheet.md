@@ -193,6 +193,23 @@ Phase 2 replaces the single PostgreSQL behind the `Store` interface with `RaftSt
 | Throughput ceiling | etcd: roughly 10k–30k writes/s with batching on good SSDs | Every write goes through the one leader. |
 | Patroni (HA PostgreSQL) | uses etcd, a Raft store, to choose the Postgres leader | Raft already sits under highly available Postgres in practice. |
 
+## Estimation basics
+
+| Count | × 1 byte | Powers of 2 |
+|---|---|---|
+| thousand | KB | 2^10 ≈ 1 thousand |
+| million | MB | 2^20 ≈ 1 million |
+| billion | GB | 2^30 ≈ 1 billion, 2^32 ≈ 4.3 billion |
+
+| What | Value | Why |
+|---|---|---|
+| ID for up to 4.3 billion items | 4 bytes (32 bits) | 8 bits = 1 byte; 64-bit IDs = 8 bytes. |
+| 10 billion edges as parent lists | ≈ 48 GB | 10 B × 4 B + 1 B offsets × 8 B; fits one machine's RAM. |
+| RAM access vs network hop | ~100 ns vs ~0.5 ms | ~5,000× apart: keep graph walks on one machine. |
+| SSD sequential read | ~1–2 GB/s | 48 GB snapshot loads in ~30–60 s. |
+| Per day → per second | ÷ 86,400 (≈ 10^5) | 1 M/day ≈ 12/s. |
+| N+1 sizing | load ÷ (servers − 1) | 10k/s on 5 servers → each must handle 2,500/s. |
+
 ## TypeScript SDK
 
 | What | Value | Why |
